@@ -61,7 +61,7 @@ pub enum ProbeType {
 }
 
 fn ProbeTypeDefault() -> ProbeType {
-    return ProbeType::HealthCheck;
+    return ProbeType::Prompt;
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -87,7 +87,7 @@ impl Default for HttpEndpoint {
             schema: URIScheme::Http,
             probe: "/health".to_owned(),
             probeTimeout: 1000,
-            probetype: ProbeType::HealthCheck,
+            probetype: ProbeType::Prompt,
         };
     }
 }
@@ -257,7 +257,7 @@ impl Default for FuncSpec {
                 probe: "/health".to_owned(),
                 schema: URIScheme::Http,
                 probeTimeout: 1000,
-                probetype: ProbeType::HealthCheck,
+                probetype: ProbeType::Prompt,
             },
             modelType: ModelType::Public,
             entrypoint: Vec::new(),
