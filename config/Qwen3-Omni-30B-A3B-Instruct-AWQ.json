@@ -2,7 +2,7 @@
     "type": "function",
     "tenant": "public",
     "namespace": "Qwen",
-    "name": "Qwen3-TTS-12Hz-0.6B-CustomVoice",
+    "name": "Qwen3-Omni-30B-A3B-Instruct-AWQ",
     "object": {
         "spec": {
             "image": "vllm/vllm-omni:v0.14.0",
@@ -10,38 +10,41 @@
                 "vllm",
                 "serve",
                 "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+                "--gpu-memory-utilization",
+                "0.95",
+                "--enforce-eager",
+                "--tensor-parallel-size=1",
                 "--omni"
             ],
             "resources": {
                 "CPU": 12000,
-                "Mem": 24000,
-                "ReadyMem": 3000,
+                "Mem": 30000,
                 "GPU": {
                     "Type": "Any",
                     "Count": 1,
-                    "vRam": 8000
-                },
-                "parallel": 100
+                    "vRam": 70000
+                }
             },
             "envs": [
                 [
                     "LD_LIBRARY_PATH",
                     "/usr/local/lib/python3.12/dist-packages/nvidia/cuda_nvrtc/lib/:$LD_LIBRARY_PATH"
-                ],
-                [
-                    "VLLM_CUDART_SO_PATH",
-                    "/usr/local/cuda-12.1/targets/x86_64-linux/lib/libcudart.so.12"
                 ]
             ],
-            "model_type": "Private",
+            "mounts": [
+                {
+                    "hostpath": "/opt/inferx/cache",
+                    "mountpath": "/root/.cache/huggingface"
+                }
+            ],
             "endpoint": {
                 "port": 8000,
                 "schema": "Http",
                 "probe": "/health"
             },
             "sample_query": {
-                "apiType": "text2audio",
-                "prompt": "Can you provide ways to eat combinations of bananas and dragonfruits?",
+                "apiType": "text2text",
+                "prompt": "Who won the world series in 2020?",
                 "path": "v1/audio/speech",
                 "body": {
                     "input": "Hello! The vLLM-Omni server is now running successfully and I am generating speech.",
@@ -55,10 +58,22 @@
                 "pinned": "File"
             },
             "policy": {
-                "Link": {
-                    "objType": "funcpolicy",
-                    "namespace": "system",
-                    "name": "default_funcpolicy"
+                "Obj": {
+                    "min_replica": 0,
+                    "max_replica": 1,
+                    "standby_per_node": 1,
+                    "parallel": 2,
+                    "queue_len": 1000,
+                    "queue_timeout": 30.0,
+                    "scaleout_policy": {
+                        "WaitQueueRatio": {
+                            "wait_ratio": 0.1
+                        }
+                    },
+                    "scalein_timeout": 0.01,
+                    "runtime_config": {
+                        "graph_sync": false
+                    }
                 }
             }
         }

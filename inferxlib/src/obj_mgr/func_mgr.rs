@@ -100,7 +100,7 @@ pub struct SampleCall {
     #[serde(default)]
     pub prompts: Vec<String>,
     #[serde(default)]
-    pub imageUrl: String,
+    pub dataUrl: String,
     pub body: serde_json::Value,
 
     #[serde(default = "DefaultLoadingTimeout")]
@@ -112,7 +112,7 @@ impl Default for SampleCall {
         return Self {
             apiType: ApiType::Text2Text,
             path: "/v1/completions".to_owned(),
-            imageUrl: "".to_owned(),
+            dataUrl: "".to_owned(),
             prompt: "Seattle is a".to_owned(),
             prompts: Vec::new(),
             body: json!({
@@ -160,6 +160,8 @@ pub enum ApiType {
     Text2Text,
     #[serde(rename = "image2text")]
     Image2Text,
+    #[serde(rename = "audio2text")]
+    Audio2Text,
     #[serde(rename = "text2img")]
     Text2Image,
     #[serde(rename = "text2audio")]

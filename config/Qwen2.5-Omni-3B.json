@@ -2,20 +2,17 @@
     "type": "function",
     "tenant": "public",
     "namespace": "Qwen",
-    "name": "Qwen2-VL-7B-Instruct",
+    "name": "Qwen2.5-Omni-3B",
     "object": {
         "spec": {
-            "image": "vllm/vllm-openai:v0.13.0",
+            "image": "vllm/vllm-omni:v0.14.0",
             "commands": [
-                "--model",
-                "Qwen/Qwen2-VL-7B-Instruct",
+                "vllm",
+                "serve",
+                "Qwen/Qwen2.5-Omni-3B",
                 "--trust-remote-code",
-                "--uvicorn-log-level",
-                "warning",
                 "--gpu-memory-utilization",
-                " 0.90",
-                "--max-model-len",
-                "5000",
+                "0.9",
                 "--tensor-parallel-size=2"
             ],
             "resources": {
@@ -24,7 +21,7 @@
                 "GPU": {
                     "Type": "Any",
                     "Count": 2,
-                    "vRam": 13000
+                    "vRam": 14000
                 }
             },
             "envs": [
@@ -49,12 +46,12 @@
                 "probe": "/health"
             },
             "sample_query": {
-                "apiType": "image2text",
-                "prompt": "What is in this image?",
+                "apiType": "audio2text",
+                "prompt": "Describe the sounds you hear in this audio.",
                 "path": "v1/chat/completions",
-                "dataUrl": "https://www.ilankelman.org/stopsigns/australia.jpg",
+                "dataUrl": "https://www.kozco.com/tech/piano2.wav",
                 "body": {
-                    "model": "Qwen/Qwen2-VL-7B-Instruct",
+                    "model": "Qwen/Qwen2.5-Omni-3B",
                     "max_tokens": "200",
                     "temperature": "0"
                 }
