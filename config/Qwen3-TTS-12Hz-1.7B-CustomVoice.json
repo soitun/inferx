@@ -10,9 +10,6 @@
                 "vllm",
                 "serve",
                 "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
-                "--stage-configs-path",
-                "vllm_omni/model_executor/stage_configs/qwen3_tts.yaml",
-                "--enforce-eager",
                 "--trust-remote-code",
                 "--omni"
             ],
@@ -35,12 +32,6 @@
                     "VLLM_CUDART_SO_PATH",
                     "/usr/local/cuda-12.1/targets/x86_64-linux/lib/libcudart.so.12"
                 ]
-            ],
-            "mounts": [
-                {
-                    "hostpath": "/opt/inferx/cache",
-                    "mountpath": "/root/.cache/huggingface"
-                }
             ],
             "endpoint": {
                 "port": 8000,

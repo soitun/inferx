@@ -77,13 +77,19 @@
 
 {% if func["func"]["object"]["spec"]["sample_query"]["apiType"] == "image2text" %}
 <h1>Image</h1>
-<textarea id="imageUrlInput" rows="1"
-    cols="120">{{ func["func"]["object"]["spec"]["sample_query"]["imageUrl"] }}</textarea>
+<textarea id="urlInput" rows="1" cols="120">{{ func["func"]["object"]["spec"]["sample_query"]["dataUrl"] }}</textarea>
 <button onclick="loadImage()">Preview</button>
 <img id="preview" src="" alt="Image will appear here" style="max-width: 600px; display: none;">
+{% elif func["func"]["object"]["spec"]["sample_query"]["apiType"] == "audio2text" %}
+<h1>Audio</h1>
+<textarea id="urlInput" rows="1" cols="120">{{ func["func"]["object"]["spec"]["sample_query"]["dataUrl"] }}</textarea>
+<button onclick="loadAudio()">Preview</button>
+<audio id="audioPreview" controls style="display: none; margin-top: 10px;">
+    Your browser does not support the audio element.
+</audio>
 {% else %}
 <h1 style="display:none;">Image</h1>
-<textarea id="imageUrlInput" rows="2" cols="120" style="display:none;"></textarea>
+<textarea id="urlInput" rows="2" cols="120" style="display:none;"></textarea>
 {% endif %}
 <h1>Prompt</h1>
 
@@ -355,7 +361,7 @@
     const funcconfig = {{ func | tojson }};
 
     function loadImage() {
-        const url = document.getElementById("imageUrlInput").value;
+        const url = document.getElementById("urlInput").value;
         const img = document.getElementById("preview");
 
         if (url.endsWith(".jpg") || url.endsWith(".jpeg")) {
@@ -364,6 +370,20 @@
         } else {
             alert("Please enter a valid JPEG image URL ending with .jpg or .jpeg");
             img.style.display = "none";
+        }
+    }
+
+    function loadAudio() {
+        const url = document.getElementById("urlInput").value;
+        const audio = document.getElementById("audioPreview");
+
+        if (url.endsWith(".wav") || url.endsWith(".mp4") || url.endsWith(".mp3")) {
+            audio.src = url;
+            audio.style.display = "block";
+            audio.load();
+        } else {
+            alert("Please enter a valid audio URL ending with .wav or .mp4 or .mp3");
+            audio.style.display = "none";
         }
     }
 
@@ -461,7 +481,7 @@
         const debugDiv = document.getElementById('debug');
         const tpsDiv = document.getElementById('tpsDiv');
         const prompt = document.getElementById('prompt').value;
-        const image = document.getElementById('imageUrlInput').value;
+        const image = document.getElementById('urlInput').value;
 
         cancelBtn.addEventListener('click', () => {
             if (abortController) {
@@ -490,10 +510,10 @@
             url = schema + "//" + hostname + ":" + port + "/demo/proxy/funccall/" + tenant + "/" + namespace + "/" + name + "/" + path;
 
             let body;
-            if (apiType != "image2text") {
+            if (apiType == "text2text") {
                 map["prompt"] = prompt;
                 body = JSON.stringify(map);
-            } else {
+            } else if (apiType == "image2text") {
                 const requestData = {
                     model: map["model"],
                     messages: [
@@ -515,8 +535,30 @@
                     stream: true
                 };
                 body = JSON.stringify(requestData);
+            } else {
+                const requestData = {
+                    model: map["model"],
+                    messages: [
+                        {
+                            role: "user",
+                            content: [
+                                { type: "text", text: prompt },
+                                {
+                                    type: "audio_url",
+                                    audio_url: {
+                                        url: image
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    max_tokens: map["max_tokens"],
+                    temperature: map["temperature"],
+                    stream: true
+                };
+                body = JSON.stringify(requestData);
+                console.log(JSON.stringify(requestData, null, 4)); // 4 spaces for better readability
             }
-
             debugDiv.innerHTML += JSON.stringify(map, null, 2);
 
             let options = {
