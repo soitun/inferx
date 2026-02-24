@@ -554,7 +554,6 @@
 </style>
 
 <div class="tab">
-    <button class="tablinks" onclick="openTab(event, 'Models')" style="font-size: 25px;">Models</button>
     <button class="tablinks" onclick="openTab(event, 'Namespaces')" style="font-size: 25px;">Namespaces</button>
     <button class="tablinks" onclick="openTab(event, 'Tenants')" style="font-size: 25px;">Tenants</button>
     <button class="tablinks" onclick="openTab(event, 'Roles')" style="font-size: 25px;">Roles</button>
@@ -653,47 +652,6 @@
             </div>
         </div>
     </div>
-</div>
-
-<div id="Models" class="tabcontent">
-    <table class="admin-data-table" style="width:100%" id="models-table">
-        <thead>
-            <tr>
-                <th rowspan="2" style="width: 100px;">Select</th>
-                <th rowspan="2">Tenant</th>
-                <th rowspan="2">Namespace</th>
-                <th rowspan="2">Name</th>
-
-                <th colspan="2" style="text-align: center; border-bottom: 2px solid #eee;">Role</th>
-            </tr>
-            <tr>
-                <th style="width: 80px; text-align: center;">Admin</th>
-                <th style="width: 80px; text-align: center;">User</th>
-            </tr>
-        </thead>
-
-        <tbody>
-
-        </tbody>
-    </table>
-
-    <form id="delete-models-form">
-        <button id="delete-models-button" type="submit" onclick="delete_funcs()"">Delete Namespaces</button>
-    </form>
-    
-    <h2>Add model</h2>
-    <form id=" add-models-form">
-            Namespace
-            <select id="namespace_dropdown">
-                <option disabled selected>Select a namespace</option>
-            </select>
-            Model name
-            <input type="text" id="model_name" placeholder="Enter model name" required>
-            <br>
-            <textarea id="model_spec" rows="30" cols="120" placeholder="Enter model Spec" required></textarea>
-            <br>
-            <button type="submit" onclick="create_func()">Add model</button>
-    </form>
 </div>
 
 <div id="Roles" class="tabcontent">
@@ -1349,11 +1307,15 @@
     }
 
     window.onload = async function () {
-        const savedTab = localStorage.getItem('currentTab') || 'Models'; // Default to 'Models'
-        const targetBtn = document.querySelector(`button[onclick*="'${savedTab}'"]`) ||
-            document.querySelector(`button[onclick*="'Models'"]`);
+        const savedTab = localStorage.getItem('currentTab') || 'Apikeys';
+        let targetBtn = document.querySelector(`button[onclick*="'${savedTab}'"]`);
+        let targetTab = savedTab;
+        if (!targetBtn) {
+            targetBtn = document.querySelector(`button[onclick*="'Apikeys'"]`);
+            targetTab = 'Apikeys';
+        }
         if (targetBtn) {
-            openTab({ currentTarget: targetBtn }, savedTab);
+            openTab({ currentTarget: targetBtn }, targetTab);
         }
         await initBillingAdminAccess();
     };
@@ -1526,9 +1488,9 @@
 
         if (!billingAdminIsInferxAdmin && localStorage.getItem('currentTab') === 'BillingAdmin') {
             const fallback = document.querySelector(`button[onclick*="'Billing'"]`) ||
-                document.querySelector(`button[onclick*="'Models'"]`);
+                document.querySelector(`button[onclick*="'Apikeys'"]`);
             if (fallback) {
-                openTab({ currentTarget: fallback }, fallback.getAttribute('onclick').includes("'Billing'") ? 'Billing' : 'Models');
+                openTab({ currentTarget: fallback }, fallback.getAttribute('onclick').includes("'Billing'") ? 'Billing' : 'Apikeys');
             }
         }
 
@@ -4189,52 +4151,54 @@
             }
         });
 
-        const funcs_resp = await fetchWithAuth('/demo/generate_funcs');
-        const funcs = await funcs_resp.json();
         const funcs_tbody = document.querySelector('#models-table tbody');
-        funcs_tbody.innerHTML = '';
-        funcs.forEach(key => {
-            const isAdmin = IsAdmin(roles, key.func.tenant, key.func.namespace);
-            const isUser = IsUser(roles, key.func.tenant, key.func.namespace);
+        if (funcs_tbody) {
+            const funcs_resp = await fetchWithAuth('/demo/generate_funcs');
+            const funcs = await funcs_resp.json();
+            funcs_tbody.innerHTML = '';
+            funcs.forEach(key => {
+                const isAdmin = IsAdmin(roles, key.func.tenant, key.func.namespace);
+                const isUser = IsUser(roles, key.func.tenant, key.func.namespace);
 
-            if (isAdmin || isUser) {
-                const row = document.createElement('tr');
-                row.innerHTML = `
-                <td style="text-align: center;">
-                    <input type="checkbox" 
-                        data-id="${key.tenant}/system/${key.name}"
-                        ${!isAdmin ? 'disabled' : ''} 
-                        style="${!isAdmin ? 'cursor: not-allowed; opacity: 0.5;' : 'cursor: pointer;'}">
-                </td>
-                <td style="text-align: center;">
-                    <a href="{{ hosturl }}listfunc?tenant=${key.func.tenant}">
-                        ${tenantLinkLabelHtml(key.func.tenant)}
-                    </a>
-                </td>
-                <td style="text-align: center;">
-                    <a
-                        href="{{ hosturl }}listfunc?tenant=${key.func.tenant}&&namespace=${key.func.namespace}">
-                        ${key.func.namespace}
-                    </a>
-                </td>
-                <td style="text-align: center;">
-                    <a
-                        href="{{ hosturl }}func?tenant=${key.func.tenant}&&namespace=${key.func.namespace}&&name=${key.func.name}">
-                        ${key.func.name}
-                    </a>
-                </td>
-                <td style="text-align: center;">${isAdmin
-                        ? '<span style="color: green; font-weight: bold;">✓</span>'
-                        : '<span style="color: #666;">-</span>'}
-                </td>
-                <td style="text-align: center;">${isUser
-                        ? '<span style="color: green; font-weight: bold;">✓</span>'
-                        : '<span style="color: #666;">-</span>'}
-                </td>
-            `;
-                funcs_tbody.appendChild(row);
-            }
-        });
+                if (isAdmin || isUser) {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                    <td style="text-align: center;">
+                        <input type="checkbox" 
+                            data-id="${key.tenant}/system/${key.name}"
+                            ${!isAdmin ? 'disabled' : ''} 
+                            style="${!isAdmin ? 'cursor: not-allowed; opacity: 0.5;' : 'cursor: pointer;'}">
+                    </td>
+                    <td style="text-align: center;">
+                        <a href="{{ hosturl }}listfunc?tenant=${key.func.tenant}">
+                            ${tenantLinkLabelHtml(key.func.tenant)}
+                        </a>
+                    </td>
+                    <td style="text-align: center;">
+                        <a
+                            href="{{ hosturl }}listfunc?tenant=${key.func.tenant}&&namespace=${key.func.namespace}">
+                            ${key.func.namespace}
+                        </a>
+                    </td>
+                    <td style="text-align: center;">
+                        <a
+                            href="{{ hosturl }}func?tenant=${key.func.tenant}&&namespace=${key.func.namespace}&&name=${key.func.name}">
+                            ${key.func.name}
+                        </a>
+                    </td>
+                    <td style="text-align: center;">${isAdmin
+                            ? '<span style="color: green; font-weight: bold;">✓</span>'
+                            : '<span style="color: #666;">-</span>'}
+                    </td>
+                    <td style="text-align: center;">${isUser
+                            ? '<span style="color: green; font-weight: bold;">✓</span>'
+                            : '<span style="color: #666;">-</span>'}
+                    </td>
+                `;
+                    funcs_tbody.appendChild(row);
+                }
+            });
+        }
 
 
         const namespaces_resp = await fetchWithAuth('/demo/generate_namespaces');
@@ -4291,7 +4255,7 @@
            `;
             namespaces_tbody.appendChild(row);
 
-            if (isAdmin) {
+            if (isAdmin && namespace_dropdown) {
                 const option = document.createElement("option");
                 option.value = key.tenant + "/" + key.name;
                 option.textContent = `${tenantDisplayLabel(key.tenant)}/${key.name}`;

@@ -1,0 +1,971 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<style>
+    .model-editor {
+        max-width: 1100px;
+        margin: 0 auto 32px auto;
+    }
+
+    .model-editor h2 {
+        margin: 0;
+    }
+
+    .editor-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 16px;
+    }
+
+    .editor-subtitle {
+        color: #64748b;
+        font-size: 13px;
+        margin-top: 4px;
+    }
+
+    .btn {
+        border: 1px solid #2563eb;
+        background: #2563eb;
+        color: white;
+        border-radius: 6px;
+        padding: 8px 12px;
+        font-size: 14px;
+        cursor: pointer;
+        text-decoration: none;
+    }
+
+    .btn.secondary {
+        background: white;
+        color: #1e3a8a;
+        border-color: #93c5fd;
+    }
+
+    .btn:disabled {
+        opacity: 0.65;
+        cursor: not-allowed;
+    }
+
+    .panel {
+        border: 1px solid #cbd5e1;
+        background: #ffffff;
+        border-radius: 8px;
+        padding: 14px;
+        margin-bottom: 14px;
+    }
+
+    .panel h3 {
+        margin: 0 0 10px 0;
+        font-size: 16px;
+        color: #1f2937;
+    }
+
+    .form-grid {
+        display: grid;
+        grid-template-columns: 220px minmax(0, 1fr);
+        gap: 10px 12px;
+        align-items: center;
+    }
+
+    .form-grid label {
+        font-weight: 600;
+        color: #334155;
+    }
+
+    .field-row {
+        display: contents;
+    }
+
+    .field-row.hidden {
+        display: none;
+    }
+
+    input[type="text"],
+    input[type="number"],
+    select,
+    textarea {
+        width: 100%;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 8px 10px;
+        font-size: 14px;
+        box-sizing: border-box;
+        background: #fff;
+    }
+
+    textarea {
+        min-height: 120px;
+        resize: vertical;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        line-height: 1.35;
+    }
+
+    .hint {
+        color: #475569;
+        font-size: 12px;
+        margin-top: 6px;
+    }
+
+    .label-with-help {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    .field-help {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 12px;
+        height: 12px;
+        border: 1px solid #94a3b8;
+        border-radius: 50%;
+        background: #ffffff;
+        color: #475569;
+        font-size: 9px;
+        line-height: 1;
+        cursor: default;
+        user-select: none;
+    }
+
+    .field-help:hover {
+        color: #1f2937;
+        border-color: #64748b;
+    }
+
+    .field-help:focus {
+        outline: 1px solid #6b9ad6;
+        outline-offset: 1px;
+    }
+
+    .req-mark {
+        color: #dc2626;
+        font-weight: 700;
+        font-size: 0.75em;
+        line-height: 1;
+        vertical-align: text-top;
+        margin-left: 2px;
+    }
+
+    .tabs {
+        display: inline-flex;
+        gap: 6px;
+        border-bottom: 1px solid #cbd5e1;
+        margin-bottom: 12px;
+        width: 100%;
+    }
+
+    .tab-btn {
+        border: 1px solid transparent;
+        border-bottom: none;
+        background: transparent;
+        color: #334155;
+        padding: 10px 14px;
+        border-radius: 8px 8px 0 0;
+        cursor: pointer;
+        font-weight: 600;
+    }
+
+    .tab-btn.active {
+        background: #ffffff;
+        border-color: #cbd5e1;
+        color: #1d4ed8;
+    }
+
+    .tab-panel {
+        display: none;
+    }
+
+    .tab-panel.active {
+        display: block;
+    }
+
+    .inline-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+
+    .env-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 8px;
+    }
+
+    .env-table th,
+    .env-table td {
+        border: 1px solid #dbe3ef;
+        padding: 8px;
+        text-align: left;
+        vertical-align: middle;
+    }
+
+    .env-table th {
+        background: #f8fafc;
+    }
+
+    .env-table td.actions-cell {
+        width: 72px;
+        text-align: center;
+    }
+
+    .small-btn {
+        border: 1px solid #cbd5e1;
+        background: white;
+        border-radius: 4px;
+        padding: 4px 8px;
+        cursor: pointer;
+    }
+
+    .small-btn.danger {
+        border-color: #fca5a5;
+        color: #b91c1c;
+    }
+
+    .warning-banner,
+    .error-banner,
+    .success-banner {
+        display: none;
+        border-radius: 8px;
+        padding: 10px 12px;
+        margin-bottom: 12px;
+        font-size: 14px;
+    }
+
+    .warning-banner {
+        background: #fffbeb;
+        border: 1px solid #fcd34d;
+        color: #92400e;
+    }
+
+    .error-banner {
+        background: #fef2f2;
+        border: 1px solid #fca5a5;
+        color: #991b1b;
+    }
+
+    .success-banner {
+        background: #ecfdf5;
+        border: 1px solid #86efac;
+        color: #166534;
+    }
+
+    .actions-footer {
+        display: flex;
+        justify-content: flex-end;
+        align-items: center;
+        gap: 8px;
+        margin-top: 10px;
+    }
+
+    .section-spacer {
+        margin-top: 10px;
+    }
+
+    @media (max-width: 800px) {
+        .form-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .field-row {
+            display: block;
+            margin-bottom: 10px;
+        }
+
+        .field-row label {
+            display: block;
+            margin-bottom: 6px;
+        }
+
+        .field-row.hidden {
+            display: none;
+        }
+
+        .editor-header {
+            align-items: flex-start;
+            flex-direction: column;
+        }
+    }
+</style>
+
+<div class="model-editor">
+    <div class="editor-header">
+        <div>
+            <h2>{{ "Edit Model" if page_mode == "update" else "Create Model" }}</h2>
+            <div class="editor-subtitle">
+                {{ "Editing existing model" if page_mode == "update" else "Creating a new model" }}
+            </div>
+        </div>
+        <a class="btn secondary" href="{{ hosturl }}listfunc">Back to Models</a>
+    </div>
+
+    <div id="error-banner" class="error-banner" role="alert"></div>
+    <div id="success-banner" class="success-banner" aria-live="polite"></div>
+    <div id="advanced-warning-banner" class="warning-banner" aria-live="polite">
+        Changes made in Advanced are not reflected back in Basic fields.
+    </div>
+
+    <div class="panel">
+        <h3>Top-level Fields</h3>
+        <div class="form-grid">
+            <div id="tenant-row" class="field-row">
+                <label for="tenant-select" class="label-with-help">
+                    <span>Tenant<span class="req-mark">*</span></span>
+                    <span class="field-help" tabindex="0" aria-label="Tenant help" data-tooltip="Owner tenant for this model. This controls tenant-level permissions and limits." title="Owner tenant for this model. This controls tenant-level permissions and limits.">i</span>
+                </label>
+                <div>
+                    <select id="tenant-select"></select>
+                </div>
+            </div>
+
+            <div id="namespace-row" class="field-row">
+                <label for="namespace-select" class="label-with-help">
+                    <span>Namespace<span class="req-mark">*</span></span>
+                    <span class="field-help" tabindex="0" aria-label="Namespace help" data-tooltip="Namespace under the selected tenant. The dropdown is filtered by tenant and may be hidden if only one namespace is available." title="Namespace under the selected tenant. The dropdown is filtered by tenant and may be hidden if only one namespace is available.">i</span>
+                </label>
+                <div>
+                    <select id="namespace-select"></select>
+                </div>
+            </div>
+
+            <div class="field-row">
+                <label for="function-name-input" class="label-with-help">
+                    <span>Function Name<span class="req-mark">*</span></span>
+                    <span class="field-help" tabindex="0" aria-label="Function name help" data-tooltip="Model/function name shown in the dashboard and used in the function object path." title="Model/function name shown in the dashboard and used in the function object path.">i</span>
+                </label>
+                <div>
+                    <input id="function-name-input" type="text" placeholder="Qwen2.5-Coder-1.5B-Instruct">
+                </div>
+            </div>
+
+            <div class="field-row">
+                <label for="hf-model-input" class="label-with-help">
+                    <span>HuggingFace Model<span class="req-mark">*</span></span>
+                    <span class="field-help" tabindex="0" aria-label="HuggingFace model help" data-tooltip="Hugging Face model ID (for example namespace/model). Used to build --model and sample_query.body.model." title="Hugging Face model ID (for example namespace/model). Used to build --model and sample_query.body.model.">i</span>
+                </label>
+                <div>
+                    <input id="hf-model-input" type="text" placeholder="Qwen/Qwen2.5-Coder-1.5B-Instruct" autocomplete="off">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="tabs" role="tablist" aria-label="Model editor mode">
+        <button id="tab-basic" type="button" class="tab-btn active" role="tab" aria-selected="true">Basic</button>
+        <button id="tab-advanced" type="button" class="tab-btn" role="tab" aria-selected="false">Advanced</button>
+    </div>
+
+    <div id="panel-basic" class="tab-panel active" role="tabpanel">
+        <div class="panel">
+            <h3>
+                <span class="label-with-help">
+                    <span>Image<span class="req-mark">*</span></span>
+                    <span class="field-help" tabindex="0" aria-label="Image help" data-tooltip="Container image for the model runtime. Only whitelisted vLLM image tags are allowed in Basic mode." title="Container image for the model runtime. Only whitelisted vLLM image tags are allowed in Basic mode.">i</span>
+                </span>
+            </h3>
+            <select id="image-select"></select>
+        </div>
+
+        <div class="panel">
+            <h3>
+                <span class="label-with-help">
+                    <span>vLLM Parameters<span class="req-mark">*</span></span>
+                    <span class="field-help" tabindex="0" aria-label="vLLM parameters help" data-tooltip="JSON array of vLLM command arguments for the model runtime." title="JSON array of vLLM command arguments for the model runtime.">i</span>
+                </span>
+            </h3>
+            <textarea id="commands-json" rows="7" placeholder='["--trust-remote-code", "--max-model-len", "2000"]'></textarea>
+            <div class="hint">JSON array only. Do not include `--model` or `--tensor-parallel-size`; they are injected server-side.</div>
+        </div>
+
+        <div class="panel">
+            <h3>GPU Resources</h3>
+            <div class="form-grid">
+                <div class="field-row">
+                    <label for="gpu-count-select" class="label-with-help">
+                        <span>GPU Count<span class="req-mark">*</span></span>
+                        <span class="field-help" tabindex="0" aria-label="GPU count help" data-tooltip="Number of GPUs requested for the model. This also drives server-side CPU and memory defaults." title="Number of GPUs requested for the model. This also drives server-side CPU and memory defaults.">i</span>
+                    </label>
+                    <div>
+                        <select id="gpu-count-select">
+                            <option value="1">1</option>
+                            <option value="2">2</option>
+                            <option value="4">4</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="field-row">
+                    <label for="gpu-vram-input" class="label-with-help">
+                        <span>vRam (MB)<span class="req-mark">*</span></span>
+                        <span class="field-help" tabindex="0" aria-label="vRam help" data-tooltip="Minimum GPU memory required per GPU in MB. Choose a value that fits the target nodes." title="Minimum GPU memory required per GPU in MB. Choose a value that fits the target nodes.">i</span>
+                    </label>
+                    <div>
+                        <input id="gpu-vram-input" type="number" min="1" step="1" placeholder="24000">
+                        <div class="hint" id="vram-hint">Loading node max vRam…</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h3>Policy (optional)</h3>
+            <div class="inline-row">
+                <label for="policy-enabled-checkbox" class="label-with-help" style="font-weight: 600; margin: 0;">
+                    <span>Customize</span>
+                    <span class="field-help" tabindex="0" aria-label="Policy customize help" data-tooltip="Enable to override default queue and scale-in behavior for this model." title="Enable to override default queue and scale-in behavior for this model.">i</span>
+                </label>
+                <input id="policy-enabled-checkbox" type="checkbox">
+            </div>
+            <div id="policy-fields" style="display:none; margin-top: 10px;">
+                <div class="form-grid">
+                    <div class="field-row">
+                        <label for="queue-timeout-input" class="label-with-help">
+                            <span>Queue Timeout (s)</span>
+                            <span class="field-help" tabindex="0" aria-label="Queue timeout help" data-tooltip="How long a request may wait in queue before timing out." title="How long a request may wait in queue before timing out.">i</span>
+                        </label>
+                        <div>
+                            <input id="queue-timeout-input" type="number" step="any" placeholder="30">
+                        </div>
+                    </div>
+                    <div class="field-row">
+                        <label for="scalein-timeout-input" class="label-with-help">
+                            <span>Scale-in Timeout (s)</span>
+                            <span class="field-help" tabindex="0" aria-label="Scale-in timeout help" data-tooltip="Idle time before scaling in. If left empty, Basic mode uses default 1.0." title="Idle time before scaling in. If left empty, Basic mode uses default 1.0.">i</span>
+                        </label>
+                        <div>
+                            <input id="scalein-timeout-input" type="number" step="any" placeholder="1.0">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="panel-advanced" class="tab-panel" role="tabpanel">
+        <div class="panel">
+            <h3>
+                <span class="label-with-help">
+                    <span>Partial Spec JSON<span class="req-mark">*</span></span>
+                    <span class="field-help" tabindex="0" aria-label="Partial spec JSON help" data-tooltip="Edit the partial spec directly (image, commands, GPU resources, envs, policy). Generated fields are injected server-side." title="Edit the partial spec directly (image, commands, GPU resources, envs, policy). Generated fields are injected server-side.">i</span>
+                </span>
+            </h3>
+            <textarea id="advanced-spec-json" rows="20" placeholder='{"image":"vllm/vllm-openai:v0.15.0","commands":[],"resources":{"GPU":{"Count":1,"vRam":24000}}}'></textarea>
+        </div>
+    </div>
+
+    <div class="actions-footer">
+        <a class="btn secondary" href="{{ hosturl }}listfunc">Cancel</a>
+        <button id="save-model-btn" type="button" class="btn">Save Model</button>
+    </div>
+</div>
+
+<script>
+    (function () {
+        const PAGE_MODE = {{ page_mode | tojson }};
+        const INITIAL_MODEL = {{ initial_model_data | tojson }};
+        const IMAGE_OPTIONS = {{ image_options | tojson }};
+
+        const tenantSelect = document.getElementById('tenant-select');
+        const namespaceSelect = document.getElementById('namespace-select');
+        const tenantRow = document.getElementById('tenant-row');
+        const namespaceRow = document.getElementById('namespace-row');
+        const functionNameInput = document.getElementById('function-name-input');
+        const hfModelInput = document.getElementById('hf-model-input');
+        const imageSelect = document.getElementById('image-select');
+        const commandsJson = document.getElementById('commands-json');
+        const gpuCountSelect = document.getElementById('gpu-count-select');
+        const gpuVramInput = document.getElementById('gpu-vram-input');
+        const vramHint = document.getElementById('vram-hint');
+        const policyEnabledCheckbox = document.getElementById('policy-enabled-checkbox');
+        const policyFields = document.getElementById('policy-fields');
+        const queueTimeoutInput = document.getElementById('queue-timeout-input');
+        const scaleinTimeoutInput = document.getElementById('scalein-timeout-input');
+        const tabBasic = document.getElementById('tab-basic');
+        const tabAdvanced = document.getElementById('tab-advanced');
+        const panelBasic = document.getElementById('panel-basic');
+        const panelAdvanced = document.getElementById('panel-advanced');
+        const advancedSpecJson = document.getElementById('advanced-spec-json');
+        const warningBanner = document.getElementById('advanced-warning-banner');
+        const errorBanner = document.getElementById('error-banner');
+        const successBanner = document.getElementById('success-banner');
+        const saveBtn = document.getElementById('save-model-btn');
+
+        let activeTab = 'basic';
+        let tenants = [];
+        let namespaces = [];
+        let nodeMaxVram = 0;
+
+        function showError(message) {
+            errorBanner.textContent = message || '';
+            errorBanner.style.display = message ? 'block' : 'none';
+        }
+
+        function showSuccess(message) {
+            successBanner.textContent = message || '';
+            successBanner.style.display = message ? 'block' : 'none';
+        }
+
+        function showAdvancedWarning(show) {
+            warningBanner.style.display = show ? 'block' : 'none';
+        }
+
+        function clearMessages() {
+            showError('');
+            showSuccess('');
+        }
+
+        function setPolicyEnabled(enabled) {
+            policyEnabledCheckbox.checked = !!enabled;
+            policyFields.style.display = enabled ? 'block' : 'none';
+        }
+
+        function parseCommandsArrayFromBasic() {
+            let parsed;
+            try {
+                parsed = JSON.parse(commandsJson.value || '[]');
+            } catch (err) {
+                throw new Error(`Basic tab commands must be valid JSON array: ${err.message}`);
+            }
+            if (!Array.isArray(parsed)) {
+                throw new Error('Basic tab commands must be a JSON array');
+            }
+            if (!parsed.every((item) => typeof item === 'string')) {
+                throw new Error('Basic tab commands JSON array must contain strings only');
+            }
+            return parsed;
+        }
+
+        function buildBasicSpecFromUi() {
+            const gpuCount = Number.parseInt(gpuCountSelect.value, 10);
+            const vRam = Number.parseInt(gpuVramInput.value, 10);
+
+            if (!Number.isInteger(gpuCount)) {
+                throw new Error('GPU Count is required');
+            }
+            if (!Number.isInteger(vRam) || vRam <= 0) {
+                throw new Error('vRam (MB) must be a positive integer');
+            }
+
+            const spec = {
+                image: imageSelect.value,
+                commands: parseCommandsArrayFromBasic(),
+                resources: {
+                    GPU: {
+                        Count: gpuCount,
+                        vRam: vRam
+                    }
+                }
+            };
+
+            if (policyEnabledCheckbox.checked) {
+                const obj = {};
+                const queueTimeout = (queueTimeoutInput.value || '').trim();
+                const scaleinTimeout = (scaleinTimeoutInput.value || '').trim();
+                if (queueTimeout !== '') {
+                    const val = Number(queueTimeout);
+                    if (Number.isNaN(val)) {
+                        throw new Error('Queue Timeout must be a number');
+                    }
+                    obj.queue_timeout = val;
+                }
+                if (scaleinTimeout !== '') {
+                    const val = Number(scaleinTimeout);
+                    if (Number.isNaN(val)) {
+                        throw new Error('Scale-in Timeout must be a number');
+                    }
+                    obj.scalein_timeout = val;
+                } else {
+                    // Default scale-in timeout when policy is enabled but field is left empty.
+                    obj.scalein_timeout = 1.0;
+                }
+                if (Object.keys(obj).length > 0) {
+                    spec.policy = { Obj: obj };
+                }
+            }
+
+            return spec;
+        }
+
+        function populateBasicUiFromSpec(spec) {
+            const partial = spec && typeof spec === 'object' ? spec : {};
+            if (typeof partial.image === 'string' && partial.image !== '') {
+                ensureSelectOption(imageSelect, partial.image, partial.image);
+                imageSelect.value = partial.image;
+            }
+
+            const commands = Array.isArray(partial.commands) ? partial.commands : [];
+            commandsJson.value = JSON.stringify(commands, null, 2);
+
+            const gpu = (((partial.resources || {}).GPU) || {});
+            if (gpu.Count != null) {
+                ensureSelectOption(gpuCountSelect, String(gpu.Count), String(gpu.Count));
+                gpuCountSelect.value = String(gpu.Count);
+            }
+            if (gpu.vRam != null && String(gpu.vRam) !== '') {
+                gpuVramInput.value = String(gpu.vRam);
+            }
+
+            const policyObj = (((partial.policy || {}).Obj) || {});
+            const hasPolicy = policyObj && typeof policyObj === 'object' && (
+                Object.prototype.hasOwnProperty.call(policyObj, 'queue_timeout') ||
+                Object.prototype.hasOwnProperty.call(policyObj, 'scalein_timeout')
+            );
+            setPolicyEnabled(hasPolicy);
+            queueTimeoutInput.value = hasPolicy && policyObj.queue_timeout != null ? String(policyObj.queue_timeout) : '';
+            scaleinTimeoutInput.value = hasPolicy && policyObj.scalein_timeout != null ? String(policyObj.scalein_timeout) : '';
+        }
+
+        function setTopLevelFields(model) {
+            if (!model || typeof model !== 'object') {
+                return;
+            }
+            if (typeof model.tenant === 'string') {
+                ensureSelectOption(tenantSelect, model.tenant, model.tenant);
+                tenantSelect.value = model.tenant;
+            }
+            rebuildNamespaceOptions({ preserveCurrent: false, preferredValue: model.namespace || '' });
+            if (typeof model.namespace === 'string' && model.namespace !== '') {
+                ensureSelectOption(namespaceSelect, model.namespace, model.namespace);
+                namespaceSelect.value = model.namespace;
+            }
+            if (typeof model.name === 'string') {
+                functionNameInput.value = model.name;
+            }
+            if (typeof model.hf_model === 'string') {
+                hfModelInput.value = model.hf_model;
+            }
+        }
+
+        function ensureSelectOption(selectEl, value, label) {
+            if (!selectEl) {
+                return;
+            }
+            const exists = Array.from(selectEl.options).some((opt) => opt.value === value);
+            if (!exists) {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = label;
+                selectEl.appendChild(option);
+            }
+        }
+
+        function setSelectOptions(selectEl, options, selectedValue) {
+            selectEl.innerHTML = '';
+            options.forEach((optionData) => {
+                const option = document.createElement('option');
+                option.value = optionData.value;
+                option.textContent = optionData.label;
+                selectEl.appendChild(option);
+            });
+            if (selectedValue != null && selectedValue !== '') {
+                ensureSelectOption(selectEl, selectedValue, selectedValue);
+                selectEl.value = selectedValue;
+            }
+            if (!selectEl.value && selectEl.options.length > 0) {
+                selectEl.selectedIndex = 0;
+            }
+        }
+
+        function tenantDisplayLabel(tenantObj) {
+            if (!tenantObj || typeof tenantObj !== 'object') {
+                return '';
+            }
+            const spec = tenantObj.object && tenantObj.object.spec ? tenantObj.object.spec : {};
+            const displayName = String(spec.display_name || spec.displayName || '').trim();
+            const name = String(tenantObj.name || '').trim();
+            return displayName ? `${displayName} (${name})` : name;
+        }
+
+        function rebuildTenantOptions() {
+            const tenantOptions = (Array.isArray(tenants) ? tenants : []).map((tenantObj) => ({
+                value: String(tenantObj.name || '').trim(),
+                label: tenantDisplayLabel(tenantObj)
+            })).filter((opt) => opt.value !== '');
+
+            const current = tenantSelect.value;
+            setSelectOptions(tenantSelect, tenantOptions, current || (INITIAL_MODEL && INITIAL_MODEL.tenant) || '');
+            tenantRow.classList.toggle('hidden', tenantSelect.options.length <= 1);
+        }
+
+        function rebuildNamespaceOptions(opts = {}) {
+            const preserveCurrent = !!opts.preserveCurrent;
+            const preferredValue = typeof opts.preferredValue === 'string' ? opts.preferredValue : '';
+            const selectedTenant = tenantSelect.value;
+            const currentNamespace = preserveCurrent ? namespaceSelect.value : '';
+
+            const namespaceOptions = (Array.isArray(namespaces) ? namespaces : [])
+                .filter((ns) => String(ns.tenant || '').trim() === selectedTenant)
+                .map((ns) => {
+                    const value = String(ns.name || '').trim();
+                    return { value, label: value };
+                })
+                .filter((opt) => opt.value !== '');
+
+            const targetValue = preferredValue || currentNamespace;
+            setSelectOptions(namespaceSelect, namespaceOptions, targetValue);
+            namespaceRow.classList.toggle('hidden', namespaceSelect.options.length <= 1);
+        }
+
+        function syncAdvancedFromBasic() {
+            const spec = buildBasicSpecFromUi();
+            advancedSpecJson.value = JSON.stringify(spec, null, 2);
+        }
+
+        function setActiveTab(nextTab) {
+            if (nextTab === activeTab) {
+                return;
+            }
+
+            clearMessages();
+            if (nextTab === 'advanced') {
+                showAdvancedWarning(false);
+                try {
+                    syncAdvancedFromBasic();
+                } catch (err) {
+                    showError(err.message || String(err));
+                    return;
+                }
+            } else if (activeTab === 'advanced' && nextTab === 'basic') {
+                showAdvancedWarning(true);
+            }
+
+            activeTab = nextTab;
+            const basicActive = activeTab === 'basic';
+
+            tabBasic.classList.toggle('active', basicActive);
+            tabAdvanced.classList.toggle('active', !basicActive);
+            tabBasic.setAttribute('aria-selected', basicActive ? 'true' : 'false');
+            tabAdvanced.setAttribute('aria-selected', basicActive ? 'false' : 'true');
+            panelBasic.classList.toggle('active', basicActive);
+            panelAdvanced.classList.toggle('active', !basicActive);
+        }
+
+        function parseAdvancedSpec() {
+            let parsed;
+            try {
+                parsed = JSON.parse(advancedSpecJson.value || '{}');
+            } catch (err) {
+                throw new Error(`Advanced spec JSON is invalid: ${err.message}`);
+            }
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                throw new Error('Advanced spec JSON must be an object');
+            }
+            return parsed;
+        }
+
+        function buildTopLevelPayload() {
+            const tenant = (tenantSelect.value || '').trim();
+            const namespace = (namespaceSelect.value || '').trim();
+            const name = (functionNameInput.value || '').trim();
+            const hfModel = (hfModelInput.value || '').trim();
+
+            if (!tenant) {
+                throw new Error('Tenant is required');
+            }
+            if (!namespace) {
+                throw new Error('Namespace is required');
+            }
+            if (!name) {
+                throw new Error('Function Name is required');
+            }
+            if (!hfModel) {
+                throw new Error('HuggingFace Model is required');
+            }
+
+            return {
+                mode: PAGE_MODE,
+                tenant: tenant,
+                namespace: namespace,
+                name: name,
+                hf_model: hfModel
+            };
+        }
+
+        async function submitModel() {
+            clearMessages();
+            showAdvancedWarning(activeTab === 'basic' ? warningBanner.style.display === 'block' : false);
+
+            let payload;
+            try {
+                payload = buildTopLevelPayload();
+                payload.spec = activeTab === 'basic' ? buildBasicSpecFromUi() : parseAdvancedSpec();
+            } catch (err) {
+                showError(err.message || String(err));
+                return;
+            }
+
+            saveBtn.disabled = true;
+            showSuccess('Saving model...');
+
+            try {
+                console.log('[func_create] submit payload', {
+                    activeTab,
+                    mode: payload.mode,
+                    tenant: payload.tenant,
+                    namespace: payload.namespace,
+                    name: payload.name,
+                    hf_model: payload.hf_model,
+                    command_model: Array.isArray(payload.spec?.commands) ? payload.spec.commands.find((x) => typeof x === 'string' && (x === '--model' || x.startsWith('--model='))) : undefined
+                });
+
+                const resp = await fetch('/demo/func_save', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                const text = await resp.text();
+                if (!resp.ok) {
+                    let errorMessage = `Save failed (HTTP ${resp.status})`;
+                    try {
+                        const parsed = JSON.parse(text);
+                        if (parsed && parsed.error) {
+                            errorMessage = parsed.error;
+                        } else if (text) {
+                            errorMessage = `${errorMessage}: ${text}`;
+                        }
+                    } catch (_e) {
+                        if (text) {
+                            errorMessage = `${errorMessage}: ${text}`;
+                        }
+                    }
+                    throw new Error(errorMessage);
+                }
+
+                showSuccess('Model saved successfully. Redirecting to models list...');
+                setTimeout(() => {
+                    window.location.assign('{{ hosturl }}listfunc');
+                }, 500);
+            } catch (err) {
+                showSuccess('');
+                showError(err.message || String(err));
+            } finally {
+                saveBtn.disabled = false;
+            }
+        }
+
+        async function loadTenantsAndNamespaces() {
+            const [tenantsResp, namespacesResp] = await Promise.all([
+                fetch('/demo/generate_tenants'),
+                fetch('/demo/generate_namespaces')
+            ]);
+
+            if (!tenantsResp.ok) {
+                throw new Error(`Failed to load tenants (HTTP ${tenantsResp.status})`);
+            }
+            if (!namespacesResp.ok) {
+                throw new Error(`Failed to load namespaces (HTTP ${namespacesResp.status})`);
+            }
+
+            tenants = await tenantsResp.json();
+            namespaces = await namespacesResp.json();
+
+            if (!Array.isArray(tenants)) {
+                tenants = [];
+            }
+            if (!Array.isArray(namespaces)) {
+                namespaces = [];
+            }
+
+            rebuildTenantOptions();
+            rebuildNamespaceOptions({ preferredValue: (INITIAL_MODEL && INITIAL_MODEL.namespace) || '' });
+        }
+
+        async function loadNodeMaxVram() {
+            try {
+                const resp = await fetch('/demo/nodes_max_vram');
+                if (!resp.ok) {
+                    vramHint.textContent = `Could not load node max vRam (HTTP ${resp.status}).`;
+                    return;
+                }
+                const data = await resp.json();
+                nodeMaxVram = Number.parseInt(data.max_vram, 10);
+                if (Number.isInteger(nodeMaxVram) && nodeMaxVram > 0) {
+                    vramHint.textContent = `Node max: ${nodeMaxVram} MB (you can decrease it).`;
+                    if (!gpuVramInput.value) {
+                        gpuVramInput.value = String(nodeMaxVram);
+                    }
+                    gpuVramInput.max = String(nodeMaxVram);
+                } else {
+                    vramHint.textContent = 'Node max vRam unavailable.';
+                }
+            } catch (err) {
+                vramHint.textContent = `Could not load node max vRam: ${err}`;
+            }
+        }
+
+        function initializeImageOptions() {
+            imageSelect.innerHTML = '';
+            IMAGE_OPTIONS.forEach((image) => {
+                const option = document.createElement('option');
+                option.value = image;
+                option.textContent = image;
+                imageSelect.appendChild(option);
+            });
+            if (IMAGE_OPTIONS.length > 0) {
+                imageSelect.value = IMAGE_OPTIONS[0];
+            }
+        }
+
+        function applyInitialModelIfPresent() {
+            if (!INITIAL_MODEL || typeof INITIAL_MODEL !== 'object') {
+                commandsJson.value = JSON.stringify(["--trust-remote-code", "--max-model-len", "2000"], null, 2);
+                setPolicyEnabled(false);
+                advancedSpecJson.value = '';
+                return;
+            }
+
+            setTopLevelFields(INITIAL_MODEL);
+            populateBasicUiFromSpec(INITIAL_MODEL.spec || {});
+            advancedSpecJson.value = JSON.stringify(INITIAL_MODEL.spec || {}, null, 2);
+        }
+
+        async function init() {
+            initializeImageOptions();
+            policyEnabledCheckbox.addEventListener('change', () => setPolicyEnabled(policyEnabledCheckbox.checked));
+            tenantSelect.addEventListener('change', () => rebuildNamespaceOptions({ preserveCurrent: false }));
+            tabBasic.addEventListener('click', () => setActiveTab('basic'));
+            tabAdvanced.addEventListener('click', () => setActiveTab('advanced'));
+            saveBtn.addEventListener('click', submitModel);
+
+            setPolicyEnabled(false);
+
+            try {
+                await loadTenantsAndNamespaces();
+            } catch (err) {
+                showError(err.message || String(err));
+            }
+
+            applyInitialModelIfPresent();
+
+            if (!INITIAL_MODEL) {
+                try {
+                    syncAdvancedFromBasic();
+                } catch (_e) {
+                    // Leave empty and surface error only on tab switch/save.
+                }
+            }
+
+            await loadNodeMaxVram();
+
+            if (!INITIAL_MODEL && nodeMaxVram > 0 && !gpuVramInput.value) {
+                gpuVramInput.value = String(nodeMaxVram);
+            }
+
+            if (!INITIAL_MODEL && (advancedSpecJson.value || '').trim() === '') {
+                try {
+                    syncAdvancedFromBasic();
+                } catch (_e) {
+                    // Keep empty and validate on submit.
+                }
+            }
+        }
+
+        init();
+    })();
+</script>
+{% endblock %}

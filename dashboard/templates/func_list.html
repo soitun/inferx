@@ -1,80 +1,193 @@
 {% extends 'base.html' %}
 
 {% block content %}
-<h2 style="text-align: center;">Models</h2>
-
 <style>
-    table,
-    th,
-    td {
-        border: 1px solid black;
-    }
-
     .content table.ix-table {
         font-size: 14px;
     }
+
+    .func-list-toolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 12px;
+    }
+
+    .func-list-actions {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+    }
+
+    .ix-btn {
+        display: inline-block;
+        border: 1px solid #2563eb;
+        background: #2563eb;
+        color: #fff;
+        border-radius: 6px;
+        padding: 8px 12px;
+        text-decoration: none;
+        cursor: pointer;
+        font-size: 14px;
+    }
+
+    .ix-btn.secondary {
+        background: #fff;
+        color: #1e3a8a;
+        border-color: #93c5fd;
+    }
+
+    .ix-btn.danger {
+        background: #b91c1c;
+        border-color: #b91c1c;
+    }
+
+    .ix-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+    }
+
+    .row-actions {
+        display: inline-flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        justify-content: center;
+    }
+
+    .row-actions a {
+        padding: 4px 8px;
+        font-size: 12px;
+        border-radius: 4px;
+        border: 1px solid #cbd5e1;
+        text-decoration: none;
+        color: #1f2937;
+        background: #fff;
+    }
+
+    .row-actions a:hover {
+        background: #eff6ff;
+        border-color: #93c5fd;
+    }
+
+    #delete-status {
+        margin-top: 8px;
+        font-size: 13px;
+        min-height: 18px;
+    }
+
+    #delete-status.error {
+        color: #b91c1c;
+    }
+
+    #delete-status.success {
+        color: #166534;
+    }
 </style>
 
-<table class="ix-table" style="width:100%; text-align: center; border-collapse: collapse;">
-    <tr>
-        <th rowspan="2">Tenant</th>
-        <th rowspan="2">Namespace</th>
-        <th rowspan="2">Model Name</th>
-        <th rowspan="2">Type</th>
-        <th rowspan="2">GPU Count</th>
-        <th rowspan="2">vRam (GB)</th>
-        <th rowspan="2">CPU</th>
-        <th rowspan="2">Memory (GB)</th>
-        <th colspan="3">Standby</th>
-        <th rowspan=" 2">State</th>
-        <th rowspan="2">Snapshot Nodes</th>
-        <th rowspan="2">Revision</th>
-    </tr>
-    <tr>
-        <th>GPU</th>
-        <th>Pageable</th>
-        <th>Pinned</th>
+<div class="func-list-toolbar">
+    <h2 style="margin: 0;">Models</h2>
+    <div class="func-list-actions">
+        <a class="ix-btn" href="{{ hosturl }}func_create">+ Create Model</a>
+    </div>
+</div>
 
-    </tr>
-    {% for func in funcs %}
-    <tr>
-        <td><a href="{{ hosturl }}listfunc?tenant={{ func['func']['tenant'] }}">
-                <span data-tenant-name="{{ func['func']['tenant'] }}">{{ func['func']['tenant'] }}</span>
-            </a></td>
-        <td><a
-                href="{{ hosturl }}listfunc?tenant={{ func['func']['tenant'] }}&&namespace={{ func['func']['namespace'] }}">
-                {{ func['func']['namespace'] }}
-            </a></td>
-        <td><a
-                href="{{ hosturl }}func?tenant={{ func['func']['tenant'] }}&&namespace={{ func['func']['namespace'] }}&&name={{ func['func']['name'] }}">{{
-                func['func']['name'] }}
-            </a></td>
-        <td>
-            {% if func['func']['object']["spec"]["sample_query"]["apiType"] == "openai" %}
-            text2text
-            {% else %}
-            {{ func['func']['object']["spec"]["sample_query"]["apiType"] }}
-            {% endif %}
-        </td>
-        <td>{{ func['func']['object']["spec"]["resources"]["GPU"]["Count"] }}</td>
-        <td>{{ func['func']['object']["spec"]["resources"]["GPU"]["vRam"]/1000 }}</td>
-        <td>{{ func['func']['object']["spec"]["resources"]["CPU"]/1000 }}</td>
-        <td>{{ func['func']['object']["spec"]["resources"]["Mem"]/1000 }}</td>
-        <td>{{ func['func']['object']["spec"]["standby"]["gpu"] }}</td>
-        <td>{{ func['func']['object']["spec"]["standby"]["pageable"] }}</td>
-        <td>{{ func['func']['object']["spec"]["standby"]["pinned"] }}</td>
-        <td>{{ func['func']['object']["status"]["state"] }}</td>
-        <td>{{ func['snapshotNodes'] }}</td>
-        <td>{{ func['func']['object']["spec"]["version"] }}</td>
-
-    </tr>
-    {% endfor %}
-
+<table class="ix-table" style="width:100%; text-align: center;">
+    <thead>
+        <tr>
+            <th rowspan="2" style="width: 42px;">
+                <input id="select-all-models" type="checkbox" aria-label="Select all models">
+            </th>
+            <th rowspan="2">Tenant</th>
+            <th rowspan="2">Namespace</th>
+            <th rowspan="2">Model Name</th>
+            <th rowspan="2">Type</th>
+            <th rowspan="2">GPU Count</th>
+            <th rowspan="2">vRam (GB)</th>
+            <th rowspan="2">CPU</th>
+            <th rowspan="2">Memory (GB)</th>
+            <th colspan="3">Standby</th>
+            <th rowspan="2">State</th>
+            <th rowspan="2">Snapshot Nodes</th>
+            <th rowspan="2">Revision</th>
+            <th rowspan="2">Actions</th>
+        </tr>
+        <tr>
+            <th>GPU</th>
+            <th>Pageable</th>
+            <th>Pinned</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for func in funcs %}
+        {% set tenant = func['func']['tenant'] %}
+        {% set namespace = func['func']['namespace'] %}
+        {% set name = func['func']['name'] %}
+        {% set spec = func['func']['object']['spec'] %}
+        <tr>
+            <td>
+                <input
+                    class="model-select"
+                    type="checkbox"
+                    data-id="{{ tenant }}/{{ namespace }}/{{ name }}"
+                    data-tenant="{{ tenant }}"
+                    data-namespace="{{ namespace }}"
+                    data-name="{{ name }}"
+                    aria-label="Select model {{ name }}">
+            </td>
+            <td>
+                <a href="{{ hosturl }}listfunc?tenant={{ tenant }}">
+                    <span data-tenant-name="{{ tenant }}">{{ tenant }}</span>
+                </a>
+            </td>
+            <td>
+                <a href="{{ hosturl }}listfunc?tenant={{ tenant }}&&namespace={{ namespace }}">
+                    {{ namespace }}
+                </a>
+            </td>
+            <td>
+                <a href="{{ hosturl }}func?tenant={{ tenant }}&&namespace={{ namespace }}&&name={{ name }}">
+                    {{ name }}
+                </a>
+            </td>
+            <td>
+                {% if spec["sample_query"]["apiType"] == "openai" %}
+                text2text
+                {% else %}
+                {{ spec["sample_query"]["apiType"] }}
+                {% endif %}
+            </td>
+            <td>{{ spec["resources"]["GPU"]["Count"] }}</td>
+            <td>{{ spec["resources"]["GPU"]["vRam"]/1000 }}</td>
+            <td>{{ spec["resources"]["CPU"]/1000 }}</td>
+            <td>{{ spec["resources"]["Mem"]/1000 }}</td>
+            <td>{{ spec["standby"]["gpu"] }}</td>
+            <td>{{ spec["standby"]["pageable"] }}</td>
+            <td>{{ spec["standby"]["pinned"] }}</td>
+            <td>{{ func['func']['object']["status"]["state"] }}</td>
+            <td>{{ func['snapshotNodes'] }}</td>
+            <td>{{ spec["version"] }}</td>
+            <td>
+                <span class="row-actions">
+                    <a href="{{ hosturl }}func?tenant={{ tenant }}&&namespace={{ namespace }}&&name={{ name }}">Open</a>
+                    <a href="{{ hosturl }}func_create?edit={{ tenant }}/{{ namespace }}/{{ name }}">Edit</a>
+                </span>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
 </table>
+
+<div style="margin-top: 12px; display: flex; align-items: center; gap: 8px;">
+    <button id="delete-selected-btn" type="button" class="ix-btn danger">
+        Delete Selected
+    </button>
+</div>
+<div id="delete-status" aria-live="polite"></div>
 
 <h2 style="text-align: center;">Summary</h2>
 
-<table class="ix-table" style="width: 500px; margin: auto; text-align: center; border-collapse: collapse;">
+<table class="ix-table" style="width: 500px; margin: auto; text-align: center;">
     <tr>
         <td width="200"><h3>Model Count</h3></td>
         <td width="200"><h3>{{ summary["model_count"] }}</h3></td>
@@ -97,5 +210,103 @@
     </tr>
 </table>
 
-{{ hosturl }}
+<script>
+    (function () {
+        const selectAll = document.getElementById('select-all-models');
+        const deleteBtn = document.getElementById('delete-selected-btn');
+        const statusEl = document.getElementById('delete-status');
+
+        function selectedRows() {
+            return Array.from(document.querySelectorAll('.model-select:checked'));
+        }
+
+        function syncDeleteButtonState() {
+            if (!deleteBtn) {
+                return;
+            }
+            deleteBtn.disabled = selectedRows().length === 0;
+        }
+
+        function setStatus(message, kind) {
+            statusEl.textContent = message || '';
+            statusEl.className = kind ? kind : '';
+        }
+
+        function syncSelectAll() {
+            const boxes = Array.from(document.querySelectorAll('.model-select'));
+            if (boxes.length === 0) {
+                selectAll.checked = false;
+                selectAll.indeterminate = false;
+                syncDeleteButtonState();
+                return;
+            }
+            const checked = boxes.filter((box) => box.checked).length;
+            selectAll.checked = checked === boxes.length;
+            selectAll.indeterminate = checked > 0 && checked < boxes.length;
+            syncDeleteButtonState();
+        }
+
+        selectAll?.addEventListener('change', () => {
+            const boxes = document.querySelectorAll('.model-select');
+            boxes.forEach((box) => {
+                box.checked = selectAll.checked;
+            });
+            syncSelectAll();
+        });
+
+        document.querySelectorAll('.model-select').forEach((box) => {
+            box.addEventListener('change', syncSelectAll);
+        });
+
+        deleteBtn?.addEventListener('click', async () => {
+            const rows = selectedRows();
+            if (rows.length === 0) {
+                setStatus('Select at least one model to delete.', 'error');
+                return;
+            }
+
+            const names = rows.map((row) => row.dataset.id);
+            if (!window.confirm(`Delete ${rows.length} model(s)?\n\n${names.join('\n')}`)) {
+                return;
+            }
+
+            deleteBtn.disabled = true;
+            setStatus('Deleting selected models...', '');
+
+            const failures = [];
+            for (const row of rows) {
+                const tenant = encodeURIComponent(row.dataset.tenant || '');
+                const namespace = encodeURIComponent(row.dataset.namespace || '');
+                const name = encodeURIComponent(row.dataset.name || '');
+                try {
+                    const resp = await fetch(`/demo/proxy/object/function/${tenant}/${namespace}/${name}/`, {
+                        method: 'DELETE',
+                        headers: {
+                            'Accept': 'application/json'
+                        }
+                    });
+                    if (!resp.ok) {
+                        const text = await resp.text();
+                        failures.push(`${row.dataset.id}: HTTP ${resp.status} ${text}`);
+                    }
+                } catch (err) {
+                    failures.push(`${row.dataset.id}: ${err}`);
+                }
+            }
+
+            deleteBtn.disabled = false;
+
+            if (failures.length > 0) {
+                setStatus(`Delete completed with ${failures.length} failure(s). ${failures[0]}`, 'error');
+                return;
+            }
+
+            setStatus(`Deleted ${rows.length} model(s). Reloading...`, 'success');
+            window.location.reload();
+        });
+
+        syncSelectAll();
+        syncDeleteButtonState();
+    })();
+</script>
 {% endblock %}

@@ -125,30 +125,30 @@ impl Default for SampleCall {
         };
     }
 }
+// 
+// #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+// pub struct ScheduleConfig {
+//     #[serde(rename = "min_replica")]
+//     pub minReplica: u64,
+//     #[serde(rename = "max_replica")]
+//     pub maxReplica: u64,
+//     #[serde(rename = "standby_per_node")]
+//     pub standbyPerNode: u64,
+// }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct ScheduleConfig {
-    #[serde(rename = "min_replica")]
-    pub minReplica: u64,
-    #[serde(rename = "max_replica")]
-    pub maxReplica: u64,
-    #[serde(rename = "standby_per_node")]
-    pub standbyPerNode: u64,
-}
+// impl Default for ScheduleConfig {
+//     fn default() -> Self {
+//         return Self {
+//             minReplica: 0,
+//             maxReplica: 1,
+//             standbyPerNode: 1,
+//         };
+//     }
+// }
 
-impl Default for ScheduleConfig {
-    fn default() -> Self {
-        return Self {
-            minReplica: 0,
-            maxReplica: 10,
-            standbyPerNode: 1,
-        };
-    }
-}
-
-pub fn DefaultScheduleConfig() -> ScheduleConfig {
-    return ScheduleConfig::default();
-}
+// pub fn DefaultScheduleConfig() -> ScheduleConfig {
+//     return ScheduleConfig::default();
+// }
 
 pub fn DefaultLoadingTimeout() -> u64 {
     return 90;
