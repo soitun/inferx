@@ -289,6 +289,7 @@ pub struct SchedulerConfig {
     pub nodeIp: String,
     pub schedulerPort: u16,
     pub auditdbAddr: String,
+    pub enableSnapshotBilling: bool,
 }
 
 impl SchedulerConfig {
@@ -325,12 +326,28 @@ impl SchedulerConfig {
             Err(_) => config.auditdbAddr.clone(),
         };
 
+        let enableSnapshotBilling = match std::env::var("ENABLE_SNAPSHOT_BILLING") {
+            Ok(s) => match s.parse::<bool>() {
+                Ok(v) => v,
+                Err(_) => {
+                    warn!(
+                        "invalid ENABLE_SNAPSHOT_BILLING value '{}', defaulting to {}",
+                        &s,
+                        config.enableSnapshotBilling
+                    );
+                    config.enableSnapshotBilling
+                }
+            },
+            Err(_) => config.enableSnapshotBilling,
+        };
+
         let ret = Self {
             etcdAddrs: etcdAddrs,
             stateSvcAddrs: stateSvcAddrs,
             nodeIp: nodeIp,
             schedulerPort: schedulerPort,
             auditdbAddr: auditdbAddr,
+            enableSnapshotBilling: enableSnapshotBilling,
         };
 
         info!("SchedulerConfig is {:#?}", &ret);
@@ -827,6 +844,9 @@ pub struct NodeConfig {
 
     #[serde(default)]
     pub enableBlobStore: bool,
+
+    #[serde(default)]
+    pub enableSnapshotBilling: bool,
 
     #[serde(default)]
     pub sharemem: ShareMem,
