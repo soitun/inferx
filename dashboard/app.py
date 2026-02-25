@@ -342,6 +342,9 @@ def is_inferx_admin_user():
     if session.get('username', '') == 'inferx_admin':
         return True
 
+    if session.get('access_token', '') == '':
+        return False
+
     try:
         roles = listroles()
     except Exception:
@@ -376,6 +379,20 @@ def has_any_tenant_or_namespace_admin_role():
         obj_type = str(role.get('objType', '')).lower()
         role_name = str(role.get('role', '')).lower()
         if role_name == 'admin' and obj_type in ('tenant', 'namespace'):
+            return True
+
+    return False
+
+
+def has_inferx_admin_role(roles):
+    if not isinstance(roles, list):
+        return False
+
+    for role in roles:
+        obj_type = str(role.get('objType', '')).lower().strip()
+        role_name = str(role.get('role', '')).lower().strip()
+        tenant = str(role.get('tenant', '')).lower().strip()
+        if obj_type == 'tenant' and role_name == 'admin' and tenant == 'system':
             return True
 
     return False
@@ -698,6 +715,27 @@ def get_node_max_vram_mb():
     return max_vram
 
 
+def get_node_capacity_limits():
+    nodes = listnodes()
+    max_vram = 0
+    max_gpu_count = 0
+    iter_nodes = nodes if isinstance(nodes, list) else []
+    for node in iter_nodes:
+        try:
+            gpu_obj = (((node.get("object") or {}).get("resources") or {}).get("GPUs")) or {}
+            gpu_map = gpu_obj.get("map", {})
+            if isinstance(gpu_map, dict):
+                gpu_count = len(gpu_map)
+                if gpu_count > max_gpu_count:
+                    max_gpu_count = gpu_count
+            vram = int(gpu_obj["vRam"])
+            if vram > max_vram:
+                max_vram = vram
+        except Exception:
+            continue
+    return max_vram, max_gpu_count
+
+
 def strip_reserved_command_args(commands):
     filtered = []
     i = 0
@@ -782,7 +820,7 @@ def strip_reserved_envs(envs):
     return filtered
 
 
-def validate_partial_spec(spec, max_node_vram, editor_mode="basic"):
+def validate_partial_spec(spec, max_node_vram, max_node_gpu_count=0, editor_mode="basic"):
     if not isinstance(spec, dict):
         raise ValueError("`spec` must be an object")
 
@@ -827,6 +865,8 @@ def validate_partial_spec(spec, max_node_vram, editor_mode="basic"):
         raise ValueError("`spec.resources.GPU.Count` must be an integer")
     if gpu_count not in GPU_RESOURCE_LOOKUP:
         raise ValueError("`spec.resources.GPU.Count` must be one of: 1, 2, 4")
+    if max_node_gpu_count > 0 and gpu_count > max_node_gpu_count:
+        raise ValueError(f"`spec.resources.GPU.Count` must be <= node max GPU count ({max_node_gpu_count})")
     if not isinstance(vram, int) or isinstance(vram, bool):
         raise ValueError("`spec.resources.GPU.vRam` must be an integer (MB)")
     if vram <= 0:
@@ -1459,7 +1499,13 @@ def stream_response(response):
 def proxy(path):
     access_token = session.get('access_token', '')
     headers = {key: value for key, value in request.headers if key.lower() != 'host'}
-    if access_token != "":
+    normalized_path = path.lstrip('/')
+    # Keep public funccall requests anonymous. Some gateway configs reject
+    # dashboard session tokens on /funccall while allowing unauthenticated
+    # access for public tenant models.
+    is_public_funccall = normalized_path.startswith("funccall/public/")
+    has_client_auth = any(key.lower() == 'authorization' for key in headers)
+    if access_token != "" and not has_client_auth and not is_public_funccall:
         headers["Authorization"] = f'Bearer {access_token}'
     
     # Construct the full URL for the backend request
@@ -1553,8 +1599,8 @@ def funclog():
 @require_login
 def nodes_max_vram():
     try:
-        max_vram = get_node_max_vram_mb()
-        return jsonify({"max_vram": max_vram})
+        max_vram, max_gpu_count = get_node_capacity_limits()
+        return jsonify({"max_vram": max_vram, "max_gpu_count": max_gpu_count})
     except Exception as e:
         return json_error(f"failed to read nodes: {e}", 502)
 
@@ -1646,12 +1692,17 @@ def func_save():
     )
 
     try:
-        max_node_vram = get_node_max_vram_mb()
+        max_node_vram, max_node_gpu_count = get_node_capacity_limits()
     except Exception as e:
-        return json_error(f"failed to read node max vRam: {e}", 502)
+        return json_error(f"failed to read node capacity limits: {e}", 502)
 
     try:
-        partial_spec = validate_partial_spec(spec, max_node_vram, editor_mode=editor_mode)
+        partial_spec = validate_partial_spec(
+            spec,
+            max_node_vram,
+            max_node_gpu_count=max_node_gpu_count,
+            editor_mode=editor_mode,
+        )
         full_spec = build_full_spec(hf_model, partial_spec, editor_mode=editor_mode)
         app.logger.info(
             "func_save built spec model fields editor_mode=%r command_model=%r sample_model=%r",
@@ -1772,7 +1823,14 @@ def ListFunc():
         and str(role.get('objType', '')).lower() in ('tenant', 'namespace')
         for role in roles
     )
-    return render_template("func_list.html", funcs=funcs, summary=summary, can_manage_models=can_manage_models)
+    is_inferx_admin = session.get('username', '') == 'inferx_admin' or has_inferx_admin_role(roles)
+    return render_template(
+        "func_list.html",
+        funcs=funcs,
+        summary=summary,
+        can_manage_models=can_manage_models,
+        is_inferx_admin=is_inferx_admin,
+    )
 
 
 @prefix_bp.route("/listsnapshot")
@@ -1850,6 +1908,7 @@ def GetFunc():
 
 @prefix_bp.route("/listnode")
 @not_require_login
+@require_admin
 def ListNode():
     nodes = listnodes()
 
@@ -1864,6 +1923,7 @@ def ListNode():
 
 @prefix_bp.route("/node")
 @not_require_login
+@require_admin
 def GetNode():
     name = request.args.get("name")
     node = getnode(name)

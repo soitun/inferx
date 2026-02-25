@@ -208,6 +208,7 @@
 <div id="delete-status" aria-live="polite"></div>
 {% endif %}
 
+{% if is_inferx_admin %}
 <h2 style="text-align: center;">Summary</h2>
 
 <table class="ix-table" style="width: 500px; margin: auto; text-align: center;">
@@ -232,6 +233,7 @@
         <td><h3>{{ summary["memory"] / 1000 }} GB</h3></td>
     </tr>
 </table>
+{% endif %}
 
 <script>
     (function () {

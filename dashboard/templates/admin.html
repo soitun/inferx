@@ -20,26 +20,43 @@
     }
 
     .tab button {
-        background: #ffffff;
+        background: transparent;
         color: #475569;
         border: none;
-        border-radius: 4px;
+        border-radius: 0;
         outline: none;
-        padding: 6px 12px;
+        padding: 8px 6px 10px 6px;
         cursor: pointer;
         font-size: clamp(17px, 1.35vw, 20px);
         font-weight: 600;
         line-height: 1.15;
+        position: relative;
+        transition: color 120ms ease, background-color 120ms ease;
+    }
+
+    .tab button::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: -8px;
+        height: 2px;
+        background: transparent;
+        border-radius: 999px;
     }
 
     .tab button:hover {
-        background: #fff1f2;
-        color: #be123c;
+        background: transparent;
+        color: #1f2937;
     }
 
     .tab button.active {
+        background: transparent;
+        color: #be123c;
+    }
+
+    .tab button.active::after {
         background: #d64161;
-        color: #ffffff;
     }
 
     .tab button:focus-visible {
@@ -671,6 +688,20 @@
         color: #475569;
         font-weight: 600;
     }
+
+    #Billing .billing-tenant-readonly {
+        display: none;
+        min-width: 220px;
+        padding: 6px 10px;
+        border: 1px solid #b7c6dc;
+        border-radius: 4px;
+        background: #f8fafc;
+        color: #1f2937;
+        font-size: 14px;
+        line-height: 1.3;
+        vertical-align: middle;
+        box-sizing: border-box;
+    }
 </style>
 
 <div class="tab">
@@ -768,7 +799,7 @@
     <div id="apikey-modal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000; justify-content:center; align-items:center;">
         <div style="background:white; padding:30px; border-radius:4px; max-width:600px; width:90%; word-break:break-all;">
             <h3 style="margin-top:0;">API Key Created</h3>
-            <p>Copy this key now. You will not be able to see it again.</p>
+            <p style="margin: 0 0 10px 0; font-size: 14px; color: #475569;">The API key has been created successfully. Copy it for use in API requests (for example, in the Authorization header as a Bearer token).</p>
             <div id="apikey-modal-value" style="background:#f0f0f0; padding:10px; font-family:monospace; font-size:14px; border-radius:2px; margin:10px 0;"></div>
             <div style="margin-top:5px; font-size:13px; color:#555;">
                 <span>Access Level: <strong id="apikey-modal-access-level"></strong></span>
@@ -902,6 +933,7 @@
         <select id="billing_tenant_select" onchange="loadBillingData()" style="padding: 5px; font-size: 14px;">
             <option value="" disabled selected>Select a tenant</option>
         </select>
+        <span id="billing-tenant-readonly" class="billing-tenant-readonly"></span>
     </div>
 
     <!-- No tenant selected message -->
@@ -1505,6 +1537,7 @@
         if (billingTenantsPopulated) return;
 
         const dropdown = document.getElementById('billing_tenant_select');
+        const readonlyEl = document.getElementById('billing-tenant-readonly');
 
         try {
             const [roles, tenants] = await Promise.all([
@@ -1513,14 +1546,33 @@
             ]);
 
             upsertTenantDisplayMapFromList(tenants);
+            const allowedTenants = [];
             tenants.forEach(t => {
                 if (IsAdmin(roles, t.name, "") || IsUser(roles, t.name, "")) {
+                    const label = tenantDisplayNameFromObj(t);
                     const option = document.createElement('option');
                     option.value = t.name;
-                    option.textContent = tenantDisplayNameFromObj(t);
+                    option.textContent = label;
                     dropdown.appendChild(option);
+                    allowedTenants.push({ value: t.name, label });
                 }
             });
+
+            if (allowedTenants.length === 1) {
+                dropdown.value = allowedTenants[0].value;
+                dropdown.style.display = 'none';
+                if (readonlyEl) {
+                    readonlyEl.textContent = allowedTenants[0].label;
+                    readonlyEl.style.display = 'inline-block';
+                }
+                await loadBillingData();
+            } else {
+                dropdown.style.display = '';
+                if (readonlyEl) {
+                    readonlyEl.textContent = '';
+                    readonlyEl.style.display = 'none';
+                }
+            }
 
             billingTenantsPopulated = true;
         } catch (error) {
@@ -4856,7 +4908,13 @@
     async function create_apikey() {
         const nameInput = document.getElementById('apikey_name');
         const keyname = nameInput.value.trim();
-        if (!keyname) return;
+        if (!keyname) {
+            alert("Please enter an API key name.");
+            if (nameInput && typeof nameInput.focus === 'function') {
+                nameInput.focus();
+            }
+            return;
+        }
 
         const accessLevel = document.getElementById('apikey_access_level').value;
         const restrictTenant = document.getElementById('apikey_restrict_tenant').value.trim();

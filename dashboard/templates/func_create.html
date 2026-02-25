@@ -271,6 +271,60 @@
         margin-top: 10px;
     }
 
+    .model-save-modal {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(15, 23, 42, 0.45);
+        z-index: 1200;
+        padding: 16px;
+        box-sizing: border-box;
+    }
+
+    .model-save-modal[hidden] {
+        display: none !important;
+    }
+
+    .model-save-modal-card {
+        width: min(680px, 100%);
+        background: #ffffff;
+        border: 1px solid #cbd5e1;
+        border-radius: 4px;
+        box-shadow: 0 12px 32px rgba(15, 23, 42, 0.22);
+        padding: 18px;
+    }
+
+    .model-save-modal-card h3 {
+        margin: 0 0 10px 0;
+        color: #1f2937;
+        font-size: 18px;
+    }
+
+    .model-save-modal-body {
+        color: #334155;
+        font-size: 14px;
+        line-height: 1.45;
+        margin-bottom: 14px;
+    }
+
+    .model-save-modal-note {
+        margin-top: 8px;
+        padding: 10px 12px;
+        border-radius: 4px;
+        background: #eff6ff;
+        border: 1px solid #bfdbfe;
+        color: #1e3a8a;
+    }
+
+    .model-save-modal-actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 8px;
+    }
+
     @media (max-width: 800px) {
         .form-grid {
             grid-template-columns: 1fr;
@@ -404,7 +458,7 @@
                     <span class="field-help" tabindex="0" aria-label="vLLM parameters help" data-tooltip="JSON array of vLLM command arguments for the model runtime." title="JSON array of vLLM command arguments for the model runtime.">i</span>
                 </span>
             </h3>
-            <textarea id="commands-json" rows="7" placeholder='["--trust-remote-code", "--max-model-len", "2000"]'></textarea>
+            <textarea id="commands-json" rows="7" placeholder='["--trust-remote-code", "--gpu-memory-utilization", "0.95", "--max-model-len", "200"]'></textarea>
             <div class="hint">JSON array only. Do not include `--model` or `--tensor-parallel-size`; they are injected server-side.</div>
         </div>
 
@@ -489,12 +543,31 @@
     </div>
 </div>
 
+<div id="model-save-modal" class="model-save-modal" hidden>
+    <div class="model-save-modal-card" role="dialog" aria-modal="true" aria-labelledby="model-save-modal-title">
+        <h3 id="model-save-modal-title">Model Saved Successfully</h3>
+        <div id="model-save-modal-body" class="model-save-modal-body">
+            <div id="model-save-modal-summary"></div>
+            <div class="model-save-modal-note">
+                Snapshot creation will be scheduled before the model can serve inference requests. You can go to the Pods page to check status.
+            </div>
+        </div>
+        <div class="model-save-modal-actions">
+            <a id="model-save-modal-pods-link" class="btn" href="{{ hosturl }}listpod">Go to Pods</a>
+            <a id="model-save-modal-models-link" class="btn secondary" href="{{ hosturl }}listfunc">Back to Models</a>
+        </div>
+    </div>
+</div>
+
 <script>
     (function () {
         const PAGE_MODE = {{ page_mode | tojson }};
         const INITIAL_MODEL = {{ initial_model_data | tojson }};
         const IMAGE_OPTIONS = {{ image_options | tojson }};
         const DEFAULT_ADVANCED_SAMPLE_QUERY_TEMPLATE = {{ default_advanced_sample_query_template | tojson }};
+        // Keep in sync with backend/runtime func policy defaults.
+        const DEFAULT_POLICY_QUEUE_TIMEOUT_SEC = 30.0;
+        const DEFAULT_POLICY_SCALEIN_TIMEOUT_SEC = 1.0;
 
         const tenantSelect = document.getElementById('tenant-select');
         const namespaceSelect = document.getElementById('namespace-select');
@@ -524,12 +597,24 @@
         const errorBanner = document.getElementById('error-banner');
         const successBanner = document.getElementById('success-banner');
         const saveBtn = document.getElementById('save-model-btn');
+        const modelSaveModal = document.getElementById('model-save-modal');
+        const modelSaveModalTitle = document.getElementById('model-save-modal-title');
+        const modelSaveModalSummary = document.getElementById('model-save-modal-summary');
+        const modelSaveModalClose = document.getElementById('model-save-modal-close');
+        const modelSaveModalPodsLink = document.getElementById('model-save-modal-pods-link');
+        const modelSaveModalModelsLink = document.getElementById('model-save-modal-models-link');
 
         let activeTab = 'basic';
         let tenants = [];
         let namespaces = [];
         let roles = [];
         let nodeMaxVram = 0;
+        let nodeMaxGpuCount = 0;
+        let _advancedInitializedFromModel = false;
+        let _preservedEnvs = [];
+        let _preservedSampleQuery = null;
+        let _advancedSpecUserEdited = false;
+        let _suppressAdvancedSpecUserEditTracking = false;
 
         function showError(message) {
             errorBanner.textContent = message || '';
@@ -543,6 +628,37 @@
 
         function showAdvancedWarning(show) {
             warningBanner.style.display = show ? 'block' : 'none';
+        }
+
+        function closeModelSaveModal() {
+            if (!modelSaveModal) {
+                return;
+            }
+            modelSaveModal.hidden = true;
+        }
+
+        function showModelSaveModal(payload) {
+            if (!modelSaveModal) {
+                return;
+            }
+
+            const modeLabel = payload && payload.mode === 'update' ? 'Updated' : 'Created';
+            const modelDisplayName = (payload && payload.name) ? String(payload.name) : 'Model';
+            if (modelSaveModalTitle) {
+                modelSaveModalTitle.textContent = `Model ${modeLabel} Successfully`;
+            }
+            if (modelSaveModalSummary) {
+                modelSaveModalSummary.textContent = `${modelDisplayName} has been ${modeLabel.toLowerCase()} successfully.`;
+            }
+            if (modelSaveModalPodsLink) {
+                modelSaveModalPodsLink.href = '{{ hosturl }}listpod';
+            }
+            if (modelSaveModalModelsLink) {
+                modelSaveModalModelsLink.href = '{{ hosturl }}listfunc';
+            }
+
+            modelSaveModal.hidden = false;
+            modelSaveModalPodsLink?.focus();
         }
 
         function clearMessages() {
@@ -575,9 +691,51 @@
             return JSON.parse(JSON.stringify(value));
         }
 
+        function numbersEqual(a, b, epsilon = 1e-9) {
+            return Math.abs(Number(a) - Number(b)) <= epsilon;
+        }
+
+        function setAdvancedSpecTextFromSystem(text) {
+            _suppressAdvancedSpecUserEditTracking = true;
+            try {
+                advancedSpecJson.value = text;
+            } finally {
+                _suppressAdvancedSpecUserEditTracking = false;
+            }
+            _advancedSpecUserEdited = false;
+        }
+
+        function setAdvancedSpecObjectFromSystem(specObj) {
+            setAdvancedSpecTextFromSystem(JSON.stringify(specObj, null, 2));
+        }
+
+        function getResolvedHfModelForUi() {
+            const inputValue = String((hfModelInput && hfModelInput.value) || '').trim();
+            if (inputValue !== '') {
+                return inputValue;
+            }
+
+            const initialValue = String((INITIAL_MODEL && INITIAL_MODEL.hf_model) || '').trim();
+            if (initialValue !== '') {
+                return initialValue;
+            }
+
+            const preservedModel = String((((_preservedSampleQuery || {}).body || {}).model) || '').trim();
+            if (preservedModel !== '') {
+                return preservedModel;
+            }
+
+            const defaultTemplateModel = String(((((DEFAULT_ADVANCED_SAMPLE_QUERY_TEMPLATE || {}).body) || {}).model) || '').trim();
+            if (defaultTemplateModel !== '') {
+                return defaultTemplateModel;
+            }
+
+            return '';
+        }
+
         function buildDefaultSampleQueryForUi() {
             const sampleQuery = cloneJsonValue(DEFAULT_ADVANCED_SAMPLE_QUERY_TEMPLATE || {});
-            const hfModel = (hfModelInput.value || '').trim();
+            const hfModel = getResolvedHfModelForUi();
             if (!sampleQuery || typeof sampleQuery !== 'object' || Array.isArray(sampleQuery)) {
                 return {};
             }
@@ -629,7 +787,7 @@
             const image = (basicSpec && typeof basicSpec.image === 'string') ? basicSpec.image : '';
             const partialCommands = Array.isArray(basicSpec?.commands) ? basicSpec.commands : [];
             const gpuCount = Number.parseInt(basicSpec?.resources?.GPU?.Count, 10);
-            const hfModel = (hfModelInput.value || '').trim();
+            const hfModel = getResolvedHfModelForUi();
 
             let extraCommands = stripReservedCommandArgsForUi(partialCommands);
             if (isVllmOmniImageForUi(image)) {
@@ -654,7 +812,9 @@
         function buildAdvancedSpecFromUi() {
             const spec = buildBasicSpecFromUi();
             spec.commands = buildGeneratedRuntimeCommandsForUi(spec);
-            spec.sample_query = buildDefaultSampleQueryForUi();
+            if (spec.sample_query == null) {
+                spec.sample_query = buildDefaultSampleQueryForUi();
+            }
             return spec;
         }
 
@@ -706,6 +866,13 @@
                 }
             }
 
+            // Basic mode has no editors for envs/sample_query, so preserve and pass
+            // them through from the initial model state.
+            spec.envs = cloneJsonValue(Array.isArray(_preservedEnvs) ? _preservedEnvs : []);
+            if (_preservedSampleQuery !== null) {
+                spec.sample_query = cloneJsonValue(_preservedSampleQuery);
+            }
+
             return spec;
         }
 
@@ -729,13 +896,31 @@
             }
 
             const policyObj = (((partial.policy || {}).Obj) || {});
-            const hasPolicy = policyObj && typeof policyObj === 'object' && (
-                Object.prototype.hasOwnProperty.call(policyObj, 'queue_timeout') ||
-                Object.prototype.hasOwnProperty.call(policyObj, 'scalein_timeout')
-            );
-            setPolicyEnabled(hasPolicy);
-            queueTimeoutInput.value = hasPolicy && policyObj.queue_timeout != null ? String(policyObj.queue_timeout) : '';
-            scaleinTimeoutInput.value = hasPolicy && policyObj.scalein_timeout != null ? String(policyObj.scalein_timeout) : '';
+            const hasQueueTimeout = policyObj && typeof policyObj === 'object'
+                && Object.prototype.hasOwnProperty.call(policyObj, 'queue_timeout');
+            const hasScaleinTimeout = policyObj && typeof policyObj === 'object'
+                && Object.prototype.hasOwnProperty.call(policyObj, 'scalein_timeout');
+
+            const queueTimeoutValue = hasQueueTimeout ? Number(policyObj.queue_timeout) : null;
+            const scaleinTimeoutValue = hasScaleinTimeout ? Number(policyObj.scalein_timeout) : null;
+
+            const queueTimeoutIsDefault = hasQueueTimeout
+                && Number.isFinite(queueTimeoutValue)
+                && numbersEqual(queueTimeoutValue, DEFAULT_POLICY_QUEUE_TIMEOUT_SEC);
+            const scaleinTimeoutIsDefault = hasScaleinTimeout
+                && Number.isFinite(scaleinTimeoutValue)
+                && numbersEqual(scaleinTimeoutValue, DEFAULT_POLICY_SCALEIN_TIMEOUT_SEC);
+
+            const hasCustomPolicy = (hasQueueTimeout && !queueTimeoutIsDefault)
+                || (hasScaleinTimeout && !scaleinTimeoutIsDefault);
+
+            setPolicyEnabled(hasCustomPolicy);
+            queueTimeoutInput.value = hasCustomPolicy && hasQueueTimeout && policyObj.queue_timeout != null
+                ? String(policyObj.queue_timeout)
+                : '';
+            scaleinTimeoutInput.value = hasCustomPolicy && hasScaleinTimeout && policyObj.scalein_timeout != null
+                ? String(policyObj.scalein_timeout)
+                : '';
         }
 
         function setTopLevelFields(model) {
@@ -798,6 +983,35 @@
             }
             if (!selectEl.value && selectEl.options.length > 0) {
                 selectEl.selectedIndex = 0;
+            }
+        }
+
+        function refreshGpuCountOptionsFromNodeCapacity() {
+            if (PAGE_MODE !== 'create') {
+                return;
+            }
+
+            const currentValue = String(gpuCountSelect.value || '').trim();
+            const currentCount = Number.parseInt(currentValue, 10);
+            const supportedCounts = [1, 2, 4];
+            const maxCountForUi = (
+                Number.isInteger(nodeMaxGpuCount) && nodeMaxGpuCount > 0
+            ) ? Math.min(4, nodeMaxGpuCount) : 4;
+            const availableCounts = supportedCounts.filter((count) => count <= maxCountForUi);
+            const finalCounts = availableCounts.length > 0 ? availableCounts : [1];
+
+            gpuCountSelect.innerHTML = '';
+            finalCounts.forEach((count) => {
+                const option = document.createElement('option');
+                option.value = String(count);
+                option.textContent = String(count);
+                gpuCountSelect.appendChild(option);
+            });
+
+            if (Number.isInteger(currentCount) && finalCounts.includes(currentCount)) {
+                gpuCountSelect.value = String(currentCount);
+            } else {
+                gpuCountSelect.value = String(finalCounts[0]);
             }
         }
 
@@ -913,7 +1127,21 @@
 
         function syncAdvancedFromBasic() {
             const spec = buildAdvancedSpecFromUi();
-            advancedSpecJson.value = JSON.stringify(spec, null, 2);
+            setAdvancedSpecObjectFromSystem(spec);
+        }
+
+        function maybeAutoRefreshAdvancedFromBasicForHfModelChange() {
+            if (activeTab !== 'advanced') {
+                return;
+            }
+            if (_advancedSpecUserEdited) {
+                return;
+            }
+            try {
+                syncAdvancedFromBasic();
+            } catch (_err) {
+                // Avoid interrupting typing; validation on tab switch/save will surface errors.
+            }
         }
 
         function setActiveTab(nextTab) {
@@ -925,7 +1153,27 @@
             if (nextTab === 'advanced') {
                 showAdvancedWarning(false);
                 try {
-                    syncAdvancedFromBasic();
+                    const initialAdvancedSpec = (
+                        PAGE_MODE === 'update'
+                        && INITIAL_MODEL
+                        && typeof INITIAL_MODEL === 'object'
+                        && !Array.isArray(INITIAL_MODEL)
+                    )
+                        ? (INITIAL_MODEL.advanced_spec || INITIAL_MODEL.spec || null)
+                        : null;
+                    if (
+                        !_advancedInitializedFromModel
+                        && initialAdvancedSpec
+                        && typeof initialAdvancedSpec === 'object'
+                        && !Array.isArray(initialAdvancedSpec)
+                    ) {
+                        // First Advanced open in edit mode should show the real saved
+                        // advanced spec, not a regenerated one from Basic fields.
+                        setAdvancedSpecObjectFromSystem(initialAdvancedSpec);
+                        _advancedInitializedFromModel = true;
+                    } else {
+                        syncAdvancedFromBasic();
+                    }
                 } catch (err) {
                     showError(err.message || String(err));
                     return;
@@ -1045,10 +1293,8 @@
                     throw new Error(errorMessage);
                 }
 
-                showSuccess('Model saved successfully. Redirecting to models list...');
-                setTimeout(() => {
-                    window.location.assign('{{ hosturl }}listfunc');
-                }, 500);
+                showSuccess(payload.mode === 'update' ? 'Model updated successfully.' : 'Model created successfully.');
+                showModelSaveModal(payload);
             } catch (err) {
                 showSuccess('');
                 showError(err.message || String(err));
@@ -1101,8 +1347,10 @@
                 }
                 const data = await resp.json();
                 nodeMaxVram = Number.parseInt(data.max_vram, 10);
+                nodeMaxGpuCount = Number.parseInt(data.max_gpu_count, 10);
+                refreshGpuCountOptionsFromNodeCapacity();
                 if (Number.isInteger(nodeMaxVram) && nodeMaxVram > 0) {
-                    vramHint.textContent = `Node max: ${nodeMaxVram} MB (you can decrease it).`;
+                    vramHint.textContent = `This is the maximum vRAM you can set. You may choose a lower value. A smaller vRAM setting can improve cold-start time if it still satisfies your token-length and concurrency requirements.`;
                     if (!gpuVramInput.value) {
                         gpuVramInput.value = String(nodeMaxVram);
                     }
@@ -1129,25 +1377,65 @@
         }
 
         function applyInitialModelIfPresent() {
+            _advancedInitializedFromModel = false;
+            _preservedEnvs = [];
+            _preservedSampleQuery = null;
+            _advancedSpecUserEdited = false;
+            _suppressAdvancedSpecUserEditTracking = false;
+
             if (!INITIAL_MODEL || typeof INITIAL_MODEL !== 'object') {
-                commandsJson.value = JSON.stringify(["--trust-remote-code", "--max-model-len", "2000"], null, 2);
+                commandsJson.value = JSON.stringify(["--trust-remote-code", "--gpu-memory-utilization", "0.95", "--max-model-len", "200"], null, 2);
                 setPolicyEnabled(false);
-                advancedSpecJson.value = '';
+                setAdvancedSpecTextFromSystem('');
                 return;
             }
 
+            const basicSpec = (
+                INITIAL_MODEL.basic_spec && typeof INITIAL_MODEL.basic_spec === 'object' && !Array.isArray(INITIAL_MODEL.basic_spec)
+            )
+                ? INITIAL_MODEL.basic_spec
+                : (
+                    INITIAL_MODEL.spec && typeof INITIAL_MODEL.spec === 'object' && !Array.isArray(INITIAL_MODEL.spec)
+                        ? INITIAL_MODEL.spec
+                        : {}
+                );
+            _preservedEnvs = cloneJsonValue(Array.isArray(basicSpec.envs) ? basicSpec.envs : []);
+            _preservedSampleQuery = cloneJsonValue(
+                basicSpec.sample_query != null ? basicSpec.sample_query : null
+            );
+
             setTopLevelFields(INITIAL_MODEL);
             populateBasicUiFromSpec(INITIAL_MODEL.basic_spec || INITIAL_MODEL.spec || {});
-            advancedSpecJson.value = JSON.stringify(INITIAL_MODEL.advanced_spec || INITIAL_MODEL.spec || {}, null, 2);
+            setAdvancedSpecObjectFromSystem(INITIAL_MODEL.advanced_spec || INITIAL_MODEL.spec || {});
         }
 
         async function init() {
             initializeImageOptions();
+            refreshGpuCountOptionsFromNodeCapacity();
             policyEnabledCheckbox.addEventListener('change', () => setPolicyEnabled(policyEnabledCheckbox.checked));
             tenantSelect.addEventListener('change', () => rebuildNamespaceOptions({ preserveCurrent: false }));
             tabBasic.addEventListener('click', () => setActiveTab('basic'));
             tabAdvanced.addEventListener('click', () => setActiveTab('advanced'));
             saveBtn.addEventListener('click', submitModel);
+            modelSaveModalClose?.addEventListener('click', closeModelSaveModal);
+            modelSaveModal?.addEventListener('click', (event) => {
+                if (event.target === modelSaveModal) {
+                    closeModelSaveModal();
+                }
+            });
+            document.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape') {
+                    closeModelSaveModal();
+                }
+            });
+            advancedSpecJson.addEventListener('input', () => {
+                if (_suppressAdvancedSpecUserEditTracking) {
+                    return;
+                }
+                _advancedSpecUserEdited = true;
+            });
+            hfModelInput.addEventListener('input', maybeAutoRefreshAdvancedFromBasicForHfModelChange);
+            hfModelInput.addEventListener('change', maybeAutoRefreshAdvancedFromBasicForHfModelChange);
 
             setPolicyEnabled(false);
 

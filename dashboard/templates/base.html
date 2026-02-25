@@ -11,6 +11,7 @@
     <style>
         body {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            color: #334155;
         }
 
         nav {
@@ -249,12 +250,13 @@
 </head>
 
 <body>
-    {% set path = request.path if request is defined and request.path is defined else '' %}
-    {% set nav_models_active = '/listfunc' in path or '/func_create' in path or '/func' in path or '/funclog' in path %}
-    {% set nav_pods_active = '/listpod' in path or '/pod' in path %}
-    {% set nav_snapshots_active = '/listsnapshot' in path or '/snapshot' in path %}
-    {% set nav_nodes_active = '/listnode' in path or '/node' in path %}
-    {% set nav_admin_active = '/admin' in path %}
+    {% set request_path = request.path if request is defined and request.path is defined else '' %}
+    {% set request_path_no_slash = request_path.rstrip('/') %}
+    {% set nav_models_active = request_path_no_slash in ('', '/demo') or '/listfunc' in request_path or '/func_create' in request_path or '/func' in request_path or '/funclog' in request_path %}
+    {% set nav_pods_active = '/listpod' in request_path or '/pod' in request_path %}
+    {% set nav_snapshots_active = '/listsnapshot' in request_path or '/snapshot' in request_path %}
+    {% set nav_nodes_active = '/listnode' in request_path or '/node' in request_path %}
+    {% set nav_admin_active = '/admin' in request_path %}
     <table class="brand-header">
         <tr>
             <td class="brand-logo-cell"><img class="brand-logo" src="{{ url_for('static', filename='logo.svg') }}" alt="logo" width="48" height="48"></td>
@@ -275,7 +277,7 @@
         <a href="{{ hosturl }}listfunc" class="{% if nav_models_active %}active{% endif %}"> Models </a>
         <a href="{{ hosturl }}listpod" class="{% if nav_pods_active %}active{% endif %}"> Pods </a>
         <a href="{{ hosturl }}listsnapshot" class="{% if nav_snapshots_active %}active{% endif %}"> Snapshots </a>
-        <a href="{{ hosturl }}listnode" class="{% if nav_nodes_active %}active{% endif %}"> Nodes </a>
+        <a href="{{ hosturl }}listnode" id="nav-nodes-link" class="{% if nav_nodes_active %}active{% endif %}" style="display: none;"> Nodes </a>
         <a href="{{ hosturl }}admin" id="admin" class="{% if nav_admin_active %}active{% endif %}"> Admin </a>
     </nav>
     <script>
@@ -289,6 +291,27 @@
         const tenantDisplayMap = {};
         const loginUrl = '{{ hosturl }}' + "login";
         const logoutUrl = '{{ hosturl }}' + "logout";
+        const navNodesLink = document.querySelector('#nav-nodes-link');
+
+        function isInferxAdminFromRoles(rolesData) {
+            if (!Array.isArray(rolesData)) {
+                return false;
+            }
+
+            return rolesData.some((rb) => {
+                const rbObjType = String(rb && rb.objType || '').toLowerCase().trim();
+                const rbRole = String(rb && rb.role || '').toLowerCase().trim();
+                const rbTenant = String(rb && rb.tenant || '').toLowerCase().trim();
+                return rbObjType === 'tenant' && rbTenant === 'system' && rbRole === 'admin';
+            });
+        }
+
+        function setNodesNavVisibility(isVisible) {
+            if (!navNodesLink) {
+                return;
+            }
+            navNodesLink.style.display = isVisible ? '' : 'none';
+        }
 
         function closeAuthDropdown() {
             if (!authDropdown || !link) {
@@ -407,6 +430,35 @@
             }
         }
 
+        async function configureNodesNavVisibility() {
+            if (!navNodesLink) {
+                return;
+            }
+
+            if (username === '') {
+                setNodesNavVisibility(false);
+                return;
+            }
+
+            if (String(username).trim().toLowerCase() === 'inferx_admin') {
+                setNodesNavVisibility(true);
+                return;
+            }
+
+            try {
+                const resp = await fetch('/demo/generate_roles');
+                if (!resp.ok) {
+                    setNodesNavVisibility(false);
+                    return;
+                }
+
+                const roles = await resp.json();
+                setNodesNavVisibility(isInferxAdminFromRoles(roles));
+            } catch (_e) {
+                setNodesNavVisibility(false);
+            }
+        }
+
         window.getTenantDisplayName = getTenantDisplayName;
         window.applyTenantDisplayNames = applyTenantDisplayNames;
         window.updateTenantDisplayMap = updateTenantDisplayMap;
@@ -450,6 +502,7 @@
         refreshTenantBadge();
         applyTenantDisplayNames(document);
         loadTenantDisplayMap();
+        configureNodesNavVisibility();
 
     </script>
     <hr class="nav-divider">

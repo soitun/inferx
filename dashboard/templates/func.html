@@ -116,7 +116,7 @@
 
 <h1>Sample Rest Call</h1>
 <textarea id="restcall" rows="8" cols="120">
-{{ func["sampleRestCall"] | replace("http://localhost:4000", "https://model.inferx.net") }}
+{{ func["sampleRestCall"] }}
 </textarea>
 
 <h2>Pods</h2>
@@ -334,7 +334,7 @@
 {% endif %}
 
 
-<h2>Func (Partial Spec)</h2>
+<h2>Func Spec</h2>
 <br />
 <textarea id="spec" rows="50" cols="120">{{ funcspec }}</textarea>
 
@@ -350,7 +350,7 @@
     const name = {{ name | tojson }};
     const apiType = {{ apiType | tojson }};
     const map = {{ map | tojson }};
-    const path = {{ path | tojson }};
+    const sampleQueryPath = {{ path | tojson }};
     const funcconfig = {{ func | tojson }};
     const funcEditData = {{ func_edit_data | tojson }};
 
@@ -507,7 +507,7 @@
             abortController = new AbortController();
             const { signal } = abortController;
 
-            url = schema + "//" + hostname + ":" + port + "/demo/proxy/funccall/" + tenant + "/" + namespace + "/" + name + "/" + path;
+            url = schema + "//" + hostname + ":" + port + "/demo/proxy/funccall/" + tenant + "/" + namespace + "/" + name + "/" + sampleQueryPath;
 
             let body;
             if (apiType != "image2text") {
@@ -544,7 +544,7 @@
                 headers: {
                     'Accept': 'application/json',
                     'Content-Type': 'application/json',
-                    'X-Inferx-Timeout': '30'
+                    'X-Inferx-Timeout': '60'
                 },
                 body: body,
                 signal
@@ -654,7 +654,7 @@
                 headers: {
                     'Accept': 'application/json',
                     'Content-Type': 'application/json',
-                    'X-Inferx-Timeout': '30'
+                    'X-Inferx-Timeout': '60'
                 },
                 body: JSON.stringify({
                     "prompt": prompt,
@@ -759,7 +759,7 @@
                 headers: {
                     'Accept': 'application/json',
                     'Content-Type': 'application/json',
-                    'X-Inferx-Timeout': '30'
+                    'X-Inferx-Timeout': '60'
                 },
                 body: JSON.stringify({
                     "prompt": prompt,
