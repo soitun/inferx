@@ -6,9 +6,25 @@
         font-size: 14px;
     }
 
+    .models-table {
+        table-layout: fixed;
+    }
+
+    .models-table th,
+    .models-table td {
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+
+    .models-table a {
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+
     .func-list-toolbar {
         display: flex;
-        justify-content: space-between;
+        justify-content: flex-end;
         align-items: center;
         gap: 12px;
         margin-bottom: 12px;
@@ -25,7 +41,7 @@
         border: 1px solid #2563eb;
         background: #2563eb;
         color: #fff;
-        border-radius: 6px;
+        border-radius: 4px;
         padding: 8px 12px;
         text-decoration: none;
         cursor: pointer;
@@ -85,18 +101,19 @@
     }
 </style>
 
+{% if can_manage_models %}
 <div class="func-list-toolbar">
-    <h2 style="margin: 0;">Models</h2>
     <div class="func-list-actions">
         <a class="ix-btn" href="{{ hosturl }}func_create">+ Create Model</a>
     </div>
 </div>
+{% endif %}
 
-<table class="ix-table" style="width:100%; text-align: center;">
+<table class="ix-table models-table" style="width:100%; text-align: center;">
     <thead>
         <tr>
             <th rowspan="2" style="width: 42px;">
-                <input id="select-all-models" type="checkbox" aria-label="Select all models">
+                <input id="select-all-models" type="checkbox" aria-label="Select all models" {% if not can_manage_models %}disabled aria-disabled="true"{% endif %}>
             </th>
             <th rowspan="2">Tenant</th>
             <th rowspan="2">Namespace</th>
@@ -124,6 +141,7 @@
         {% set namespace = func['func']['namespace'] %}
         {% set name = func['func']['name'] %}
         {% set spec = func['func']['object']['spec'] %}
+        {% set row_can_manage = func.get('can_edit_delete', false) %}
         <tr>
             <td>
                 <input
@@ -133,7 +151,8 @@
                     data-tenant="{{ tenant }}"
                     data-namespace="{{ namespace }}"
                     data-name="{{ name }}"
-                    aria-label="Select model {{ name }}">
+                    aria-label="Select model {{ name }}"
+                    {% if not row_can_manage %}disabled aria-disabled="true" title="No permission to edit/delete this model" style="cursor: not-allowed; opacity: 0.5;"{% endif %}>
             </td>
             <td>
                 <a href="{{ hosturl }}listfunc?tenant={{ tenant }}">
@@ -170,7 +189,9 @@
             <td>
                 <span class="row-actions">
                     <a href="{{ hosturl }}func?tenant={{ tenant }}&&namespace={{ namespace }}&&name={{ name }}">Open</a>
+                    {% if row_can_manage %}
                     <a href="{{ hosturl }}func_create?edit={{ tenant }}/{{ namespace }}/{{ name }}">Edit</a>
+                    {% endif %}
                 </span>
             </td>
         </tr>
@@ -178,12 +199,14 @@
     </tbody>
 </table>
 
+{% if can_manage_models %}
 <div style="margin-top: 12px; display: flex; align-items: center; gap: 8px;">
     <button id="delete-selected-btn" type="button" class="ix-btn danger">
         Delete Selected
     </button>
 </div>
 <div id="delete-status" aria-live="polite"></div>
+{% endif %}
 
 <h2 style="text-align: center;">Summary</h2>
 
@@ -216,8 +239,12 @@
         const deleteBtn = document.getElementById('delete-selected-btn');
         const statusEl = document.getElementById('delete-status');
 
+        function selectableBoxes() {
+            return Array.from(document.querySelectorAll('.model-select:not(:disabled)'));
+        }
+
         function selectedRows() {
-            return Array.from(document.querySelectorAll('.model-select:checked'));
+            return Array.from(document.querySelectorAll('.model-select:not(:disabled):checked'));
         }
 
         function syncDeleteButtonState() {
@@ -233,13 +260,19 @@
         }
 
         function syncSelectAll() {
-            const boxes = Array.from(document.querySelectorAll('.model-select'));
-            if (boxes.length === 0) {
-                selectAll.checked = false;
-                selectAll.indeterminate = false;
+            if (!selectAll) {
                 syncDeleteButtonState();
                 return;
             }
+            const boxes = selectableBoxes();
+            if (boxes.length === 0) {
+                selectAll.checked = false;
+                selectAll.indeterminate = false;
+                selectAll.disabled = true;
+                syncDeleteButtonState();
+                return;
+            }
+            selectAll.disabled = false;
             const checked = boxes.filter((box) => box.checked).length;
             selectAll.checked = checked === boxes.length;
             selectAll.indeterminate = checked > 0 && checked < boxes.length;
@@ -247,7 +280,7 @@
         }
 
         selectAll?.addEventListener('change', () => {
-            const boxes = document.querySelectorAll('.model-select');
+            const boxes = selectableBoxes();
             boxes.forEach((box) => {
                 box.checked = selectAll.checked;
             });

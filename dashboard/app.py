@@ -109,6 +109,7 @@ VLLM_IMAGE_WHITELIST = [
     "vllm/vllm-openai:v0.14.0",
     "vllm/vllm-openai:v0.13.0",
     "vllm/vllm-openai:v0.12.0",
+    "vllm/vllm-omni:v0.14.0",
 ]
 
 GPU_RESOURCE_LOOKUP = {
@@ -120,8 +121,6 @@ GPU_RESOURCE_LOOKUP = {
 DEFAULT_MODEL_ENVS = [
     ["LD_LIBRARY_PATH", "/usr/local/lib/python3.12/dist-packages/nvidia/cuda_nvrtc/lib/:$LD_LIBRARY_PATH"],
     ["VLLM_CUDART_SO_PATH", "/usr/local/cuda-12.1/targets/x86_64-linux/lib/libcudart.so.12"],
-    ["HF_HUB_OFFLINE", "1"],
-    ["TRANSFORMERS_OFFLINE", "1"],
 ]
 
 RESERVED_ENV_KEYS = {row[0] for row in DEFAULT_MODEL_ENVS}
@@ -133,6 +132,16 @@ EMBEDDED_POLICY_REQUIRED_DEFAULTS = {
     "max_replica": 1,
     "standby_per_node": 1,
 }
+DEFAULT_SAMPLE_QUERY_PROMPTS = [
+    "Write a Python function that computes Fibonacci numbers. Explain time complexity.",
+    "Translate the following Chinese text to English: \u4eca\u5929\u5929\u6c14\u5f88\u597d\u3002",
+    "Explain general relativity in simple language.",
+    "Write a legal contract clause about liability and indemnification.",
+    "Summarize the plot of a fantasy novel involving dragons.",
+    "Solve this calculus integral: \u222b x^3 log(x) dx",
+    "Generate a JSON schema describing a user profile.",
+    "Explain why emojis like \U0001F600\U0001F525\U0001F680 represent byte-level tokens.",
+]
 
 if FORCE_HTTPS_REDIRECTS:
     app.config["SESSION_COOKIE_SECURE"] = True
@@ -346,6 +355,55 @@ def is_inferx_admin_user():
         role_name = str(role.get('role', '')).lower()
         tenant = role.get('tenant', '')
         if obj_type == 'tenant' and role_name == 'admin' and tenant == 'system':
+            return True
+
+    return False
+
+
+def has_any_tenant_or_namespace_admin_role():
+    if session.get('access_token', '') == '':
+        return False
+
+    try:
+        roles = listroles()
+    except Exception:
+        return False
+
+    if not isinstance(roles, list):
+        return False
+
+    for role in roles:
+        obj_type = str(role.get('objType', '')).lower()
+        role_name = str(role.get('role', '')).lower()
+        if role_name == 'admin' and obj_type in ('tenant', 'namespace'):
+            return True
+
+    return False
+
+
+def has_admin_role_for_model(roles, target_tenant: str, target_namespace: str = ""):
+    if not isinstance(roles, list):
+        return False
+
+    search_tenant = str(target_tenant or '').lower().strip()
+    search_namespace = str(target_namespace or '').lower().strip()
+
+    for role in roles:
+        obj_type = str(role.get('objType', '')).lower().strip()
+        role_name = str(role.get('role', '')).lower().strip()
+        rb_tenant = str(role.get('tenant', '')).lower().strip()
+        rb_namespace = str(role.get('namespace', '')).lower().strip()
+
+        is_system_admin = obj_type == 'tenant' and rb_tenant == 'system' and role_name == 'admin'
+        is_tenant_admin = obj_type == 'tenant' and rb_tenant == search_tenant and role_name == 'admin'
+        is_namespace_admin = (
+            obj_type == 'namespace'
+            and rb_tenant == search_tenant
+            and rb_namespace == search_namespace
+            and role_name == 'admin'
+        )
+
+        if is_system_admin or is_tenant_admin or is_namespace_admin:
             return True
 
     return False
@@ -662,6 +720,39 @@ def strip_reserved_command_args(commands):
     return filtered
 
 
+def is_vllm_omni_image(image):
+    return isinstance(image, str) and image.startswith("vllm/vllm-omni:")
+
+
+def strip_omni_generated_command_args(commands):
+    filtered = []
+    for token in commands:
+        if token in ("--trust-remote-code", "--omni"):
+            continue
+        filtered.append(token)
+    return filtered
+
+
+def build_generated_runtime_commands(hf_model, image, gpu_count, partial_commands):
+    extra_commands = strip_reserved_command_args(partial_commands)
+    if is_vllm_omni_image(image):
+        extra_commands = strip_omni_generated_command_args(extra_commands)
+        full_commands = [
+            "vllm",
+            "serve",
+            hf_model,
+            "--trust-remote-code",
+            "--omni",
+        ]
+        full_commands.extend(extra_commands)
+        return full_commands
+
+    full_commands = ["--model", hf_model]
+    full_commands.extend(extra_commands)
+    full_commands.append(f"--tensor-parallel-size={gpu_count}")
+    return full_commands
+
+
 def extract_model_arg_from_commands(commands):
     i = 0
     while i < len(commands):
@@ -691,11 +782,11 @@ def strip_reserved_envs(envs):
     return filtered
 
 
-def validate_partial_spec(spec, max_node_vram):
+def validate_partial_spec(spec, max_node_vram, editor_mode="basic"):
     if not isinstance(spec, dict):
         raise ValueError("`spec` must be an object")
 
-    allowed_spec_keys = {"image", "commands", "resources", "envs", "policy"}
+    allowed_spec_keys = {"image", "commands", "resources", "envs", "policy", "sample_query"}
     unknown_spec_keys = set(spec.keys()) - allowed_spec_keys
     if unknown_spec_keys:
         raise ValueError(f"Unknown key in `spec`: {sorted(unknown_spec_keys)[0]}")
@@ -789,12 +880,23 @@ def validate_partial_spec(spec, max_node_vram):
 
         normalized_policy = {"Obj": policy_obj} if policy_obj else None
 
+    normalized_sample_query = None
+    if "sample_query" in spec:
+        sample_query = spec.get("sample_query")
+        if not isinstance(sample_query, dict):
+            raise ValueError("`spec.sample_query` must be an object")
+        # Deep-copy through JSON to keep only JSON-compatible values.
+        normalized_sample_query = json.loads(json.dumps(sample_query))
+
+    normalized_commands = [str(item) for item in commands] if editor_mode == "advanced" else strip_reserved_command_args(commands)
+
     return {
         "image": image,
-        "commands": strip_reserved_command_args(commands),
+        "commands": normalized_commands,
         "resources": {"GPU": {"Count": gpu_count, "vRam": vram}},
         "envs": strip_reserved_envs(normalized_envs),
         "policy": normalized_policy,
+        "sample_query": normalized_sample_query,
     }
 
 
@@ -802,6 +904,7 @@ def build_sample_query(hf_model: str):
     return {
         "apiType": "text2text",
         "prompt": "write a quick sort algorithm.",
+        "prompts": list(DEFAULT_SAMPLE_QUERY_PROMPTS),
         "path": "v1/completions",
         "body": {
             "model": hf_model,
@@ -812,14 +915,31 @@ def build_sample_query(hf_model: str):
     }
 
 
-def build_full_spec(hf_model: str, partial_spec):
+def build_full_spec(hf_model: str, partial_spec, editor_mode="basic"):
     gpu_count = partial_spec["resources"]["GPU"]["Count"]
     gpu_vram = partial_spec["resources"]["GPU"]["vRam"]
     resource_row = GPU_RESOURCE_LOOKUP[gpu_count]
 
-    full_commands = ["--model", hf_model]
-    full_commands.extend(partial_spec["commands"])
-    full_commands.append(f"--tensor-parallel-size={gpu_count}")
+    if editor_mode == "advanced":
+        full_commands = [str(item) for item in partial_spec["commands"]]
+    else:
+        full_commands = build_generated_runtime_commands(
+            hf_model=hf_model,
+            image=partial_spec["image"],
+            gpu_count=gpu_count,
+            partial_commands=partial_spec["commands"],
+        )
+
+    sample_query = partial_spec.get("sample_query")
+    if isinstance(sample_query, dict):
+        resolved_sample_query = json.loads(json.dumps(sample_query))
+        body = resolved_sample_query.get("body")
+        if not isinstance(body, dict):
+            body = {}
+            resolved_sample_query["body"] = body
+        body["model"] = hf_model
+    else:
+        resolved_sample_query = build_sample_query(hf_model)
 
     spec = {
         "image": partial_spec["image"],
@@ -835,7 +955,7 @@ def build_full_spec(hf_model: str, partial_spec):
         },
         "envs": [list(item) for item in DEFAULT_MODEL_ENVS] + partial_spec["envs"],
         "endpoint": dict(FIXED_ENDPOINT),
-        "sample_query": build_sample_query(hf_model),
+        "sample_query": resolved_sample_query,
         "standby": dict(FIXED_STANDBY),
     }
 
@@ -843,6 +963,9 @@ def build_full_spec(hf_model: str, partial_spec):
     if policy and policy.get("Obj"):
         full_policy_obj = dict(EMBEDDED_POLICY_REQUIRED_DEFAULTS)
         full_policy_obj.update(policy["Obj"])
+        # runtime_config is no longer used by the dashboard create/edit flow.
+        # Strip it defensively even if future UI changes accidentally include it.
+        full_policy_obj.pop("runtime_config", None)
         spec["policy"] = {"Obj": full_policy_obj}
 
     return spec
@@ -865,7 +988,19 @@ def project_func_for_edit(full_func):
     commands = spec.get("commands", [])
     if not isinstance(commands, list):
         commands = []
-    clean_commands = [str(item) for item in strip_reserved_command_args(commands)]
+    image = spec.get("image", VLLM_IMAGE_WHITELIST[0])
+    if not isinstance(image, str) or image == "":
+        image = VLLM_IMAGE_WHITELIST[0]
+
+    full_commands_for_advanced = [str(item) for item in commands]
+    if is_vllm_omni_image(image):
+        omni_partial = [str(item) for item in commands]
+        if len(omni_partial) >= 3 and omni_partial[0] == "vllm" and omni_partial[1] == "serve":
+            omni_partial = omni_partial[3:]
+        omni_partial = strip_omni_generated_command_args(omni_partial)
+        clean_commands = [str(item) for item in strip_reserved_command_args(omni_partial)]
+    else:
+        clean_commands = [str(item) for item in strip_reserved_command_args(commands)]
 
     envs = spec.get("envs", [])
     if not isinstance(envs, list):
@@ -905,18 +1040,30 @@ def project_func_for_edit(full_func):
     if hf_model == "":
         hf_model = extract_model_arg_from_commands(commands).strip()
 
+    projected_sample_query = None
+    if isinstance(sample_query, dict):
+        projected_sample_query = json.loads(json.dumps(sample_query))
+
+    basic_spec = {
+        "image": image,
+        "commands": clean_commands,
+        "resources": {"GPU": {"Count": gpu_count, "vRam": gpu_vram}},
+        "envs": clean_envs,
+        **({"sample_query": projected_sample_query} if projected_sample_query is not None else {}),
+        **({"policy": {"Obj": projected_policy_obj}} if projected_policy_obj else {}),
+    }
+    projected_spec = json.loads(json.dumps(basic_spec))
+    projected_spec["commands"] = full_commands_for_advanced
+    advanced_spec = json.loads(json.dumps(projected_spec))
+
     return {
         "tenant": tenant,
         "namespace": namespace,
         "name": name,
         "hf_model": hf_model,
-        "spec": {
-            "image": spec.get("image", VLLM_IMAGE_WHITELIST[0]),
-            "commands": clean_commands,
-            "resources": {"GPU": {"Count": gpu_count, "vRam": gpu_vram}},
-            "envs": clean_envs,
-            **({"policy": {"Obj": projected_policy_obj}} if projected_policy_obj else {}),
-        },
+        "spec": projected_spec,
+        "basic_spec": basic_spec,
+        "advanced_spec": advanced_spec,
     }
 
 
@@ -1438,6 +1585,7 @@ def FuncCreate():
         edit_key=edit_key,
         initial_model_data=initial_model_data,
         image_options=VLLM_IMAGE_WHITELIST,
+        default_advanced_sample_query_template=build_sample_query("Qwen/Qwen2.5-72B-Instruct"),
     )
 
 
@@ -1448,7 +1596,7 @@ def func_save():
     if not isinstance(req, dict):
         return json_error("Request body must be a JSON object", 400)
 
-    allowed_top_level_keys = {"mode", "tenant", "namespace", "name", "hf_model", "spec"}
+    allowed_top_level_keys = {"mode", "tenant", "namespace", "name", "hf_model", "spec", "editor_mode"}
     unknown_top_level_keys = set(req.keys()) - allowed_top_level_keys
     if unknown_top_level_keys:
         return json_error(f"Unknown top-level key: {sorted(unknown_top_level_keys)[0]}", 400)
@@ -1460,18 +1608,22 @@ def func_save():
     mode = req.get("mode")
     if mode not in ("create", "update"):
         return json_error("`mode` must be \"create\" or \"update\"", 400)
+    editor_mode = req.get("editor_mode", "basic")
+    if editor_mode not in ("basic", "advanced"):
+        return json_error("`editor_mode` must be \"basic\" or \"advanced\"", 400)
 
     tenant = req.get("tenant")
     namespace = req.get("namespace")
     name = req.get("name")
     hf_model = req.get("hf_model")
     app.logger.info(
-        "func_save received hf_model=%r tenant=%r namespace=%r name=%r mode=%r",
+        "func_save received hf_model=%r tenant=%r namespace=%r name=%r mode=%r editor_mode=%r",
         hf_model,
         tenant,
         namespace,
         name,
         mode,
+        editor_mode,
     )
     spec = req.get("spec")
 
@@ -1484,12 +1636,13 @@ def func_save():
     name = name.strip()
     hf_model = hf_model.strip()
     app.logger.info(
-        "func_save normalized hf_model=%r tenant=%r namespace=%r name=%r mode=%r",
+        "func_save normalized hf_model=%r tenant=%r namespace=%r name=%r mode=%r editor_mode=%r",
         hf_model,
         tenant,
         namespace,
         name,
         mode,
+        editor_mode,
     )
 
     try:
@@ -1498,10 +1651,11 @@ def func_save():
         return json_error(f"failed to read node max vRam: {e}", 502)
 
     try:
-        partial_spec = validate_partial_spec(spec, max_node_vram)
-        full_spec = build_full_spec(hf_model, partial_spec)
+        partial_spec = validate_partial_spec(spec, max_node_vram, editor_mode=editor_mode)
+        full_spec = build_full_spec(hf_model, partial_spec, editor_mode=editor_mode)
         app.logger.info(
-            "func_save built spec model fields command_model=%r sample_model=%r",
+            "func_save built spec model fields editor_mode=%r command_model=%r sample_model=%r",
+            editor_mode,
             (
                 full_spec.get("commands", [None, None])[1]
                 if isinstance(full_spec.get("commands"), list) and len(full_spec.get("commands", [])) > 1
@@ -1575,12 +1729,30 @@ def ListFunc():
     else:
         funcs = listfuncs(tenant, namespace)
 
+    roles = []
+    if session.get('access_token', '') != '':
+        try:
+            roles = listroles()
+        except Exception:
+            roles = []
+    if not isinstance(roles, list):
+        roles = []
+
     count = 0
     gpucount = 0
     vram = 0
     cpu = 0 
     memory = 0
     for func in funcs:
+        try:
+            row_func = func.get('func', {}) if isinstance(func, dict) else {}
+            row_tenant = str(row_func.get('tenant', '') or '')
+            row_namespace = str(row_func.get('namespace', '') or '')
+            if isinstance(func, dict):
+                func['can_edit_delete'] = has_admin_role_for_model(roles, row_tenant, row_namespace)
+        except Exception:
+            if isinstance(func, dict):
+                func['can_edit_delete'] = False
         count += 1
         gpucount += func['func']['object']["spec"]["resources"]["GPU"]["Count"]
         vram += func['func']['object']["spec"]["resources"]["GPU"]["Count"] * func['func']['object']["spec"]["resources"]["GPU"]["vRam"]
@@ -1595,7 +1767,12 @@ def ListFunc():
     summary["memory"] = memory
     
 
-    return render_template("func_list.html", funcs=funcs, summary=summary)
+    can_manage_models = any(
+        str(role.get('role', '')).lower() == 'admin'
+        and str(role.get('objType', '')).lower() in ('tenant', 'namespace')
+        for role in roles
+    )
+    return render_template("func_list.html", funcs=funcs, summary=summary, can_manage_models=can_manage_models)
 
 
 @prefix_bp.route("/listsnapshot")

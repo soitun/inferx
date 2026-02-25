@@ -116,7 +116,7 @@
 
 <h1>Sample Rest Call</h1>
 <textarea id="restcall" rows="8" cols="120">
-{{ func["sampleRestCall"] }}
+{{ func["sampleRestCall"] | replace("http://localhost:4000", "https://model.inferx.net") }}
 </textarea>
 
 <h2>Pods</h2>
@@ -544,7 +544,7 @@
                 headers: {
                     'Accept': 'application/json',
                     'Content-Type': 'application/json',
-                    'X-Inferx-Timeout': '12'
+                    'X-Inferx-Timeout': '30'
                 },
                 body: body,
                 signal
@@ -654,7 +654,7 @@
                 headers: {
                     'Accept': 'application/json',
                     'Content-Type': 'application/json',
-                    'X-Inferx-Timeout': '12'
+                    'X-Inferx-Timeout': '30'
                 },
                 body: JSON.stringify({
                     "prompt": prompt,
@@ -759,7 +759,7 @@
                 headers: {
                     'Accept': 'application/json',
                     'Content-Type': 'application/json',
-                    'X-Inferx-Timeout': '12'
+                    'X-Inferx-Timeout': '30'
                 },
                 body: JSON.stringify({
                     "prompt": prompt,

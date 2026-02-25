@@ -29,7 +29,7 @@
         border: 1px solid #2563eb;
         background: #2563eb;
         color: white;
-        border-radius: 6px;
+        border-radius: 4px;
         padding: 8px 12px;
         font-size: 14px;
         cursor: pointer;
@@ -50,7 +50,7 @@
     .panel {
         border: 1px solid #cbd5e1;
         background: #ffffff;
-        border-radius: 8px;
+        border-radius: 2px;
         padding: 14px;
         margin-bottom: 14px;
     }
@@ -81,13 +81,20 @@
         display: none;
     }
 
+    .readonly-value {
+        padding: 8px 0;
+        color: #111827;
+        font-size: 14px;
+        word-break: break-word;
+    }
+
     input[type="text"],
     input[type="number"],
     select,
     textarea {
         width: 100%;
         border: 1px solid #cbd5e1;
-        border-radius: 6px;
+        border-radius: 4px;
         padding: 8px 10px;
         font-size: 14px;
         box-sizing: border-box;
@@ -162,7 +169,7 @@
         background: transparent;
         color: #334155;
         padding: 10px 14px;
-        border-radius: 8px 8px 0 0;
+        border-radius: 4px 4px 0 0;
         cursor: pointer;
         font-weight: 600;
     }
@@ -228,7 +235,7 @@
     .error-banner,
     .success-banner {
         display: none;
-        border-radius: 8px;
+        border-radius: 4px;
         padding: 10px 12px;
         margin-bottom: 12px;
         font-size: 14px;
@@ -316,7 +323,13 @@
                     <span class="field-help" tabindex="0" aria-label="Tenant help" data-tooltip="Owner tenant for this model. This controls tenant-level permissions and limits." title="Owner tenant for this model. This controls tenant-level permissions and limits.">i</span>
                 </label>
                 <div>
+                    {% if page_mode == "update" %}
+                    <div id="tenant-display" class="readonly-value"></div>
+                    <select id="tenant-select" hidden></select>
+                    {% else %}
+                    <div id="tenant-display" class="readonly-value" style="display: none;"></div>
                     <select id="tenant-select"></select>
+                    {% endif %}
                 </div>
             </div>
 
@@ -326,7 +339,13 @@
                     <span class="field-help" tabindex="0" aria-label="Namespace help" data-tooltip="Namespace under the selected tenant. The dropdown is filtered by tenant and may be hidden if only one namespace is available." title="Namespace under the selected tenant. The dropdown is filtered by tenant and may be hidden if only one namespace is available.">i</span>
                 </label>
                 <div>
+                    {% if page_mode == "update" %}
+                    <div id="namespace-display" class="readonly-value"></div>
+                    <select id="namespace-select" hidden></select>
+                    {% else %}
+                    <div id="namespace-display" class="readonly-value" style="display: none;"></div>
                     <select id="namespace-select"></select>
+                    {% endif %}
                 </div>
             </div>
 
@@ -336,7 +355,12 @@
                     <span class="field-help" tabindex="0" aria-label="Function name help" data-tooltip="Model/function name shown in the dashboard and used in the function object path." title="Model/function name shown in the dashboard and used in the function object path.">i</span>
                 </label>
                 <div>
+                    {% if page_mode == "update" %}
+                    <div id="function-name-display" class="readonly-value"></div>
+                    <input id="function-name-input" type="text" hidden>
+                    {% else %}
                     <input id="function-name-input" type="text" placeholder="Qwen2.5-Coder-1.5B-Instruct">
+                    {% endif %}
                 </div>
             </div>
 
@@ -346,7 +370,12 @@
                     <span class="field-help" tabindex="0" aria-label="HuggingFace model help" data-tooltip="Hugging Face model ID (for example namespace/model). Used to build --model and sample_query.body.model." title="Hugging Face model ID (for example namespace/model). Used to build --model and sample_query.body.model.">i</span>
                 </label>
                 <div>
+                    {% if page_mode == "update" %}
+                    <div id="hf-model-display" class="readonly-value"></div>
+                    <input id="hf-model-input" type="text" hidden autocomplete="off">
+                    {% else %}
                     <input id="hf-model-input" type="text" placeholder="Qwen/Qwen2.5-Coder-1.5B-Instruct" autocomplete="off">
+                    {% endif %}
                 </div>
             </div>
         </div>
@@ -362,7 +391,7 @@
             <h3>
                 <span class="label-with-help">
                     <span>Image<span class="req-mark">*</span></span>
-                    <span class="field-help" tabindex="0" aria-label="Image help" data-tooltip="Container image for the model runtime. Only whitelisted vLLM image tags are allowed in Basic mode." title="Container image for the model runtime. Only whitelisted vLLM image tags are allowed in Basic mode.">i</span>
+                    <span class="field-help" tabindex="0" aria-label="Image help" data-tooltip="Container image for the model runtime. Only whitelisted vLLM image tags are allowed when saving (Basic and Advanced modes)." title="Container image for the model runtime. Only whitelisted vLLM image tags are allowed when saving (Basic and Advanced modes).">i</span>
                 </span>
             </h3>
             <select id="image-select"></select>
@@ -447,7 +476,7 @@
             <h3>
                 <span class="label-with-help">
                     <span>Partial Spec JSON<span class="req-mark">*</span></span>
-                    <span class="field-help" tabindex="0" aria-label="Partial spec JSON help" data-tooltip="Edit the partial spec directly (image, commands, GPU resources, envs, policy). Generated fields are injected server-side." title="Edit the partial spec directly (image, commands, GPU resources, envs, policy). Generated fields are injected server-side.">i</span>
+                    <span class="field-help" tabindex="0" aria-label="Partial spec JSON help" data-tooltip="Edit the partial spec directly (image, commands, GPU resources, envs, policy, sample_query). In Advanced mode, spec.commands is the full runtime command list. Some runtime fields are still injected server-side." title="Edit the partial spec directly (image, commands, GPU resources, envs, policy, sample_query). In Advanced mode, spec.commands is the full runtime command list. Some runtime fields are still injected server-side.">i</span>
                 </span>
             </h3>
             <textarea id="advanced-spec-json" rows="20" placeholder='{"image":"vllm/vllm-openai:v0.15.0","commands":[],"resources":{"GPU":{"Count":1,"vRam":24000}}}'></textarea>
@@ -465,13 +494,18 @@
         const PAGE_MODE = {{ page_mode | tojson }};
         const INITIAL_MODEL = {{ initial_model_data | tojson }};
         const IMAGE_OPTIONS = {{ image_options | tojson }};
+        const DEFAULT_ADVANCED_SAMPLE_QUERY_TEMPLATE = {{ default_advanced_sample_query_template | tojson }};
 
         const tenantSelect = document.getElementById('tenant-select');
         const namespaceSelect = document.getElementById('namespace-select');
         const tenantRow = document.getElementById('tenant-row');
         const namespaceRow = document.getElementById('namespace-row');
         const functionNameInput = document.getElementById('function-name-input');
+        const tenantDisplay = document.getElementById('tenant-display');
+        const namespaceDisplay = document.getElementById('namespace-display');
+        const functionNameDisplay = document.getElementById('function-name-display');
         const hfModelInput = document.getElementById('hf-model-input');
+        const hfModelDisplay = document.getElementById('hf-model-display');
         const imageSelect = document.getElementById('image-select');
         const commandsJson = document.getElementById('commands-json');
         const gpuCountSelect = document.getElementById('gpu-count-select');
@@ -494,6 +528,7 @@
         let activeTab = 'basic';
         let tenants = [];
         let namespaces = [];
+        let roles = [];
         let nodeMaxVram = 0;
 
         function showError(message) {
@@ -534,6 +569,93 @@
                 throw new Error('Basic tab commands JSON array must contain strings only');
             }
             return parsed;
+        }
+
+        function cloneJsonValue(value) {
+            return JSON.parse(JSON.stringify(value));
+        }
+
+        function buildDefaultSampleQueryForUi() {
+            const sampleQuery = cloneJsonValue(DEFAULT_ADVANCED_SAMPLE_QUERY_TEMPLATE || {});
+            const hfModel = (hfModelInput.value || '').trim();
+            if (!sampleQuery || typeof sampleQuery !== 'object' || Array.isArray(sampleQuery)) {
+                return {};
+            }
+            if (!sampleQuery.body || typeof sampleQuery.body !== 'object' || Array.isArray(sampleQuery.body)) {
+                sampleQuery.body = {};
+            }
+            if (hfModel !== '') {
+                sampleQuery.body.model = hfModel;
+            }
+            return sampleQuery;
+        }
+
+        function isVllmOmniImageForUi(image) {
+            return typeof image === 'string' && image.startsWith('vllm/vllm-omni:');
+        }
+
+        function stripReservedCommandArgsForUi(commands) {
+            const filtered = [];
+            let i = 0;
+            while (i < commands.length) {
+                const token = commands[i];
+                if (token === '--model') {
+                    i += 2;
+                    continue;
+                }
+                if (typeof token === 'string' && token.startsWith('--model=')) {
+                    i += 1;
+                    continue;
+                }
+                if (token === '--tensor-parallel-size') {
+                    i += 2;
+                    continue;
+                }
+                if (typeof token === 'string' && token.startsWith('--tensor-parallel-size=')) {
+                    i += 1;
+                    continue;
+                }
+                filtered.push(token);
+                i += 1;
+            }
+            return filtered;
+        }
+
+        function stripOmniGeneratedCommandArgsForUi(commands) {
+            return commands.filter((token) => token !== '--trust-remote-code' && token !== '--omni');
+        }
+
+        function buildGeneratedRuntimeCommandsForUi(basicSpec) {
+            const image = (basicSpec && typeof basicSpec.image === 'string') ? basicSpec.image : '';
+            const partialCommands = Array.isArray(basicSpec?.commands) ? basicSpec.commands : [];
+            const gpuCount = Number.parseInt(basicSpec?.resources?.GPU?.Count, 10);
+            const hfModel = (hfModelInput.value || '').trim();
+
+            let extraCommands = stripReservedCommandArgsForUi(partialCommands);
+            if (isVllmOmniImageForUi(image)) {
+                extraCommands = stripOmniGeneratedCommandArgsForUi(extraCommands);
+                return [
+                    'vllm',
+                    'serve',
+                    hfModel,
+                    '--trust-remote-code',
+                    '--omni',
+                    ...extraCommands
+                ];
+            }
+
+            const fullCommands = ['--model', hfModel, ...extraCommands];
+            if (Number.isInteger(gpuCount)) {
+                fullCommands.push(`--tensor-parallel-size=${gpuCount}`);
+            }
+            return fullCommands;
+        }
+
+        function buildAdvancedSpecFromUi() {
+            const spec = buildBasicSpecFromUi();
+            spec.commands = buildGeneratedRuntimeCommandsForUi(spec);
+            spec.sample_query = buildDefaultSampleQueryForUi();
+            return spec;
         }
 
         function buildBasicSpecFromUi() {
@@ -623,17 +745,29 @@
             if (typeof model.tenant === 'string') {
                 ensureSelectOption(tenantSelect, model.tenant, model.tenant);
                 tenantSelect.value = model.tenant;
+                if (tenantDisplay) {
+                    tenantDisplay.textContent = model.tenant;
+                }
             }
             rebuildNamespaceOptions({ preserveCurrent: false, preferredValue: model.namespace || '' });
             if (typeof model.namespace === 'string' && model.namespace !== '') {
                 ensureSelectOption(namespaceSelect, model.namespace, model.namespace);
                 namespaceSelect.value = model.namespace;
+                if (namespaceDisplay) {
+                    namespaceDisplay.textContent = model.namespace;
+                }
             }
             if (typeof model.name === 'string') {
                 functionNameInput.value = model.name;
+                if (functionNameDisplay) {
+                    functionNameDisplay.textContent = model.name;
+                }
             }
             if (typeof model.hf_model === 'string') {
                 hfModelInput.value = model.hf_model;
+                if (hfModelDisplay) {
+                    hfModelDisplay.textContent = model.hf_model;
+                }
             }
         }
 
@@ -677,15 +811,74 @@
             return displayName ? `${displayName} (${name})` : name;
         }
 
+        function isInferxAdmin(rolesData) {
+            if (!Array.isArray(rolesData)) {
+                return false;
+            }
+            return rolesData.some((rb) => {
+                const rbObjType = String(rb && rb.objType || '').toLowerCase().trim();
+                const rbRole = String(rb && rb.role || '').toLowerCase().trim();
+                const rbTenant = String(rb && rb.tenant || '').toLowerCase().trim();
+                return rbObjType === 'tenant' && rbTenant === 'system' && rbRole === 'admin';
+            });
+        }
+
+        function shouldHidePublicTenantInCreate(rolesData) {
+            if (PAGE_MODE !== 'create') {
+                return false;
+            }
+            if (isInferxAdmin(rolesData)) {
+                return false;
+            }
+            if (!Array.isArray(rolesData)) {
+                return false;
+            }
+
+            const accessibleTenants = new Set();
+            rolesData.forEach((rb) => {
+                const rbObjType = String(rb && rb.objType || '').toLowerCase().trim();
+                const rbRole = String(rb && rb.role || '').toLowerCase().trim();
+                const rbTenant = String(rb && rb.tenant || '').trim();
+                if ((rbObjType !== 'tenant' && rbObjType !== 'namespace') || (rbRole !== 'admin' && rbRole !== 'user')) {
+                    return;
+                }
+                if (!rbTenant || rbTenant.toLowerCase() === 'system') {
+                    return;
+                }
+                accessibleTenants.add(rbTenant);
+            });
+
+            const nonPublicTenants = Array.from(accessibleTenants).filter((t) => t.toLowerCase() !== 'public');
+            return nonPublicTenants.length === 1;
+        }
+
         function rebuildTenantOptions() {
-            const tenantOptions = (Array.isArray(tenants) ? tenants : []).map((tenantObj) => ({
+            const hidePublic = shouldHidePublicTenantInCreate(roles);
+            const tenantOptions = (Array.isArray(tenants) ? tenants : [])
+                .filter((tenantObj) => {
+                    const tenantName = String(tenantObj && tenantObj.name || '').trim().toLowerCase();
+                    return !(hidePublic && tenantName === 'public');
+                })
+                .map((tenantObj) => ({
                 value: String(tenantObj.name || '').trim(),
                 label: tenantDisplayLabel(tenantObj)
-            })).filter((opt) => opt.value !== '');
+            }))
+                .filter((opt) => opt.value !== '');
 
             const current = tenantSelect.value;
             setSelectOptions(tenantSelect, tenantOptions, current || (INITIAL_MODEL && INITIAL_MODEL.tenant) || '');
-            tenantRow.classList.toggle('hidden', tenantSelect.options.length <= 1);
+            if (PAGE_MODE !== 'update') {
+                const tenantOptionCount = tenantSelect.options.length;
+                const singleTenant = tenantOptionCount === 1;
+                tenantRow.classList.toggle('hidden', tenantOptionCount === 0);
+                tenantSelect.hidden = singleTenant;
+                if (tenantDisplay) {
+                    tenantDisplay.style.display = singleTenant ? 'block' : 'none';
+                    tenantDisplay.textContent = singleTenant ? (tenantSelect.options[0]?.textContent || tenantSelect.value || '') : '';
+                }
+            } else {
+                tenantRow.classList.toggle('hidden', false);
+            }
         }
 
         function rebuildNamespaceOptions(opts = {}) {
@@ -704,11 +897,22 @@
 
             const targetValue = preferredValue || currentNamespace;
             setSelectOptions(namespaceSelect, namespaceOptions, targetValue);
-            namespaceRow.classList.toggle('hidden', namespaceSelect.options.length <= 1);
+            if (PAGE_MODE !== 'update') {
+                const namespaceOptionCount = namespaceSelect.options.length;
+                const singleNamespace = namespaceOptionCount === 1;
+                namespaceRow.classList.toggle('hidden', namespaceOptionCount === 0);
+                namespaceSelect.hidden = singleNamespace;
+                if (namespaceDisplay) {
+                    namespaceDisplay.style.display = singleNamespace ? 'block' : 'none';
+                    namespaceDisplay.textContent = singleNamespace ? (namespaceSelect.options[0]?.textContent || namespaceSelect.value || '') : '';
+                }
+            } else {
+                namespaceRow.classList.toggle('hidden', false);
+            }
         }
 
         function syncAdvancedFromBasic() {
-            const spec = buildBasicSpecFromUi();
+            const spec = buildAdvancedSpecFromUi();
             advancedSpecJson.value = JSON.stringify(spec, null, 2);
         }
 
@@ -755,10 +959,14 @@
         }
 
         function buildTopLevelPayload() {
-            const tenant = (tenantSelect.value || '').trim();
-            const namespace = (namespaceSelect.value || '').trim();
-            const name = (functionNameInput.value || '').trim();
-            const hfModel = (hfModelInput.value || '').trim();
+            const initialTenant = INITIAL_MODEL && typeof INITIAL_MODEL.tenant === 'string' ? INITIAL_MODEL.tenant.trim() : '';
+            const initialNamespace = INITIAL_MODEL && typeof INITIAL_MODEL.namespace === 'string' ? INITIAL_MODEL.namespace.trim() : '';
+            const initialName = INITIAL_MODEL && typeof INITIAL_MODEL.name === 'string' ? INITIAL_MODEL.name.trim() : '';
+            const initialHfModel = INITIAL_MODEL && typeof INITIAL_MODEL.hf_model === 'string' ? INITIAL_MODEL.hf_model.trim() : '';
+            const tenant = PAGE_MODE === 'update' ? initialTenant : (tenantSelect.value || '').trim();
+            const namespace = PAGE_MODE === 'update' ? initialNamespace : (namespaceSelect.value || '').trim();
+            const name = PAGE_MODE === 'update' ? initialName : (functionNameInput.value || '').trim();
+            const hfModel = PAGE_MODE === 'update' ? (initialHfModel || (hfModelInput.value || '').trim()) : (hfModelInput.value || '').trim();
 
             if (!tenant) {
                 throw new Error('Tenant is required');
@@ -789,6 +997,7 @@
             let payload;
             try {
                 payload = buildTopLevelPayload();
+                payload.editor_mode = activeTab;
                 payload.spec = activeTab === 'basic' ? buildBasicSpecFromUi() : parseAdvancedSpec();
             } catch (err) {
                 showError(err.message || String(err));
@@ -849,9 +1058,10 @@
         }
 
         async function loadTenantsAndNamespaces() {
-            const [tenantsResp, namespacesResp] = await Promise.all([
+            const [tenantsResp, namespacesResp, rolesResp] = await Promise.all([
                 fetch('/demo/generate_tenants'),
-                fetch('/demo/generate_namespaces')
+                fetch('/demo/generate_namespaces'),
+                fetch('/demo/generate_roles')
             ]);
 
             if (!tenantsResp.ok) {
@@ -860,15 +1070,22 @@
             if (!namespacesResp.ok) {
                 throw new Error(`Failed to load namespaces (HTTP ${namespacesResp.status})`);
             }
+            if (!rolesResp.ok) {
+                throw new Error(`Failed to load roles (HTTP ${rolesResp.status})`);
+            }
 
             tenants = await tenantsResp.json();
             namespaces = await namespacesResp.json();
+            roles = await rolesResp.json();
 
             if (!Array.isArray(tenants)) {
                 tenants = [];
             }
             if (!Array.isArray(namespaces)) {
                 namespaces = [];
+            }
+            if (!Array.isArray(roles)) {
+                roles = [];
             }
 
             rebuildTenantOptions();
@@ -920,8 +1137,8 @@
             }
 
             setTopLevelFields(INITIAL_MODEL);
-            populateBasicUiFromSpec(INITIAL_MODEL.spec || {});
-            advancedSpecJson.value = JSON.stringify(INITIAL_MODEL.spec || {}, null, 2);
+            populateBasicUiFromSpec(INITIAL_MODEL.basic_spec || INITIAL_MODEL.spec || {});
+            advancedSpecJson.value = JSON.stringify(INITIAL_MODEL.advanced_spec || INITIAL_MODEL.spec || {}, null, 2);
         }
 
         async function init() {

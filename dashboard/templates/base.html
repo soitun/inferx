@@ -3,25 +3,59 @@
 
 <head>
     <meta charset="UTF-8">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <title> InferX AI Function </title>
+    <title> InferX | Serverless Inference Platform </title>
     <style>
         body {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
         }
 
+        nav {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px 10px;
+            margin: 0 0 6px 0;
+        }
+
         nav a {
             color: #d64161;
-            font-size: 3em;
-            margin-left: 50px;
+            font-size: clamp(19px, 1.7vw, 24px);
+            font-weight: 600;
+            line-height: 1.2;
+            margin-left: 0;
+            padding: 4px 8px;
+            border-radius: 4px;
             text-decoration: none;
+            white-space: nowrap;
+        }
+
+        nav a:hover {
+            background: #fff1f2;
+        }
+
+        nav a.active {
+            background: #d64161;
+            color: #ffffff;
+        }
+
+        nav a.active:hover {
+            background: #c22f50;
+        }
+
+        .nav-divider {
+            border: 0;
+            border-top: 1px solid #d7dee8;
+            margin: 6px 0 10px 0;
         }
 
         .content table.ix-table {
             border-collapse: collapse;
             background: #fff;
+            table-layout: fixed;
         }
 
         .content table.ix-table th,
@@ -30,6 +64,14 @@
             padding: 10px 12px;
             text-align: center;
             vertical-align: middle;
+            white-space: normal;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        .content table.ix-table a {
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
 
         .content table.ix-table th {
@@ -66,43 +108,204 @@
             font-size: 20px;
         }
 
-        .topbar {
-            display: flex;
-            justify-content: space-between;
+        .brand-header {
+            border-collapse: separate;
+            border-spacing: 0;
+            width: 100%;
+            table-layout: fixed;
+            background: #475569;
+            border: 1px solid #64748b;
+            border-radius: 2px;
+            margin-bottom: 10px;
+        }
+
+        .brand-header td {
+            border: none;
+            padding: 5px 10px;
+            vertical-align: middle;
+        }
+
+        .brand-logo-cell {
+            width: 70px;
+            text-align: center;
+            background: rgba(15, 23, 42, 0.14);
+        }
+
+        .brand-logo {
+            display: block;
+            margin: 0 auto;
+        }
+
+        .brand-title-cell {
+            width: auto;
+        }
+
+        .brand-header h1 {
+            margin: 0;
+            color: #f8fafc;
+            font-size: clamp(16px, 1.9vw, 25px);
+            line-height: 1.1;
+        }
+
+        .brand-actions-cell {
+            width: 240px;
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        .brand-auth-menu {
+            position: relative;
+            display: inline-block;
+            max-width: 100%;
+        }
+
+        .brand-auth-link {
+            display: inline-flex;
             align-items: center;
-            gap: 16px;
+            gap: 6px;
+            max-width: 100%;
+            padding: 7px 12px;
+            border-radius: 4px;
+            border: 1px solid rgba(191, 219, 254, 0.45);
+            background: rgba(255, 255, 255, 0.08);
+            color: #f8fafc;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
+            line-height: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            vertical-align: middle;
+        }
+
+        .brand-auth-link:hover {
+            background: rgba(255, 255, 255, 0.14);
+            border-color: rgba(191, 219, 254, 0.7);
+        }
+
+        .brand-auth-link.has-menu::after {
+            content: "▾";
+            font-size: 11px;
+            opacity: 0.9;
+            flex: 0 0 auto;
+        }
+
+        .brand-auth-link[aria-expanded="true"] {
+            background: rgba(255, 255, 255, 0.16);
+            border-color: rgba(191, 219, 254, 0.8);
+        }
+
+        .brand-auth-link:focus {
+            outline: 2px solid rgba(191, 219, 254, 0.9);
+            outline-offset: 2px;
+        }
+
+        .brand-auth-dropdown {
+            position: absolute;
+            right: 0;
+            top: calc(100% + 6px);
+            min-width: 140px;
+            padding: 6px;
+            border-radius: 4px;
+            border: 1px solid #cbd5e1;
+            background: #ffffff;
+            box-shadow: 0 8px 20px rgba(15, 23, 42, 0.18);
+            text-align: left;
+            z-index: 1000;
+        }
+
+        .brand-auth-dropdown[hidden] {
+            display: none;
+        }
+
+        .brand-auth-dropdown-item {
+            display: block;
+            padding: 8px 10px;
+            border-radius: 4px;
+            color: #0f172a;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .brand-auth-dropdown-item:hover {
+            background: #eff6ff;
+            color: #1d4ed8;
+        }
+
+        @media (max-width: 900px) {
+            .brand-actions-cell {
+                width: 150px;
+            }
+
+            .brand-auth-link {
+                padding: 6px 10px;
+                font-size: 12px;
+            }
         }
 
     </style>
 </head>
 
 <body>
-    <table style="border-collapse: collapse; border: 2px solid rgba(255, 255, 255, 0.5);">
-        <td style="border: none;"><img src="doc/logo.png" alt="logo" width="100" height="100"></td>
-        <td style="border: none;">
-            <h1>InferX AI Function Platform (Lambda Function for Inference)</h1>
-            <h2>&nbsp;&nbsp;&nbsp;&nbsp;-- &nbsp; Serve tens models in one box with ultra-fast (<2 sec) cold start
-                    (contact: support@inferx.net)</</h2>
-        </td>
+    {% set path = request.path if request is defined and request.path is defined else '' %}
+    {% set nav_models_active = '/listfunc' in path or '/func_create' in path or '/func' in path or '/funclog' in path %}
+    {% set nav_pods_active = '/listpod' in path or '/pod' in path %}
+    {% set nav_snapshots_active = '/listsnapshot' in path or '/snapshot' in path %}
+    {% set nav_nodes_active = '/listnode' in path or '/node' in path %}
+    {% set nav_admin_active = '/admin' in path %}
+    <table class="brand-header">
+        <tr>
+            <td class="brand-logo-cell"><img class="brand-logo" src="{{ url_for('static', filename='logo.svg') }}" alt="logo" width="48" height="48"></td>
+            <td class="brand-title-cell">
+                <h1>InferX — Serverless GPU Inference Platform for Production Workloads</h1>
+            </td>
+            <td class="brand-actions-cell">
+                <div id="brand-auth-menu" class="brand-auth-menu">
+                    <a href="#" id="login_logout" class="brand-auth-link">Action</a>
+                    <div id="brand-auth-dropdown" class="brand-auth-dropdown" hidden>
+                        <a id="brand-auth-logout" class="brand-auth-dropdown-item" href="#">Log out</a>
+                    </div>
+                </div>
+            </td>
+        </tr>
     </table>
-    <div class="topbar">
-        <a href="#" id="login_logout" style="font-size: 2em; margin-left: auto;">Action</a>
-    </div>
-    <hr>
     <nav>
-        <a href="{{ hosturl }}intro"> Introduction </a>
-        <a href="{{ hosturl }}listfunc"> Models </a>
-        <a href="{{ hosturl }}listpod"> Pods </a>
-        <a href="{{ hosturl }}listsnapshot"> Snapshots </a>
-        <a href="{{ hosturl }}listnode"> Nodes </a>
-        <a href="{{ hosturl }}admin" id="admin"> Admin </a>
+        <a href="{{ hosturl }}listfunc" class="{% if nav_models_active %}active{% endif %}"> Models </a>
+        <a href="{{ hosturl }}listpod" class="{% if nav_pods_active %}active{% endif %}"> Pods </a>
+        <a href="{{ hosturl }}listsnapshot" class="{% if nav_snapshots_active %}active{% endif %}"> Snapshots </a>
+        <a href="{{ hosturl }}listnode" class="{% if nav_nodes_active %}active{% endif %}"> Nodes </a>
+        <a href="{{ hosturl }}admin" id="admin" class="{% if nav_admin_active %}active{% endif %}"> Admin </a>
     </nav>
     <script>
         const link = document.querySelector('#login_logout');
+        const authMenu = document.querySelector('#brand-auth-menu');
+        const authDropdown = document.querySelector('#brand-auth-dropdown');
+        const logoutLink = document.querySelector('#brand-auth-logout');
         const username = {{ session.get('username', '') | tojson }};
         const userDisplayName = {{ session.get('display_name', session.get('username', '')) | tojson }};
         const activeTenantName = {{ session.get('active_tenant_name', session.get('tenant_name', '')) | tojson }};
         const tenantDisplayMap = {};
+        const loginUrl = '{{ hosturl }}' + "login";
+        const logoutUrl = '{{ hosturl }}' + "logout";
+
+        function closeAuthDropdown() {
+            if (!authDropdown || !link) {
+                return;
+            }
+            authDropdown.hidden = true;
+            link.setAttribute('aria-expanded', 'false');
+        }
+
+        function toggleAuthDropdown() {
+            if (!authDropdown || !link) {
+                return;
+            }
+            const nextOpen = authDropdown.hidden;
+            authDropdown.hidden = !nextOpen;
+            link.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
+        }
 
         function tenantDisplayNameFromTenantObject(tenantObj) {
             if (!tenantObj) {
@@ -210,11 +413,38 @@
         window.tenantDisplayNameFromTenantObject = tenantDisplayNameFromTenantObject;
 
         if (username == "") {
-            link.href = '{{ hosturl }}' + "login";
-            link.textContent = 'login'
+            link.href = loginUrl;
+            link.textContent = 'Log in';
+            link.removeAttribute('aria-haspopup');
+            link.removeAttribute('aria-expanded');
+            link.classList.remove('has-menu');
+            if (authDropdown) {
+                authDropdown.hidden = true;
+            }
         } else {
-            link.href = '{{ hosturl }}' + "logout";
-            link.textContent = "logout(" + userDisplayName + ")";
+            link.href = '#';
+            link.textContent = userDisplayName || username;
+            link.setAttribute('aria-haspopup', 'menu');
+            link.setAttribute('aria-expanded', 'false');
+            link.classList.add('has-menu');
+            if (logoutLink) {
+                logoutLink.href = logoutUrl;
+            }
+            link.addEventListener('click', (event) => {
+                event.preventDefault();
+                toggleAuthDropdown();
+            });
+            document.addEventListener('click', (event) => {
+                if (!authMenu || authMenu.contains(event.target)) {
+                    return;
+                }
+                closeAuthDropdown();
+            });
+            document.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape') {
+                    closeAuthDropdown();
+                }
+            });
         }
 
         refreshTenantBadge();
@@ -222,7 +452,7 @@
         loadTenantDisplayMap();
 
     </script>
-    <hr>
+    <hr class="nav-divider">
     <div class="content">
         {% block content %} {% endblock %}
     </div>
