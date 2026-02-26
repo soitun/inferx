@@ -783,6 +783,11 @@ impl SchedulerHandler {
         handler
     }
 
+    #[inline]
+    fn snapshot_billing_enabled(&self) -> bool {
+        SCHEDULER_CONFIG.enableSnapshotBilling
+    }
+
     /// Get or create a per-node semaphore with max 2 concurrent operations
     /// This prevents overlapping GPU resets and expensive docker cleanup on the same node
     fn get_node_semaphore(&mut self, nodename: &str) -> Arc<Semaphore> {
@@ -2065,6 +2070,10 @@ impl SchedulerHandler {
     /// Start a billing session for snapshot pod creation
     /// Called when a snapshot pod is added (create_type = Snapshot)
     fn start_snapshot_pod_billing(&mut self, pod: &FuncPod) {
+        if !self.snapshot_billing_enabled() {
+            return;
+        }
+
         let pod_key = pod.PodKey();
         let nodename = &pod.object.spec.nodename;
         let tenant = &pod.tenant;
@@ -2138,6 +2147,10 @@ impl SchedulerHandler {
     /// End a billing session for snapshot pod
     /// Called when snapshot pod reaches Snapshoted state or is removed
     fn end_snapshot_pod_billing(&mut self, pod_key: &str) {
+        if !self.snapshot_billing_enabled() {
+            return;
+        }
+
         let session = match self.snapshot_billing_sessions.remove(pod_key) {
             Some(s) => s,
             None => {
@@ -2182,6 +2195,10 @@ impl SchedulerHandler {
     /// Emit periodic billing ticks for all active snapshot pod billing sessions
     /// Called every 60 seconds from the main loop
     fn emit_periodic_billing_ticks(&mut self) {
+        if !self.snapshot_billing_enabled() {
+            return;
+        }
+
         if self.snapshot_billing_sessions.is_empty() {
             return;
         }

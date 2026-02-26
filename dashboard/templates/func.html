@@ -340,13 +340,12 @@
 {% endif %}
 
 
-<h2>Func</h2>
-{% if isAdmin %}
-<button id="updateSpec" onclick="updateSpec()">Update Model</button>
-<button id="deleteSpec" onclick="deleteFunc()">Delete Model</button>
-{% endif %}
+<h2>Func Spec</h2>
 <br />
 <textarea id="spec" rows="50" cols="120">{{ funcspec }}</textarea>
+
+<h2>Func (Full Spec, Debug)</h2>
+<textarea id="full-spec-debug" rows="25" cols="120" readonly>{{ full_funcspec }}</textarea>
 
 <h2>FuncPolicy</h2>
 <textarea id="FuncPolicy" rows="5" cols="120">{{ funcpolicy }}</textarea>
@@ -357,8 +356,9 @@
     const name = {{ name | tojson }};
     const apiType = {{ apiType | tojson }};
     const map = {{ map | tojson }};
-    const path = {{ path | tojson }};
+    const sampleQueryPath = {{ path | tojson }};
     const funcconfig = {{ func | tojson }};
+    const funcEditData = {{ func_edit_data | tojson }};
 
     function loadImage() {
         const url = document.getElementById("urlInput").value;
@@ -391,23 +391,43 @@
         const debugDiv = document.getElementById('debug');
         const spec = document.getElementById('spec').value;
         try {
-            funcconfig.func.object.spec = JSON.parse(spec);
+            let response;
+            if (funcEditData == null || typeof funcEditData !== 'object') {
+                // Legacy fallback: update raw full spec directly.
+                funcconfig.func.object.spec = JSON.parse(spec);
+                response = await fetch("/demo/proxy/object/", {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(funcconfig.func)
+                });
+            } else {
+                const partialSpec = JSON.parse(spec);
+                const hfModel = (funcEditData.hf_model || '').trim();
+                if (hfModel === '') {
+                    throw new Error("hf_model is missing in edit projection; cannot submit partial update");
+                }
 
-            const hostname = window.location.hostname;
-            const port = window.location.port;
-            const schema = window.location.protocol;
+                const payload = {
+                    mode: 'update',
+                    tenant: tenant,
+                    namespace: namespace,
+                    name: name,
+                    hf_model: hfModel,
+                    spec: partialSpec
+                };
 
-            url = schema + "//" + hostname + ":" + port + "/demo/proxy/object/";
-            const body = {
-                method: 'POST',
-                headers: {
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(funcconfig.func)
-            };
-
-            const response = await fetch(url, body);
+                response = await fetch("/demo/func_save", {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+            }
             const text = await response.text();
             if (response.status == '200') {
                 alert("Update Model Spec successfully! ");
@@ -507,7 +527,7 @@
             abortController = new AbortController();
             const { signal } = abortController;
 
-            url = schema + "//" + hostname + ":" + port + "/demo/proxy/funccall/" + tenant + "/" + namespace + "/" + name + "/" + path;
+            url = schema + "//" + hostname + ":" + port + "/demo/proxy/funccall/" + tenant + "/" + namespace + "/" + name + "/" + sampleQueryPath;
 
             let body;
             if (apiType == "text2text") {
@@ -566,7 +586,7 @@
                 headers: {
                     'Accept': 'application/json',
                     'Content-Type': 'application/json',
-                    'X-Inferx-Timeout': '12'
+                    'X-Inferx-Timeout': '60'
                 },
                 body: body,
                 signal
@@ -676,7 +696,7 @@
                 headers: {
                     'Accept': 'application/json',
                     'Content-Type': 'application/json',
-                    'X-Inferx-Timeout': '12'
+                    'X-Inferx-Timeout': '60'
                 },
                 body: JSON.stringify({
                     "prompt": prompt,
@@ -781,7 +801,7 @@
                 headers: {
                     'Accept': 'application/json',
                     'Content-Type': 'application/json',
-                    'X-Inferx-Timeout': '12'
+                    'X-Inferx-Timeout': '60'
                 },
                 body: JSON.stringify({
                     "prompt": prompt,

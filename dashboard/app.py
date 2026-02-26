@@ -104,6 +104,45 @@ ONBOARD_MAX_RETRIES = int(os.getenv('ONBOARD_MAX_RETRIES', '3'))
 ONBOARD_BACKOFF_BASE_SEC = float(os.getenv('ONBOARD_BACKOFF_BASE_SEC', '0.5'))
 ONBOARD_TIMEOUT_SEC = float(os.getenv('ONBOARD_TIMEOUT_SEC', '10'))
 
+VLLM_IMAGE_WHITELIST = [
+    "vllm/vllm-openai:v0.15.0",
+    "vllm/vllm-openai:v0.14.0",
+    "vllm/vllm-openai:v0.13.0",
+    "vllm/vllm-openai:v0.12.0",
+    "vllm/vllm-omni:v0.14.0",
+]
+
+GPU_RESOURCE_LOOKUP = {
+    1: {"CPU": 10000, "Mem": 30000},
+    2: {"CPU": 20000, "Mem": 60000},
+    4: {"CPU": 20000, "Mem": 80000},
+}
+
+DEFAULT_MODEL_ENVS = [
+    ["LD_LIBRARY_PATH", "/usr/local/lib/python3.12/dist-packages/nvidia/cuda_nvrtc/lib/:$LD_LIBRARY_PATH"],
+    ["VLLM_CUDART_SO_PATH", "/usr/local/cuda-12.1/targets/x86_64-linux/lib/libcudart.so.12"],
+]
+
+RESERVED_ENV_KEYS = {row[0] for row in DEFAULT_MODEL_ENVS}
+
+FIXED_ENDPOINT = {"port": 8000, "schema": "Http", "probe": "/health"}
+FIXED_STANDBY = {"gpu": "File", "pageable": "File", "pinned": "File"}
+EMBEDDED_POLICY_REQUIRED_DEFAULTS = {
+    "min_replica": 0,
+    "max_replica": 1,
+    "standby_per_node": 1,
+}
+DEFAULT_SAMPLE_QUERY_PROMPTS = [
+    "Write a Python function that computes Fibonacci numbers. Explain time complexity.",
+    "Translate the following Chinese text to English: \u4eca\u5929\u5929\u6c14\u5f88\u597d\u3002",
+    "Explain general relativity in simple language.",
+    "Write a legal contract clause about liability and indemnification.",
+    "Summarize the plot of a fantasy novel involving dragons.",
+    "Solve this calculus integral: \u222b x^3 log(x) dx",
+    "Generate a JSON schema describing a user profile.",
+    "Explain why emojis like \U0001F600\U0001F525\U0001F680 represent byte-level tokens.",
+]
+
 if FORCE_HTTPS_REDIRECTS:
     app.config["SESSION_COOKIE_SECURE"] = True
 
@@ -303,6 +342,9 @@ def is_inferx_admin_user():
     if session.get('username', '') == 'inferx_admin':
         return True
 
+    if session.get('access_token', '') == '':
+        return False
+
     try:
         roles = listroles()
     except Exception:
@@ -316,6 +358,69 @@ def is_inferx_admin_user():
         role_name = str(role.get('role', '')).lower()
         tenant = role.get('tenant', '')
         if obj_type == 'tenant' and role_name == 'admin' and tenant == 'system':
+            return True
+
+    return False
+
+
+def has_any_tenant_or_namespace_admin_role():
+    if session.get('access_token', '') == '':
+        return False
+
+    try:
+        roles = listroles()
+    except Exception:
+        return False
+
+    if not isinstance(roles, list):
+        return False
+
+    for role in roles:
+        obj_type = str(role.get('objType', '')).lower()
+        role_name = str(role.get('role', '')).lower()
+        if role_name == 'admin' and obj_type in ('tenant', 'namespace'):
+            return True
+
+    return False
+
+
+def has_inferx_admin_role(roles):
+    if not isinstance(roles, list):
+        return False
+
+    for role in roles:
+        obj_type = str(role.get('objType', '')).lower().strip()
+        role_name = str(role.get('role', '')).lower().strip()
+        tenant = str(role.get('tenant', '')).lower().strip()
+        if obj_type == 'tenant' and role_name == 'admin' and tenant == 'system':
+            return True
+
+    return False
+
+
+def has_admin_role_for_model(roles, target_tenant: str, target_namespace: str = ""):
+    if not isinstance(roles, list):
+        return False
+
+    search_tenant = str(target_tenant or '').lower().strip()
+    search_namespace = str(target_namespace or '').lower().strip()
+
+    for role in roles:
+        obj_type = str(role.get('objType', '')).lower().strip()
+        role_name = str(role.get('role', '')).lower().strip()
+        rb_tenant = str(role.get('tenant', '')).lower().strip()
+        rb_namespace = str(role.get('namespace', '')).lower().strip()
+
+        is_system_admin = obj_type == 'tenant' and rb_tenant == 'system' and role_name == 'admin'
+        is_tenant_admin = obj_type == 'tenant' and rb_tenant == search_tenant and role_name == 'admin'
+        is_namespace_admin = (
+            obj_type == 'namespace'
+            and rb_tenant == search_tenant
+            and rb_namespace == search_namespace
+            and role_name == 'admin'
+        )
+
+        if is_system_admin or is_tenant_admin or is_namespace_admin:
             return True
 
     return False
@@ -580,6 +685,433 @@ def getnode(name: str):
     func = json.loads(resp.content)
 
     return func
+
+
+def json_error(message: str, status: int = 400):
+    return jsonify({"error": message}), status
+
+
+def gateway_headers(include_json: bool = False):
+    access_token = session.get('access_token', '')
+    headers = {}
+    if access_token != "":
+        headers["Authorization"] = f"Bearer {access_token}"
+    if include_json:
+        headers["Content-Type"] = "application/json"
+    return headers
+
+
+def get_node_max_vram_mb():
+    nodes = listnodes()
+    max_vram = 0
+    iter_nodes = nodes if isinstance(nodes, list) else []
+    for node in iter_nodes:
+        try:
+            vram = int(node["object"]["resources"]["GPUs"]["vRam"])
+            if vram > max_vram:
+                max_vram = vram
+        except Exception:
+            continue
+    return max_vram
+
+
+def get_node_capacity_limits():
+    nodes = listnodes()
+    max_vram = 0
+    max_gpu_count = 0
+    iter_nodes = nodes if isinstance(nodes, list) else []
+    for node in iter_nodes:
+        try:
+            gpu_obj = (((node.get("object") or {}).get("resources") or {}).get("GPUs")) or {}
+            gpu_map = gpu_obj.get("map", {})
+            if isinstance(gpu_map, dict):
+                gpu_count = len(gpu_map)
+                if gpu_count > max_gpu_count:
+                    max_gpu_count = gpu_count
+            vram = int(gpu_obj["vRam"])
+            if vram > max_vram:
+                max_vram = vram
+        except Exception:
+            continue
+    return max_vram, max_gpu_count
+
+
+def strip_reserved_command_args(commands):
+    filtered = []
+    i = 0
+    while i < len(commands):
+        token = commands[i]
+        if token == "--model":
+            i += 2
+            continue
+        if isinstance(token, str) and token.startswith("--model="):
+            i += 1
+            continue
+        if token == "--tensor-parallel-size":
+            i += 2
+            continue
+        if isinstance(token, str) and token.startswith("--tensor-parallel-size="):
+            i += 1
+            continue
+        filtered.append(token)
+        i += 1
+    return filtered
+
+
+def is_vllm_omni_image(image):
+    return isinstance(image, str) and image.startswith("vllm/vllm-omni:")
+
+
+def strip_omni_generated_command_args(commands):
+    filtered = []
+    for token in commands:
+        if token in ("--trust-remote-code", "--omni"):
+            continue
+        filtered.append(token)
+    return filtered
+
+
+def build_generated_runtime_commands(hf_model, image, gpu_count, partial_commands):
+    extra_commands = strip_reserved_command_args(partial_commands)
+    if is_vllm_omni_image(image):
+        extra_commands = strip_omni_generated_command_args(extra_commands)
+        full_commands = [
+            "vllm",
+            "serve",
+            hf_model,
+            "--trust-remote-code",
+            "--omni",
+        ]
+        full_commands.extend(extra_commands)
+        return full_commands
+
+    full_commands = ["--model", hf_model]
+    full_commands.extend(extra_commands)
+    full_commands.append(f"--tensor-parallel-size={gpu_count}")
+    return full_commands
+
+
+def extract_model_arg_from_commands(commands):
+    i = 0
+    while i < len(commands):
+        token = commands[i]
+        if token == "--model":
+            if i + 1 < len(commands):
+                return str(commands[i + 1])
+            return ""
+        if isinstance(token, str) and token.startswith("--model="):
+            return token.split("=", 1)[1]
+        i += 1
+    return ""
+
+
+def strip_reserved_envs(envs):
+    filtered = []
+    for pair in envs:
+        if not isinstance(pair, list) or len(pair) != 2:
+            continue
+        key = pair[0]
+        value = pair[1]
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        if key in RESERVED_ENV_KEYS:
+            continue
+        filtered.append([key, value])
+    return filtered
+
+
+def validate_partial_spec(spec, max_node_vram, max_node_gpu_count=0, editor_mode="basic"):
+    if not isinstance(spec, dict):
+        raise ValueError("`spec` must be an object")
+
+    allowed_spec_keys = {"image", "commands", "resources", "envs", "policy", "sample_query"}
+    unknown_spec_keys = set(spec.keys()) - allowed_spec_keys
+    if unknown_spec_keys:
+        raise ValueError(f"Unknown key in `spec`: {sorted(unknown_spec_keys)[0]}")
+
+    for required_key in ("image", "commands", "resources"):
+        if required_key not in spec:
+            raise ValueError(f"Missing required `spec.{required_key}`")
+
+    image = spec.get("image")
+    if not isinstance(image, str) or image not in VLLM_IMAGE_WHITELIST:
+        raise ValueError("`spec.image` must be one of the whitelisted vllm image tags")
+
+    commands = spec.get("commands")
+    if not isinstance(commands, list) or any(not isinstance(item, str) for item in commands):
+        raise ValueError("`spec.commands` must be an array of strings")
+
+    resources = spec.get("resources")
+    if not isinstance(resources, dict):
+        raise ValueError("`spec.resources` must be an object")
+    if set(resources.keys()) != {"GPU"}:
+        disallowed = sorted(set(resources.keys()) - {"GPU"})
+        if disallowed:
+            raise ValueError(f"Forbidden field in `spec.resources`: {disallowed[0]}")
+        raise ValueError("`spec.resources.GPU` is required")
+
+    gpu = resources.get("GPU")
+    if not isinstance(gpu, dict):
+        raise ValueError("`spec.resources.GPU` must be an object")
+    allowed_gpu_keys = {"Count", "vRam"}
+    if set(gpu.keys()) - allowed_gpu_keys:
+        raise ValueError(f"Forbidden field in `spec.resources.GPU`: {sorted(set(gpu.keys()) - allowed_gpu_keys)[0]}")
+    if "Count" not in gpu or "vRam" not in gpu:
+        raise ValueError("`spec.resources.GPU.Count` and `spec.resources.GPU.vRam` are required")
+
+    gpu_count = gpu.get("Count")
+    vram = gpu.get("vRam")
+    if not isinstance(gpu_count, int) or isinstance(gpu_count, bool):
+        raise ValueError("`spec.resources.GPU.Count` must be an integer")
+    if gpu_count not in GPU_RESOURCE_LOOKUP:
+        raise ValueError("`spec.resources.GPU.Count` must be one of: 1, 2, 4")
+    if max_node_gpu_count > 0 and gpu_count > max_node_gpu_count:
+        raise ValueError(f"`spec.resources.GPU.Count` must be <= node max GPU count ({max_node_gpu_count})")
+    if not isinstance(vram, int) or isinstance(vram, bool):
+        raise ValueError("`spec.resources.GPU.vRam` must be an integer (MB)")
+    if vram <= 0:
+        raise ValueError("`spec.resources.GPU.vRam` must be > 0")
+    if max_node_vram > 0 and vram > max_node_vram:
+        raise ValueError(f"`spec.resources.GPU.vRam` must be <= node max ({max_node_vram})")
+
+    envs = spec.get("envs", [])
+    if envs is None:
+        envs = []
+    if not isinstance(envs, list):
+        raise ValueError("`spec.envs` must be an array of [key, value] pairs")
+    normalized_envs = []
+    for idx, pair in enumerate(envs):
+        if not isinstance(pair, list) or len(pair) != 2:
+            raise ValueError(f"`spec.envs[{idx}]` must be [key, value]")
+        key, value = pair
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise ValueError(f"`spec.envs[{idx}]` key/value must be strings")
+        normalized_envs.append([key, value])
+
+    normalized_policy = None
+    if "policy" in spec:
+        policy = spec.get("policy")
+        if not isinstance(policy, dict):
+            raise ValueError("`spec.policy` must be an object")
+        if set(policy.keys()) != {"Obj"}:
+            forbidden = sorted(set(policy.keys()) - {"Obj"})
+            if forbidden:
+                raise ValueError(f"Forbidden field in `spec.policy`: {forbidden[0]}")
+            raise ValueError("`spec.policy.Obj` is required")
+        obj = policy.get("Obj")
+        if not isinstance(obj, dict):
+            raise ValueError("`spec.policy.Obj` must be an object")
+        allowed_policy_obj_keys = {"queue_timeout", "scalein_timeout"}
+        unknown_policy_keys = set(obj.keys()) - allowed_policy_obj_keys
+        if unknown_policy_keys:
+            raise ValueError(f"Unknown key in `spec.policy.Obj`: {sorted(unknown_policy_keys)[0]}")
+
+        policy_obj = {}
+        if "queue_timeout" in obj:
+            value = obj["queue_timeout"]
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ValueError("`spec.policy.Obj.queue_timeout` must be a number")
+            policy_obj["queue_timeout"] = float(value)
+        if "scalein_timeout" in obj:
+            value = obj["scalein_timeout"]
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ValueError("`spec.policy.Obj.scalein_timeout` must be a number")
+            policy_obj["scalein_timeout"] = float(value)
+
+        normalized_policy = {"Obj": policy_obj} if policy_obj else None
+
+    normalized_sample_query = None
+    if "sample_query" in spec:
+        sample_query = spec.get("sample_query")
+        if not isinstance(sample_query, dict):
+            raise ValueError("`spec.sample_query` must be an object")
+        # Deep-copy through JSON to keep only JSON-compatible values.
+        normalized_sample_query = json.loads(json.dumps(sample_query))
+
+    normalized_commands = [str(item) for item in commands] if editor_mode == "advanced" else strip_reserved_command_args(commands)
+
+    return {
+        "image": image,
+        "commands": normalized_commands,
+        "resources": {"GPU": {"Count": gpu_count, "vRam": vram}},
+        "envs": strip_reserved_envs(normalized_envs),
+        "policy": normalized_policy,
+        "sample_query": normalized_sample_query,
+    }
+
+
+def build_sample_query(hf_model: str):
+    return {
+        "apiType": "text2text",
+        "prompt": "write a quick sort algorithm.",
+        "prompts": list(DEFAULT_SAMPLE_QUERY_PROMPTS),
+        "path": "v1/completions",
+        "body": {
+            "model": hf_model,
+            "max_tokens": "1000",
+            "temperature": "0",
+            "stream": "true",
+        },
+    }
+
+
+def build_full_spec(hf_model: str, partial_spec, editor_mode="basic"):
+    gpu_count = partial_spec["resources"]["GPU"]["Count"]
+    gpu_vram = partial_spec["resources"]["GPU"]["vRam"]
+    resource_row = GPU_RESOURCE_LOOKUP[gpu_count]
+
+    if editor_mode == "advanced":
+        full_commands = [str(item) for item in partial_spec["commands"]]
+    else:
+        full_commands = build_generated_runtime_commands(
+            hf_model=hf_model,
+            image=partial_spec["image"],
+            gpu_count=gpu_count,
+            partial_commands=partial_spec["commands"],
+        )
+
+    sample_query = partial_spec.get("sample_query")
+    if isinstance(sample_query, dict):
+        resolved_sample_query = json.loads(json.dumps(sample_query))
+        body = resolved_sample_query.get("body")
+        if not isinstance(body, dict):
+            body = {}
+            resolved_sample_query["body"] = body
+        body["model"] = hf_model
+    else:
+        resolved_sample_query = build_sample_query(hf_model)
+
+    spec = {
+        "image": partial_spec["image"],
+        "commands": full_commands,
+        "resources": {
+            "CPU": resource_row["CPU"],
+            "Mem": resource_row["Mem"],
+            "GPU": {
+                "Type": "Any",
+                "Count": gpu_count,
+                "vRam": gpu_vram,
+            },
+        },
+        "envs": [list(item) for item in DEFAULT_MODEL_ENVS] + partial_spec["envs"],
+        "endpoint": dict(FIXED_ENDPOINT),
+        "sample_query": resolved_sample_query,
+        "standby": dict(FIXED_STANDBY),
+    }
+
+    policy = partial_spec.get("policy")
+    if policy and policy.get("Obj"):
+        full_policy_obj = dict(EMBEDDED_POLICY_REQUIRED_DEFAULTS)
+        full_policy_obj.update(policy["Obj"])
+        # runtime_config is no longer used by the dashboard create/edit flow.
+        # Strip it defensively even if future UI changes accidentally include it.
+        full_policy_obj.pop("runtime_config", None)
+        spec["policy"] = {"Obj": full_policy_obj}
+
+    return spec
+
+
+def project_func_for_edit(full_func):
+    if not isinstance(full_func, dict) or "func" not in full_func:
+        raise ValueError("Invalid function response")
+    func_obj = full_func.get("func")
+    if not isinstance(func_obj, dict):
+        raise ValueError("Invalid function object")
+
+    tenant = str(func_obj.get("tenant", "")).strip()
+    namespace = str(func_obj.get("namespace", "")).strip()
+    name = str(func_obj.get("name", "")).strip()
+    spec = (((func_obj.get("object") or {}).get("spec")) or {})
+    if not isinstance(spec, dict):
+        raise ValueError("Function spec missing")
+
+    commands = spec.get("commands", [])
+    if not isinstance(commands, list):
+        commands = []
+    image = spec.get("image", VLLM_IMAGE_WHITELIST[0])
+    if not isinstance(image, str) or image == "":
+        image = VLLM_IMAGE_WHITELIST[0]
+
+    full_commands_for_advanced = [str(item) for item in commands]
+    if is_vllm_omni_image(image):
+        omni_partial = [str(item) for item in commands]
+        if len(omni_partial) >= 3 and omni_partial[0] == "vllm" and omni_partial[1] == "serve":
+            omni_partial = omni_partial[3:]
+        omni_partial = strip_omni_generated_command_args(omni_partial)
+        clean_commands = [str(item) for item in strip_reserved_command_args(omni_partial)]
+    else:
+        clean_commands = [str(item) for item in strip_reserved_command_args(commands)]
+
+    envs = spec.get("envs", [])
+    if not isinstance(envs, list):
+        envs = []
+    clean_envs = []
+    for pair in envs:
+        if not isinstance(pair, list) or len(pair) != 2:
+            continue
+        key, value = pair
+        if isinstance(key, str) and isinstance(value, str) and key not in RESERVED_ENV_KEYS:
+            clean_envs.append([key, value])
+
+    gpu_spec = (((spec.get("resources") or {}).get("GPU")) or {})
+    gpu_count = gpu_spec.get("Count", 1)
+    gpu_vram = gpu_spec.get("vRam", 0)
+    if not isinstance(gpu_count, int):
+        gpu_count = 1
+    if not isinstance(gpu_vram, int):
+        gpu_vram = 0
+
+    policy_obj = ((((spec.get("policy") or {}).get("Obj")) or {}))
+    projected_policy_obj = {}
+    if isinstance(policy_obj, dict):
+        if "queue_timeout" in policy_obj and isinstance(policy_obj["queue_timeout"], (int, float)) and not isinstance(policy_obj["queue_timeout"], bool):
+            projected_policy_obj["queue_timeout"] = float(policy_obj["queue_timeout"])
+        if "scalein_timeout" in policy_obj and isinstance(policy_obj["scalein_timeout"], (int, float)) and not isinstance(policy_obj["scalein_timeout"], bool):
+            projected_policy_obj["scalein_timeout"] = float(policy_obj["scalein_timeout"])
+
+    sample_query = spec.get("sample_query", {})
+    hf_model = ""
+    if isinstance(sample_query, dict):
+        body = sample_query.get("body", {})
+        if isinstance(body, dict):
+            model_value = body.get("model", "")
+            if isinstance(model_value, str):
+                hf_model = model_value.strip()
+    if hf_model == "":
+        hf_model = extract_model_arg_from_commands(commands).strip()
+
+    projected_sample_query = None
+    if isinstance(sample_query, dict):
+        projected_sample_query = json.loads(json.dumps(sample_query))
+
+    basic_spec = {
+        "image": image,
+        "commands": clean_commands,
+        "resources": {"GPU": {"Count": gpu_count, "vRam": gpu_vram}},
+        "envs": clean_envs,
+        **({"sample_query": projected_sample_query} if projected_sample_query is not None else {}),
+        **({"policy": {"Obj": projected_policy_obj}} if projected_policy_obj else {}),
+    }
+    projected_spec = json.loads(json.dumps(basic_spec))
+    projected_spec["commands"] = full_commands_for_advanced
+    advanced_spec = json.loads(json.dumps(projected_spec))
+
+    return {
+        "tenant": tenant,
+        "namespace": namespace,
+        "name": name,
+        "hf_model": hf_model,
+        "spec": projected_spec,
+        "basic_spec": basic_spec,
+        "advanced_spec": advanced_spec,
+    }
+
+
+def parse_edit_key(edit_key: str):
+    parts = [part.strip() for part in (edit_key or "").split("/")]
+    if len(parts) != 3 or any(part == "" for part in parts):
+        raise ValueError("`edit` must be `<tenant>/<namespace>/<name>`")
+    return parts[0], parts[1], parts[2]
 
 def listroles():
     access_token = session.get('access_token', '')
@@ -967,7 +1499,13 @@ def stream_response(response):
 def proxy(path):
     access_token = session.get('access_token', '')
     headers = {key: value for key, value in request.headers if key.lower() != 'host'}
-    if access_token != "":
+    normalized_path = path.lstrip('/')
+    # Keep public funccall requests anonymous. Some gateway configs reject
+    # dashboard session tokens on /funccall while allowing unauthenticated
+    # access for public tenant models.
+    is_public_funccall = normalized_path.startswith("funccall/public/")
+    has_client_auth = any(key.lower() == 'authorization' for key in headers)
+    if access_token != "" and not has_client_auth and not is_public_funccall:
         headers["Authorization"] = f'Bearer {access_token}'
     
     # Construct the full URL for the backend request
@@ -1057,6 +1595,176 @@ def funclog():
     )
 
 
+@prefix_bp.route("/nodes_max_vram", methods=["GET"])
+@require_login
+def nodes_max_vram():
+    try:
+        max_vram, max_gpu_count = get_node_capacity_limits()
+        return jsonify({"max_vram": max_vram, "max_gpu_count": max_gpu_count})
+    except Exception as e:
+        return json_error(f"failed to read nodes: {e}", 502)
+
+
+@prefix_bp.route("/func_create", methods=["GET"])
+@require_login
+def FuncCreate():
+    edit_key = request.args.get("edit", "").strip()
+    initial_model_data = None
+    page_mode = "create"
+
+    if edit_key != "":
+        try:
+            tenant, namespace, name = parse_edit_key(edit_key)
+        except ValueError as e:
+            return json_error(str(e), 400)
+
+        try:
+            full_func = getfunc(tenant, namespace, name)
+            initial_model_data = project_func_for_edit(full_func)
+            page_mode = "update"
+        except Exception as e:
+            return json_error(f"failed to load model for edit: {e}", 502)
+
+    return render_template(
+        "func_create.html",
+        page_mode=page_mode,
+        edit_key=edit_key,
+        initial_model_data=initial_model_data,
+        image_options=VLLM_IMAGE_WHITELIST,
+        default_advanced_sample_query_template=build_sample_query("Qwen/Qwen2.5-72B-Instruct"),
+    )
+
+
+@prefix_bp.route("/func_save", methods=["POST"])
+@require_login
+def func_save():
+    req = request.get_json(silent=True)
+    if not isinstance(req, dict):
+        return json_error("Request body must be a JSON object", 400)
+
+    allowed_top_level_keys = {"mode", "tenant", "namespace", "name", "hf_model", "spec", "editor_mode"}
+    unknown_top_level_keys = set(req.keys()) - allowed_top_level_keys
+    if unknown_top_level_keys:
+        return json_error(f"Unknown top-level key: {sorted(unknown_top_level_keys)[0]}", 400)
+
+    for key in ("mode", "tenant", "namespace", "name", "hf_model", "spec"):
+        if key not in req:
+            return json_error(f"Missing required field: `{key}`", 400)
+
+    mode = req.get("mode")
+    if mode not in ("create", "update"):
+        return json_error("`mode` must be \"create\" or \"update\"", 400)
+    editor_mode = req.get("editor_mode", "basic")
+    if editor_mode not in ("basic", "advanced"):
+        return json_error("`editor_mode` must be \"basic\" or \"advanced\"", 400)
+
+    tenant = req.get("tenant")
+    namespace = req.get("namespace")
+    name = req.get("name")
+    hf_model = req.get("hf_model")
+    app.logger.info(
+        "func_save received hf_model=%r tenant=%r namespace=%r name=%r mode=%r editor_mode=%r",
+        hf_model,
+        tenant,
+        namespace,
+        name,
+        mode,
+        editor_mode,
+    )
+    spec = req.get("spec")
+
+    for field_name, field_value in (("tenant", tenant), ("namespace", namespace), ("name", name), ("hf_model", hf_model)):
+        if not isinstance(field_value, str) or field_value.strip() == "":
+            return json_error(f"`{field_name}` must be a non-empty string", 400)
+
+    tenant = tenant.strip()
+    namespace = namespace.strip()
+    name = name.strip()
+    hf_model = hf_model.strip()
+    app.logger.info(
+        "func_save normalized hf_model=%r tenant=%r namespace=%r name=%r mode=%r editor_mode=%r",
+        hf_model,
+        tenant,
+        namespace,
+        name,
+        mode,
+        editor_mode,
+    )
+
+    try:
+        max_node_vram, max_node_gpu_count = get_node_capacity_limits()
+    except Exception as e:
+        return json_error(f"failed to read node capacity limits: {e}", 502)
+
+    try:
+        partial_spec = validate_partial_spec(
+            spec,
+            max_node_vram,
+            max_node_gpu_count=max_node_gpu_count,
+            editor_mode=editor_mode,
+        )
+        full_spec = build_full_spec(hf_model, partial_spec, editor_mode=editor_mode)
+        app.logger.info(
+            "func_save built spec model fields editor_mode=%r command_model=%r sample_model=%r",
+            editor_mode,
+            (
+                full_spec.get("commands", [None, None])[1]
+                if isinstance(full_spec.get("commands"), list) and len(full_spec.get("commands", [])) > 1
+                else None
+            ),
+            (
+                (((full_spec.get("sample_query") or {}).get("body") or {}).get("model"))
+                if isinstance(full_spec.get("sample_query"), dict)
+                else None
+            ),
+        )
+    except ValueError as e:
+        return json_error(str(e), 400)
+    except Exception as e:
+        return json_error(f"failed to build full spec: {e}", 500)
+
+    gateway_req = {
+        "type": "function",
+        "tenant": tenant,
+        "namespace": namespace,
+        "name": name,
+        "object": {
+            "spec": full_spec
+        }
+    }
+
+    gateway_method = "PUT" if mode == "create" else "POST"
+    gateway_url = f"{apihostaddr}/object/"
+    app.logger.info(
+        "func_save forwarding method=%s url=%s command_model=%r sample_model=%r",
+        gateway_method,
+        gateway_url,
+        (
+            gateway_req["object"]["spec"].get("commands", [None, None])[1]
+            if isinstance(gateway_req["object"]["spec"].get("commands"), list)
+            and len(gateway_req["object"]["spec"].get("commands", [])) > 1
+            else None
+        ),
+        ((((gateway_req["object"]["spec"].get("sample_query") or {}).get("body") or {}).get("model"))),
+    )
+    try:
+        resp = requests.request(
+            gateway_method,
+            gateway_url,
+            headers=gateway_headers(include_json=True),
+            json=gateway_req,
+            timeout=60,
+        )
+    except requests.exceptions.RequestException as e:
+        return json_error(f"Error connecting to gateway: {e}", 502)
+
+    return (
+        resp.text,
+        resp.status_code,
+        {"Content-Type": resp.headers.get("Content-Type", "application/json")},
+    )
+
+
 @prefix_bp.route("/")
 @prefix_bp.route("/listfunc")
 @not_require_login
@@ -1072,12 +1780,30 @@ def ListFunc():
     else:
         funcs = listfuncs(tenant, namespace)
 
+    roles = []
+    if session.get('access_token', '') != '':
+        try:
+            roles = listroles()
+        except Exception:
+            roles = []
+    if not isinstance(roles, list):
+        roles = []
+
     count = 0
     gpucount = 0
     vram = 0
     cpu = 0 
     memory = 0
     for func in funcs:
+        try:
+            row_func = func.get('func', {}) if isinstance(func, dict) else {}
+            row_tenant = str(row_func.get('tenant', '') or '')
+            row_namespace = str(row_func.get('namespace', '') or '')
+            if isinstance(func, dict):
+                func['can_edit_delete'] = has_admin_role_for_model(roles, row_tenant, row_namespace)
+        except Exception:
+            if isinstance(func, dict):
+                func['can_edit_delete'] = False
         count += 1
         gpucount += func['func']['object']["spec"]["resources"]["GPU"]["Count"]
         vram += func['func']['object']["spec"]["resources"]["GPU"]["Count"] * func['func']['object']["spec"]["resources"]["GPU"]["vRam"]
@@ -1092,7 +1818,19 @@ def ListFunc():
     summary["memory"] = memory
     
 
-    return render_template("func_list.html", funcs=funcs, summary=summary)
+    can_manage_models = any(
+        str(role.get('role', '')).lower() == 'admin'
+        and str(role.get('objType', '')).lower() in ('tenant', 'namespace')
+        for role in roles
+    )
+    is_inferx_admin = session.get('username', '') == 'inferx_admin' or has_inferx_admin_role(roles)
+    return render_template(
+        "func_list.html",
+        funcs=funcs,
+        summary=summary,
+        can_manage_models=can_manage_models,
+        is_inferx_admin=is_inferx_admin,
+    )
 
 
 @prefix_bp.route("/listsnapshot")
@@ -1140,8 +1878,15 @@ def GetFunc():
         dt = datetime.fromisoformat(a["createtime"].replace("Z", "+00:00"))
         a["createtime"] = dt.astimezone(local_tz).strftime("%Y-%m-%d %H:%M:%S")
 
-    # Convert Python dictionary to pretty JSON string
-    funcspec = json.dumps(func["func"]["object"]["spec"], indent=4)
+    # Show the same filtered partial spec used by the new create/edit flow.
+    full_funcspec = json.dumps(func["func"]["object"]["spec"], indent=4)
+    try:
+        func_edit_data = project_func_for_edit(func)
+        funcspec = json.dumps(func_edit_data["spec"], indent=4)
+    except Exception:
+        # Fallback for unexpected legacy shapes so the page still renders.
+        func_edit_data = None
+        funcspec = json.dumps(func["func"]["object"]["spec"], indent=4)
 
     return render_template(
         "func.html",
@@ -1152,6 +1897,8 @@ def GetFunc():
         fails=fails,
         snapshotaudit=snapshotaudit,
         funcspec=funcspec,
+        full_funcspec=full_funcspec,
+        func_edit_data=func_edit_data,
         apiType=apiType,
         map=map,
         isAdmin=isAdmin,
@@ -1161,6 +1908,7 @@ def GetFunc():
 
 @prefix_bp.route("/listnode")
 @not_require_login
+@require_admin
 def ListNode():
     nodes = listnodes()
 
@@ -1175,6 +1923,7 @@ def ListNode():
 
 @prefix_bp.route("/node")
 @not_require_login
+@require_admin
 def GetNode():
     name = request.args.get("name")
     node = getnode(name)
