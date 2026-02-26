@@ -4,7 +4,15 @@
     "namespace": "system",
     "name": "public",
     "object": {
-        "spec": {},
+        "spec": {
+            "limit": {
+                "max_funccount": 10,
+                "allow_mem_standby": true,
+                "max_replica": 1,
+                "max_standby": 1,
+                "max_queue_len": 100
+            }
+        },
         "status": {
             "disable": false
         }
