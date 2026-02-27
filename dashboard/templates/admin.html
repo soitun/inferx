@@ -1288,6 +1288,35 @@
     <div id="billing-admin-content" style="display: none;">
         <div id="billing-admin-message" style="display: none; margin-bottom: 15px; padding: 10px; border-radius: 4px; position: sticky; top: 10px; z-index: 10;"></div>
         <div style="display: grid; gap: 20px;">
+            <div id="billing-admin-tenant-profile-section" style="border: 1px solid #ccc; padding: 15px; background: #f9f9f9;">
+                <div style="display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap;">
+                    <div>
+                        <h3 style="margin: 0;">Tenant Directory</h3>
+                        <p style="margin: 6px 0 0; font-size: 12px; color: #666;">
+                            Platform-wide tenant list for inferx administrators. Use row actions to preselect the Add Credits form safely.
+                        </p>
+                    </div>
+                    <button type="button" onclick="loadBillingAdminTenantProfiles(true)" style="padding: 6px 12px;">Refresh</button>
+                </div>
+
+                <table class="ix-table admin-data-table" style="width:100%; margin-top: 12px;" id="billing-admin-tenant-profile-table">
+                    <thead>
+                        <tr>
+                            <th style="cursor: pointer;" onclick="sortBillingAdminTenantProfilesTable('tenant_name')">Tenant Name <span id="billing-admin-tenant-sort-tenant_name"></span></th>
+                            <th style="cursor: pointer;" onclick="sortBillingAdminTenantProfilesTable('display_name')">Owner Name <span id="billing-admin-tenant-sort-display_name"></span></th>
+                            <th style="cursor: pointer;" onclick="sortBillingAdminTenantProfilesTable('email')">Email <span id="billing-admin-tenant-sort-email"></span></th>
+                            <th style="cursor: pointer;" onclick="sortBillingAdminTenantProfilesTable('used_cents')">Used (USD) <span id="billing-admin-tenant-sort-used_cents"></span></th>
+                            <th style="cursor: pointer;" onclick="sortBillingAdminTenantProfilesTable('balance_cents')">Balance (USD) <span id="billing-admin-tenant-sort-balance_cents"></span></th>
+                            <th style="cursor: pointer;" onclick="sortBillingAdminTenantProfilesTable('created_at')">Created At (Local) <span id="billing-admin-tenant-sort-created_at"></span></th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td colspan="7" style="text-align: center; color: #888;">Loading tenant directory...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
             <div id="billing-admin-credits-form" style="border: 1px solid #ccc; padding: 15px; background: #f9f9f9;">
                 <h3 style="margin-top: 0;">Add Credits</h3>
                 <p style="font-size: 12px; color: #666;">Admin-only action. Amount is in USD.</p>
@@ -1516,6 +1545,11 @@
     let billingAdminAccessReady = false;
     let billingAdminAccessPromise = null;
     let billingAdminIsInferxAdmin = false;
+    let billingAdminTenantProfilesLoaded = false;
+    let billingAdminTenantProfilesLoadingPromise = null;
+    let billingAdminTenantProfilesRows = [];
+    let billingAdminTenantProfilesSortColumn = 'created_at';
+    let billingAdminTenantProfilesSortDirection = 'desc';
     let billingUsageRange = { mode: 'hours', hours: 24 };
     let billingUsageViewMode = 'chart';
     let billingUsageGranularity = 'hourly';
@@ -1604,6 +1638,240 @@
         }
     }
 
+    function billingAdminTenantProfileDisplayValue(value) {
+        if (value === null || value === undefined) return '—';
+        const s = String(value).trim();
+        return s ? s : '—';
+    }
+
+    function setBillingAdminTenantProfilesTableMessage(message, isError) {
+        const tbody = document.querySelector('#billing-admin-tenant-profile-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 7;
+        td.style.textAlign = 'center';
+        td.style.color = isError ? 'red' : '#888';
+        td.textContent = message;
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+    }
+
+    function billingAdminTenantProfileSortText(value) {
+        if (value === null || value === undefined) return '';
+        return String(value).trim().toLowerCase();
+    }
+
+    function billingAdminTenantProfileSortTime(value) {
+        if (value === null || value === undefined) return null;
+        const parsed = Date.parse(value);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    function compareBillingAdminTenantProfileRows(a, b) {
+        const col = billingAdminTenantProfilesSortColumn;
+        const dir = billingAdminTenantProfilesSortDirection === 'asc' ? 1 : -1;
+
+        if (col === 'tenant_name' || col === 'display_name' || col === 'email') {
+            const av = billingAdminTenantProfileSortText(a?.[col]);
+            const bv = billingAdminTenantProfileSortText(b?.[col]);
+            if (av === '' && bv !== '') return 1;
+            if (av !== '' && bv === '') return -1;
+            return dir * av.localeCompare(bv, undefined, { sensitivity: 'base' });
+        }
+
+        if (col === 'used_cents' || col === 'balance_cents') {
+            const av = Number(a?.[col] ?? 0);
+            const bv = Number(b?.[col] ?? 0);
+            if (av === bv) return 0;
+            return dir * (av - bv);
+        }
+
+        if (col === 'created_at') {
+            const av = billingAdminTenantProfileSortTime(a?.created_at);
+            const bv = billingAdminTenantProfileSortTime(b?.created_at);
+            if (av === null && bv !== null) return 1;
+            if (av !== null && bv === null) return -1;
+            if (av === null && bv === null) return 0;
+            if (av === bv) return 0;
+            return dir * (av - bv);
+        }
+
+        return 0;
+    }
+
+    function updateBillingAdminTenantProfilesSortIcons() {
+        const cols = ['tenant_name', 'display_name', 'email', 'used_cents', 'balance_cents', 'created_at'];
+        cols.forEach((col) => {
+            const el = document.getElementById(`billing-admin-tenant-sort-${col}`);
+            if (!el) return;
+            el.textContent = billingAdminTenantProfilesSortColumn === col
+                ? (billingAdminTenantProfilesSortDirection === 'asc' ? '▲' : '▼')
+                : '';
+        });
+    }
+
+    function sortBillingAdminTenantProfilesTable(column) {
+        if (billingAdminTenantProfilesSortColumn === column) {
+            billingAdminTenantProfilesSortDirection =
+                billingAdminTenantProfilesSortDirection === 'asc' ? 'desc' : 'asc';
+        } else {
+            billingAdminTenantProfilesSortColumn = column;
+            billingAdminTenantProfilesSortDirection =
+                (column === 'used_cents' || column === 'balance_cents' || column === 'created_at')
+                    ? 'desc'
+                    : 'asc';
+        }
+        renderBillingAdminTenantProfiles(billingAdminTenantProfilesRows);
+    }
+
+    function renderBillingAdminTenantProfiles(rows) {
+        const tbody = document.querySelector('#billing-admin-tenant-profile-table tbody');
+        if (!tbody) return;
+
+        billingAdminTenantProfilesRows = Array.isArray(rows) ? rows.slice() : [];
+        tbody.innerHTML = '';
+        if (!Array.isArray(rows) || rows.length === 0) {
+            updateBillingAdminTenantProfilesSortIcons();
+            setBillingAdminTenantProfilesTableMessage('No tenants found', false);
+            return;
+        }
+
+        const sortedRows = rows.slice().sort(compareBillingAdminTenantProfileRows);
+        updateBillingAdminTenantProfilesSortIcons();
+
+        sortedRows.forEach((row) => {
+            const tr = document.createElement('tr');
+
+            const tenantTd = document.createElement('td');
+            tenantTd.textContent = String(row?.tenant_name || '');
+            tr.appendChild(tenantTd);
+
+            const ownerTd = document.createElement('td');
+            ownerTd.textContent = billingAdminTenantProfileDisplayValue(row?.display_name);
+            tr.appendChild(ownerTd);
+
+            const emailTd = document.createElement('td');
+            emailTd.textContent = billingAdminTenantProfileDisplayValue(row?.email);
+            tr.appendChild(emailTd);
+
+            const usedTd = document.createElement('td');
+            if (row?.used_cents === null || row?.used_cents === undefined) {
+                usedTd.textContent = '—';
+            } else {
+                usedTd.textContent = formatUsd(Number(row.used_cents) || 0);
+            }
+            tr.appendChild(usedTd);
+
+            const balanceTd = document.createElement('td');
+            if (row?.balance_cents === null || row?.balance_cents === undefined) {
+                balanceTd.textContent = '—';
+            } else {
+                const balanceCents = Number(row.balance_cents) || 0;
+                balanceTd.textContent = formatUsdSigned(balanceCents);
+                if (balanceCents < 0) {
+                    balanceTd.classList.add('amount-negative');
+                }
+            }
+            tr.appendChild(balanceTd);
+
+            const createdTd = document.createElement('td');
+            const createdDisplay = formatLocalDateTime(row?.created_at);
+            createdTd.textContent = createdDisplay ? createdDisplay : '—';
+            tr.appendChild(createdTd);
+
+            const actionsTd = document.createElement('td');
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.textContent = 'Add Credit';
+            btn.style.padding = '4px 10px';
+            btn.addEventListener('click', () => {
+                billingAdminSelectTenantForCredits(String(row?.tenant_name || ''));
+            });
+            actionsTd.appendChild(btn);
+            tr.appendChild(actionsTd);
+
+            tbody.appendChild(tr);
+        });
+    }
+
+    async function loadBillingAdminTenantProfiles(force = false) {
+        if (!billingAdminIsInferxAdmin) {
+            return;
+        }
+
+        if (billingAdminTenantProfilesLoaded && !force) {
+            return;
+        }
+
+        if (billingAdminTenantProfilesLoadingPromise && !force) {
+            return billingAdminTenantProfilesLoadingPromise;
+        }
+
+        billingAdminTenantProfilesLoadingPromise = (async () => {
+            setBillingAdminTenantProfilesTableMessage('Loading tenant directory...', false);
+
+            const resp = await fetchWithAuth('/demo/proxy1/admin/tenants');
+            if (!resp.ok) {
+                throw new Error(`HTTP ${resp.status}`);
+            }
+
+            const rows = await resp.json();
+            if (!Array.isArray(rows)) {
+                throw new Error('unexpected response');
+            }
+
+            renderBillingAdminTenantProfiles(rows);
+            billingAdminTenantProfilesLoaded = true;
+        })()
+            .catch((error) => {
+                console.error('Failed to load Billing Admin tenant directory:', error);
+                setBillingAdminTenantProfilesTableMessage('Failed to load tenant directory', true);
+            })
+            .finally(() => {
+                billingAdminTenantProfilesLoadingPromise = null;
+            });
+
+        return billingAdminTenantProfilesLoadingPromise;
+    }
+
+    async function billingAdminSelectTenantForCredits(tenantName) {
+        const tenant = String(tenantName || '').trim();
+        if (!tenant) return;
+
+        await initBillingAdminAccess();
+        if (!billingAdminIsInferxAdmin) {
+            showBillingAdminMessage('Permission denied. Only Inferx administrators can add credits.', true);
+            return;
+        }
+
+        await populateBillingAdminTenants();
+
+        const dropdown = document.getElementById('billing-admin-credit-tenant');
+        if (!dropdown) return;
+
+        const exists = Array.from(dropdown.options || []).some((opt) => opt.value === tenant);
+        if (!exists) {
+            showBillingAdminMessage(`Tenant '${tenant}' is not available in the Add Credits dropdown.`, true);
+            return;
+        }
+
+        dropdown.value = tenant;
+
+        const form = document.getElementById('billing-admin-credits-form');
+        if (form && form.scrollIntoView) {
+            form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        const amountInput = document.getElementById('billing-admin-credit-amount');
+        if (amountInput && amountInput.focus) {
+            amountInput.focus();
+        }
+
+        showBillingAdminMessage(`Selected tenant '${tenant}' in Add Credits form.`, false);
+    }
+
     function onBillingRateScopeChange() {
         const scope = document.getElementById('billing-rate-scope');
         const row = document.getElementById('billing-rate-tenant-row');
@@ -1689,6 +1957,7 @@
 
         if (billingAdminIsInferxAdmin) {
             await populateBillingAdminTenants();
+            await loadBillingAdminTenantProfiles();
             const effectiveFromInput = document.getElementById('billing-rate-effective-from');
             if (effectiveFromInput && !effectiveFromInput.value) {
                 effectiveFromInput.value = toLocalDatetimeValue(new Date());
@@ -2915,6 +3184,14 @@
         originalOpenTab(evt, tabName);
         if (tabName === 'Billing') {
             populateBillingTenants();
+        } else if (tabName === 'BillingAdmin') {
+            initBillingAdminAccess().then(() => {
+                if (billingAdminIsInferxAdmin) {
+                    loadBillingAdminTenantProfiles();
+                }
+            }).catch((error) => {
+                console.error('Failed to initialize Billing Admin tab:', error);
+            });
         }
     };
 

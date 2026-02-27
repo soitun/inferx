@@ -342,6 +342,7 @@ impl HttpGateway {
             .route("/apikey/", put(CreateApikey))
             .route("/apikey/", delete(DeleteApikey))
             .route("/onboard", post(Onboard))
+            .route("/admin/tenants", get(GetAdminTenants))
             .route("/object/", put(CreateObj))
             .route("/object/:type/:tenant/:namespace/:name/", delete(DeleteObj))
             .route(
@@ -1536,6 +1537,17 @@ struct OnboardResponse {
     created: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct AdminTenantProfileRow {
+    tenant_name: String,
+    sub: Option<String>,
+    display_name: Option<String>,
+    email: Option<String>,
+    used_cents: i64,
+    balance_cents: i64,
+    created_at: Option<chrono::NaiveDateTime>,
+}
+
 async fn Onboard(
     Extension(token): Extension<Arc<AccessToken>>,
     State(gw): State<HttpGateway>,
@@ -1558,6 +1570,108 @@ async fn Onboard(
             let body = Body::from("service failure: No permission");
             let resp = Response::builder()
                 .status(StatusCode::UNAUTHORIZED)
+                .body(body)
+                .unwrap();
+            return Ok(resp);
+        }
+        Err(e) => {
+            let body = Body::from(format!("service failure {:?}", e));
+            let resp = Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(body)
+                .unwrap();
+            return Ok(resp);
+        }
+    }
+}
+
+async fn GetAdminTenants(
+    Extension(token): Extension<Arc<AccessToken>>,
+    State(gw): State<HttpGateway>,
+) -> SResult<Response, StatusCode> {
+    if !token.IsInferxAdmin() {
+        let body = Body::from("service failure: No permission");
+        let resp = Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .body(body)
+            .unwrap();
+        return Ok(resp);
+    }
+
+    let tenant_objs = match gw.objRepo.tenantMgr.GetObjects("", "") {
+        Ok(v) => v,
+        Err(e) => {
+            let body = Body::from(format!("service failure {:?}", e));
+            let resp = Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(body)
+                .unwrap();
+            return Ok(resp);
+        }
+    };
+
+    let mut tenant_names = Vec::new();
+    for t in tenant_objs {
+        tenant_names.push(t.Name());
+    }
+    tenant_names.sort();
+    tenant_names.dedup();
+
+    match GetTokenCache()
+        .await
+        .sqlstore
+        .GetTenantProfilesByTenantNames(&tenant_names)
+        .await
+    {
+        Ok(mut profiles) => {
+            let mut billing = match gw
+                .sqlAudit
+                .GetTenantBillingSummariesByTenantNames(&tenant_names)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    let body = Body::from(format!("service failure {:?}", e));
+                    let resp = Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .body(body)
+                        .unwrap();
+                    return Ok(resp);
+                }
+            };
+
+            let mut rows = Vec::with_capacity(tenant_names.len());
+            for tenant_name in tenant_names {
+                let (used_cents, balance_cents) = match billing.remove(&tenant_name) {
+                    Some(summary) => (summary.used_cents, summary.balance_cents),
+                    None => (0, 0),
+                };
+                match profiles.remove(&tenant_name) {
+                    Some(profile) => rows.push(AdminTenantProfileRow {
+                        tenant_name,
+                        sub: Some(profile.sub),
+                        display_name: profile.display_name,
+                        email: Some(profile.email),
+                        used_cents,
+                        balance_cents,
+                        created_at: profile.created_at,
+                    }),
+                    None => rows.push(AdminTenantProfileRow {
+                        tenant_name,
+                        sub: None,
+                        display_name: None,
+                        email: None,
+                        used_cents,
+                        balance_cents,
+                        created_at: None,
+                    }),
+                }
+            }
+
+            let body = Body::from(serde_json::to_string(&rows).unwrap());
+            let resp = Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "application/json")
                 .body(body)
                 .unwrap();
             return Ok(resp);
