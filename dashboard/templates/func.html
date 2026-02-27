@@ -91,7 +91,7 @@
 <h1 style="display:none;">Image</h1>
 <textarea id="urlInput" rows="2" cols="120" style="display:none;"></textarea>
 {% endif %}
-<h1>Prompt</h1>
+<h2>Prompt</h2>
 
 <textarea id="prompt" rows="3" cols="120">{{ func["func"]["object"]["spec"]["sample_query"]["prompt"] }}</textarea>
 <br />
@@ -120,7 +120,7 @@
 <textarea id="output" rows="20" cols="120"></textarea>
 <textarea id="debug" rows="20" cols="120" hidden></textarea>
 
-<h1>Sample Rest Call</h1>
+<h2>Sample Rest Call</h2>
 <textarea id="restcall" rows="8" cols="120">
 {{ func["sampleRestCall"] }}
 </textarea>
@@ -281,7 +281,7 @@
 
 
 {% if fails %}
-<h2>Failures</h2>
+<h2>Logs</h2>
 <table class="ix-table" style="width:100%">
     <tr>
         <th>tenant</th>
@@ -340,14 +340,16 @@
 {% endif %}
 
 
-<h2>Func Spec</h2>
+<h2>Model Spec</h2>
 <br />
 <textarea id="spec" rows="50" cols="120">{{ funcspec }}</textarea>
 
-<h2>Func (Full Spec, Debug)</h2>
-<textarea id="full-spec-debug" rows="25" cols="120" readonly>{{ full_funcspec }}</textarea>
+{% if is_inferx_admin %}
+<h2>Model Full Spec</h2>
+<textarea id="full-spec" rows="25" cols="120" readonly>{{ full_funcspec }}</textarea>
+{% endif %}
 
-<h2>FuncPolicy</h2>
+<h2>Policy</h2>
 <textarea id="FuncPolicy" rows="5" cols="120">{{ funcpolicy }}</textarea>
 
 <script>

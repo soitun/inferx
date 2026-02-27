@@ -22,7 +22,9 @@ use crate::{
 };
 
 use super::{
-    auth_layer::{AccessToken, GetTokenCache, ObjectType, PermissionType, UserRole},
+    auth_layer::{
+        AccessToken, ApikeyCreateRequest, GetTokenCache, ObjectType, PermissionType, UserRole,
+    },
     gw_obj_repo::{FuncBrief, FuncDetail},
     http_gateway::HttpGateway,
 };
@@ -31,6 +33,7 @@ const ONBOARD_TENANT_PREFIX: &str = "tn-";
 const ONBOARD_TENANT_SUFFIX_LEN: usize = 10;
 const ONBOARD_DEFAULT_NAMESPACE: &str = "default";
 const ONBOARD_MAX_ATTEMPTS: usize = 3;
+const ONBOARD_APIKEY_PREFIX: &str = "quickstart-inference";
 
 impl HttpGateway {
     pub async fn Rbac(
@@ -402,7 +405,7 @@ impl HttpGateway {
         return Ok(users);
     }
 
-    pub async fn Onboard(&self, token: &Arc<AccessToken>) -> Result<(String, bool)> {
+    pub async fn Onboard(&self, token: &Arc<AccessToken>) -> Result<(String, bool, String, String)> {
         if token.username == "anonymous" || token.sourceIsApikey || token.subject.is_empty() {
             return Err(Error::NoPermission);
         }
@@ -413,6 +416,8 @@ impl HttpGateway {
         let email = token.email.clone();
         let token_cache = GetTokenCache().await;
         let sql = &token_cache.sqlstore;
+        let mut onboarding_apikey = String::new();
+        let mut onboarding_apikey_name = String::new();
 
         let mut created = false;
         let mut row = match sql.GetOnboardInfo(&sub).await? {
@@ -425,7 +430,7 @@ impl HttpGateway {
         };
 
         if row.status == "complete" {
-            return Ok((row.tenant_name, false));
+            return Ok((row.tenant_name, false, String::new(), String::new()));
         }
 
         if row.status == "failed" {
@@ -510,9 +515,24 @@ impl HttpGateway {
                 row.saga_step = 3;
             }
 
+            if row.saga_step < 4 {
+                let (created_apikey, created_apikey_name) = self
+                    .EnsureOnboardInferenceApikey(token, &row.tenant_name, &sub)
+                    .await?;
+                onboarding_apikey = created_apikey;
+                onboarding_apikey_name = created_apikey_name;
+                sql.UpdateOnboardStep(&sub, 4).await?;
+                row.saga_step = 4;
+            }
+
             sql.CompleteOnboardWithProfile(&sub, &row.tenant_name, &display_name, &email)
                 .await?;
-            return Ok((row.tenant_name.clone(), created));
+            return Ok((
+                row.tenant_name.clone(),
+                created,
+                onboarding_apikey,
+                onboarding_apikey_name,
+            ));
         }
     }
 
@@ -619,6 +639,41 @@ impl HttpGateway {
                     token_cache.EvactionToken(token);
                     return Ok(());
                 }
+                return Err(e);
+            }
+        }
+    }
+
+    async fn EnsureOnboardInferenceApikey(
+        &self,
+        token: &Arc<AccessToken>,
+        tenant_name: &str,
+        sub: &str,
+    ) -> Result<(String, String)> {
+        let keyname = BuildOnboardInferenceApikeyName(tenant_name, sub);
+        let req = ApikeyCreateRequest {
+            username: "".to_owned(),
+            keyname: keyname.clone(),
+            access_level: Some("inference".to_owned()),
+            restrict_tenant: Some(tenant_name.to_owned()),
+            restrict_namespace: None,
+            expires_in_days: None,
+        };
+        let token_cache = GetTokenCache().await;
+
+        match token_cache.CreateApikey(token, &req).await {
+            Ok(resp) => Ok((resp.apikey, keyname)),
+            Err(e) => {
+                if IsOnboardApikeyConflictError(&e) {
+                    let keys = token_cache.GetApikeys(&token.username).await?;
+                    for k in keys {
+                        if k.keyname == keyname {
+                            return Ok((k.apikey, k.keyname));
+                        }
+                    }
+                    return Ok((String::new(), keyname));
+                }
+
                 return Err(e);
             }
         }
@@ -1534,6 +1589,76 @@ fn IsOnboardTenantConflictError(err: &Error) -> bool {
         }
         _ => false,
     }
+}
+
+fn IsOnboardApikeyConflictError(err: &Error) -> bool {
+    match err {
+        Error::SqlxError(sqlx::Error::Database(db_err)) => {
+            let is_unique_violation = db_err.code().as_deref() == Some("23505");
+            if !is_unique_violation {
+                return false;
+            }
+
+            if matches!(
+                db_err.constraint(),
+                Some("apikey_idx_username_keyname") | Some("apikey_idx_realm_username")
+            ) {
+                return true;
+            }
+
+            let msg = db_err.message().to_ascii_lowercase();
+            if !msg.contains("duplicate key value violates unique constraint") {
+                return false;
+            }
+
+            let cst = db_err
+                .constraint()
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_default();
+            cst.contains("apikey")
+                || msg.contains("(username, keyname)")
+                || msg.contains("apikey_idx_")
+                || msg.contains("apikey")
+        }
+        _ => false,
+    }
+}
+
+fn BuildOnboardInferenceApikeyName(tenant_name: &str, sub: &str) -> String {
+    let mut tenant_slug_raw = String::new();
+    let mut prev_dash = false;
+    for c in tenant_name.to_ascii_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            tenant_slug_raw.push(c);
+            prev_dash = false;
+            continue;
+        }
+
+        if !prev_dash {
+            tenant_slug_raw.push('-');
+            prev_dash = true;
+        }
+    }
+
+    let tenant_slug = tenant_slug_raw.trim_matches('-').to_owned();
+    let tenant_slug = if tenant_slug.is_empty() {
+        "tenant".to_owned()
+    } else {
+        tenant_slug
+    };
+
+    let sub_slug = sub
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>();
+    let sub_suffix = if sub_slug.is_empty() {
+        "user".to_owned()
+    } else {
+        sub_slug.chars().take(8).collect::<String>()
+    };
+
+    format!("{}-{}-{}", ONBOARD_APIKEY_PREFIX, tenant_slug, sub_suffix)
 }
 
 fn IsCreateConflictError(err: &Error) -> bool {

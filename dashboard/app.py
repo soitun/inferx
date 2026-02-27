@@ -52,6 +52,17 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET", "supersecret")
+SLACK_INVITE_URL = os.getenv(
+    "SLACK_INVITE_URL",
+    "https://join.slack.com/t/inferxcommunity/shared_invite/zt-3pp01352q-MM3CuRprsoeb68QKwygXjQ",
+).strip()
+
+
+@app.context_processor
+def inject_dashboard_links():
+    return {
+        "slack_invite_url": SLACK_INVITE_URL,
+    }
 
 #Create a Blueprint with a common prefix
 prefix_bp = Blueprint('prefix', __name__, url_prefix='/demo')
@@ -100,6 +111,7 @@ keycloak = oauth.register(
 tls = False
 
 apihostaddr = os.getenv('INFERX_APIGW_ADDR', "http://localhost:4000")
+PUBLIC_API_BASE_URL = os.getenv('INFERX_PUBLIC_API_BASE_URL', "").strip()
 ONBOARD_MAX_RETRIES = int(os.getenv('ONBOARD_MAX_RETRIES', '3'))
 ONBOARD_BACKOFF_BASE_SEC = float(os.getenv('ONBOARD_BACKOFF_BASE_SEC', '0.5'))
 ONBOARD_TIMEOUT_SEC = float(os.getenv('ONBOARD_TIMEOUT_SEC', '10'))
@@ -207,8 +219,24 @@ def call_onboard_with_retry(access_token: str, sub: str):
     raise Exception(last_error)
 
 
-def store_onboard_session(sub: str, onboard_info):
+def normalize_public_api_base_url() -> str:
+    base = PUBLIC_API_BASE_URL if PUBLIC_API_BASE_URL != "" else apihostaddr
+    base = str(base or "").strip()
+    if base == "":
+        return "http://localhost:4000"
+    if "://" not in base:
+        base = f"https://{base}"
+    return base.rstrip("/")
+
+
+def store_onboard_session(sub: str, onboard_info, onboarding_apikey: str = "", onboarding_apikey_name: str = ""):
     tenant_name = onboard_info.get('tenant_name', '')
+    apikey_from_onboard = str(onboard_info.get('apikey', '') or '').strip()
+    apikey_name_from_onboard = str(onboard_info.get('apikey_name', '') or '').strip()
+    if onboarding_apikey == "":
+        onboarding_apikey = apikey_from_onboard
+    if onboarding_apikey_name == "":
+        onboarding_apikey_name = apikey_name_from_onboard
     session['sub'] = sub
     # Keep backward compatibility with existing single-tenant reads.
     session['tenant_name'] = tenant_name
@@ -217,6 +245,8 @@ def store_onboard_session(sub: str, onboard_info):
     session['tenant_names'] = [tenant_name] if tenant_name != '' else []
     session['tenant_role'] = onboard_info.get('role', '')
     session['tenant_created'] = bool(onboard_info.get('created', False))
+    session['onboarding_inference_apikey'] = str(onboarding_apikey or '')
+    session['onboarding_inference_apikey_name'] = str(onboarding_apikey_name or '')
 
 
 def render_onboard_error(redirectpath: str, error_message: str, invite_code: str = ''):
@@ -1260,6 +1290,38 @@ def getrest(tenant: str, namespace: str, name: str):
     return resp
 
 
+def build_sample_rest_call_for_ui(tenant: str, namespace: str, funcname: str, sample_query, apikey: str):
+    if not isinstance(sample_query, dict):
+        return ""
+
+    path = str(sample_query.get("path", "v1/completions") or "v1/completions").strip()
+    path = path.lstrip("/")
+    body = sample_query.get("body", {})
+    if not isinstance(body, dict):
+        body = {}
+
+    token = str(apikey or "").strip()
+    if token == "":
+        token = "<INFERENCE_API_KEY(Find or create one on Admin|Apikeys page)>"
+
+    body_json = json.dumps(body, ensure_ascii=False)
+    body_json = body_json.replace("'", "'\"'\"'")
+    base_url = normalize_public_api_base_url()
+    url = f"{base_url}/funccall/{tenant}/{namespace}/{funcname}/{path}"
+    tenant_name = str(tenant or "").strip().lower()
+    include_auth_header = tenant_name != "public"
+    auth_header_line = ""
+    if include_auth_header:
+        auth_header_line = f"  -H 'Authorization: Bearer {token}' \\\n"
+
+    return (
+        f"curl -X POST '{url}' \\\n"
+        f"  -H 'Content-Type: application/json' \\\n"
+        f"{auth_header_line}"
+        f"  -d '{body_json}'"
+    )
+
+
 @prefix_bp.route('/text2img', methods=['POST'])
 @not_require_login
 def text2img():
@@ -1888,6 +1950,19 @@ def GetFunc():
         func_edit_data = None
         funcspec = json.dumps(func["func"]["object"]["spec"], indent=4)
 
+    onboarding_apikey = str(session.get("onboarding_inference_apikey", "") or "").strip()
+    sample_rest_call_for_ui = build_sample_rest_call_for_ui(
+        tenant=tenant,
+        namespace=namespace,
+        funcname=name,
+        sample_query=sample,
+        apikey=onboarding_apikey,
+    )
+    if sample_rest_call_for_ui != "":
+        func["sampleRestCall"] = sample_rest_call_for_ui
+
+    is_inferx_admin = is_inferx_admin_user()
+
     return render_template(
         "func.html",
         tenant=tenant,
@@ -1902,6 +1977,7 @@ def GetFunc():
         apiType=apiType,
         map=map,
         isAdmin=isAdmin,
+        is_inferx_admin=is_inferx_admin,
         funcpolicy=funcpolicy,
         path=sample["path"]
     )
