@@ -1,3 +1,5 @@
+CREATE EXTENSION IF NOT EXISTS citext;
+
 --DROP TABLE ApiKey;
 CREATE TABLE Apikey (
     key_id              BIGSERIAL PRIMARY KEY,
@@ -42,3 +44,13 @@ CREATE TABLE UserOnboard (
 );
 
 CREATE UNIQUE INDEX useronboard_idx_tenant_name ON UserOnboard (tenant_name);
+
+CREATE TABLE TenantProfile (
+    tenant_name     VARCHAR PRIMARY KEY,
+    sub             VARCHAR NOT NULL UNIQUE, -- Keycloak subject ID (immutable)
+    display_name    VARCHAR,                 -- full name from JWT, NULL until synced
+    email           CITEXT NOT NULL,         -- normalized email, '' until synced
+    company_name    VARCHAR,
+    created_at      TIMESTAMP DEFAULT NOW(),
+    updated_at      TIMESTAMP DEFAULT NOW()
+);

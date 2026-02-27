@@ -28,7 +28,7 @@ use super::{
 };
 
 const ONBOARD_TENANT_PREFIX: &str = "tn-";
-const ONBOARD_TENANT_SUFFIX_LEN: usize = 22;
+const ONBOARD_TENANT_SUFFIX_LEN: usize = 10;
 const ONBOARD_DEFAULT_NAMESPACE: &str = "default";
 const ONBOARD_MAX_ATTEMPTS: usize = 3;
 
@@ -409,6 +409,8 @@ impl HttpGateway {
 
         let sub = token.subject.clone();
         let username = token.username.clone();
+        let display_name = token.display_name.clone();
+        let email = token.email.clone();
         let token_cache = GetTokenCache().await;
         let sql = &token_cache.sqlstore;
 
@@ -508,7 +510,8 @@ impl HttpGateway {
                 row.saga_step = 3;
             }
 
-            sql.CompleteOnboard(&sub).await?;
+            sql.CompleteOnboardWithProfile(&sub, &row.tenant_name, &display_name, &email)
+                .await?;
             return Ok((row.tenant_name.clone(), created));
         }
     }
