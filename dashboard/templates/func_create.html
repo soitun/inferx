@@ -114,6 +114,15 @@
         margin-top: 6px;
     }
 
+    .hint a {
+        color: #1d4ed8;
+        text-decoration: underline;
+    }
+
+    .hint a:hover {
+        color: #1e40af;
+    }
+
     .label-with-help {
         display: inline-flex;
         align-items: center;
@@ -458,7 +467,7 @@
                     <span class="field-help" tabindex="0" aria-label="vLLM parameters help" data-tooltip="JSON array of vLLM command arguments for the model runtime." title="JSON array of vLLM command arguments for the model runtime.">i</span>
                 </span>
             </h3>
-            <textarea id="commands-json" rows="7" placeholder='["--trust-remote-code", "--gpu-memory-utilization", "0.95", "--max-model-len", "200"]'></textarea>
+            <textarea id="commands-json" rows="7" placeholder='["--trust-remote-code", "--gpu-memory-utilization", "0.95", "--max-model-len", "2000"]'></textarea>
             <div class="hint">JSON array only. Do not include `--model` or `--tensor-parallel-size`; they are injected server-side.</div>
         </div>
 
@@ -476,6 +485,7 @@
                             <option value="2">2</option>
                             <option value="4">4</option>
                         </select>
+                        <div class="hint">If you need create model with more GPUs, please <a href="{{ slack_invite_url }}" target="_blank" rel="noopener noreferrer">contact us</a>.</div>
                     </div>
                 </div>
                 <div class="field-row">
@@ -1266,7 +1276,7 @@
                     command_model: Array.isArray(payload.spec?.commands) ? payload.spec.commands.find((x) => typeof x === 'string' && (x === '--model' || x.startsWith('--model='))) : undefined
                 });
 
-                const resp = await fetch('/demo/func_save', {
+                const resp = await fetch('/func_save', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1305,9 +1315,9 @@
 
         async function loadTenantsAndNamespaces() {
             const [tenantsResp, namespacesResp, rolesResp] = await Promise.all([
-                fetch('/demo/generate_tenants'),
-                fetch('/demo/generate_namespaces'),
-                fetch('/demo/generate_roles')
+                fetch('/generate_tenants'),
+                fetch('/generate_namespaces'),
+                fetch('/generate_roles')
             ]);
 
             if (!tenantsResp.ok) {
@@ -1340,7 +1350,7 @@
 
         async function loadNodeMaxVram() {
             try {
-                const resp = await fetch('/demo/nodes_max_vram');
+                const resp = await fetch('/nodes_max_vram');
                 if (!resp.ok) {
                     vramHint.textContent = `Could not load node max vRam (HTTP ${resp.status}).`;
                     return;
@@ -1384,7 +1394,7 @@
             _suppressAdvancedSpecUserEditTracking = false;
 
             if (!INITIAL_MODEL || typeof INITIAL_MODEL !== 'object') {
-                commandsJson.value = JSON.stringify(["--trust-remote-code", "--gpu-memory-utilization", "0.95", "--max-model-len", "200"], null, 2);
+                commandsJson.value = JSON.stringify(["--trust-remote-code", "--gpu-memory-utilization", "0.95", "--max-model-len", "2000"], null, 2);
                 setPolicyEnabled(false);
                 setAdvancedSpecTextFromSystem('');
                 return;

@@ -1535,6 +1535,10 @@ struct OnboardResponse {
     tenant_name: String,
     role: String,
     created: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    apikey: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    apikey_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1553,11 +1557,19 @@ async fn Onboard(
     State(gw): State<HttpGateway>,
 ) -> SResult<Response, StatusCode> {
     match gw.Onboard(&token).await {
-        Ok((tenant_name, created)) => {
+        Ok((tenant_name, created, apikey, apikey_name)) => {
+            let apikey = if apikey.is_empty() { None } else { Some(apikey) };
+            let apikey_name = if apikey_name.is_empty() {
+                None
+            } else {
+                Some(apikey_name)
+            };
             let body = Body::from(serde_json::to_string(&OnboardResponse {
                 tenant_name: tenant_name,
                 role: "admin".to_owned(),
                 created: created,
+                apikey,
+                apikey_name,
             }).unwrap());
             let resp = Response::builder()
                 .status(StatusCode::OK)

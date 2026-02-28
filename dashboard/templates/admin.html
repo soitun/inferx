@@ -1451,7 +1451,7 @@
     async function fetchWithAuth(url, options) {
         const resp = await fetch(url, options);
         if (resp.status === 401 || resp.status === 403 || resp.redirected) {
-            window.location.href = '/demo/login';
+            window.location.href = '/login';
             throw new Error('Session expired');
         }
         return resp;
@@ -1575,8 +1575,8 @@
 
         try {
             const [roles, tenants] = await Promise.all([
-                fetchWithAuth('/demo/generate_roles').then(r => r.json()),
-                fetchWithAuth('/demo/generate_tenants').then(r => r.json())
+                fetchWithAuth('/generate_roles').then(r => r.json()),
+                fetchWithAuth('/generate_tenants').then(r => r.json())
             ]);
 
             upsertTenantDisplayMapFromList(tenants);
@@ -1812,7 +1812,7 @@
         billingAdminTenantProfilesLoadingPromise = (async () => {
             setBillingAdminTenantProfilesTableMessage('Loading tenant directory...', false);
 
-            const resp = await fetchWithAuth('/demo/proxy1/admin/tenants');
+            const resp = await fetchWithAuth('/proxy1/admin/tenants');
             if (!resp.ok) {
                 throw new Error(`HTTP ${resp.status}`);
             }
@@ -1887,7 +1887,7 @@
         if (!creditTenantDropdown || !creditHistoryTenantDropdown || !rateTenantDropdown) return;
 
         try {
-            const tenants = await fetchWithAuth('/demo/generate_tenants').then(r => r.json());
+            const tenants = await fetchWithAuth('/generate_tenants').then(r => r.json());
             upsertTenantDisplayMapFromList(tenants);
             tenants.forEach(t => {
                 const label = tenantDisplayNameFromObj(t);
@@ -1930,7 +1930,7 @@
         const noAccess = document.getElementById('billing-admin-no-access');
 
         try {
-            const roles = await fetchWithAuth('/demo/generate_roles').then(r => r.json());
+            const roles = await fetchWithAuth('/generate_roles').then(r => r.json());
             billingAdminIsInferxAdmin = IsInferxAdmin(roles);
         } catch (error) {
             console.error('Failed to check Billing Admin access:', error);
@@ -2311,7 +2311,7 @@
             let tenantStatus = null;
 
             try {
-                const summaryResp = await fetchWithAuth(`/demo/proxy1/tenant/${tenant}/billing-summary`);
+                const summaryResp = await fetchWithAuth(`/proxy1/tenant/${tenant}/billing-summary`);
                 if (summaryResp.ok) {
                     data = await summaryResp.json();
                     hasBillingSummary = true;
@@ -2323,8 +2323,8 @@
             if (!hasBillingSummary) {
                 // Phase 1 fallback: use existing /credits endpoint + tenant object for status
                 const [creditsResp, tenantResp] = await Promise.all([
-                    fetchWithAuth(`/demo/proxy1/tenant/${tenant}/credits`),
-                    fetchWithAuth(`/demo/proxy1/object/tenant/system/system/${tenant}/`)
+                    fetchWithAuth(`/proxy1/tenant/${tenant}/credits`),
+                    fetchWithAuth(`/proxy1/object/tenant/system/system/${tenant}/`)
                 ]);
 
                 if (!creditsResp.ok) throw new Error(`Credits HTTP ${creditsResp.status}`);
@@ -2511,7 +2511,7 @@
             } else {
                 params.set('hours', String(billingUsageRange.hours || 24));
             }
-            const resp = await fetchWithAuth(`/demo/proxy1/tenant/${tenant}/usage/hourly?${params.toString()}`);
+            const resp = await fetchWithAuth(`/proxy1/tenant/${tenant}/usage/hourly?${params.toString()}`);
 
             if (resp.status === 404) {
                 billingUsageRawRows = [];
@@ -2756,7 +2756,7 @@
         const offset = page * billingPageSize;
 
         try {
-            const resp = await fetchWithAuth(`/demo/proxy1/tenant/${tenant}/credits/history?limit=${billingPageSize}&offset=${offset}`);
+            const resp = await fetchWithAuth(`/proxy1/tenant/${tenant}/credits/history?limit=${billingPageSize}&offset=${offset}`);
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const data = await resp.json();
 
@@ -2848,7 +2848,7 @@
             if (tenant !== 'all') {
                 params.set('tenant', tenant);
             }
-            const resp = await fetchWithAuth(`/demo/proxy1/billing/credits/history?${params.toString()}`);
+            const resp = await fetchWithAuth(`/proxy1/billing/credits/history?${params.toString()}`);
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const data = await resp.json();
 
@@ -2934,7 +2934,7 @@
         params.set('scope', 'all');
 
         try {
-            const resp = await fetchWithAuth(`/demo/proxy1/billing/rates?${params.toString()}`);
+            const resp = await fetchWithAuth(`/proxy1/billing/rates?${params.toString()}`);
             if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const data = await resp.json();
 
@@ -3030,7 +3030,7 @@
         btn.textContent = 'Adding...';
 
         try {
-            const resp = await fetchWithAuth(`/demo/proxy1/tenant/${tenant}/credits`, {
+            const resp = await fetchWithAuth(`/proxy1/tenant/${tenant}/credits`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -3131,7 +3131,7 @@
         btn.disabled = true;
         btn.textContent = 'Adding...';
         try {
-            const resp = await fetchWithAuth('/demo/proxy1/billing/rates', {
+            const resp = await fetchWithAuth('/proxy1/billing/rates', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -3492,16 +3492,16 @@
         const params = new URLSearchParams(timeParams);
         let endpoint = '';
         if (viewMode === 'tenant') {
-            endpoint = `/demo/proxy1/tenant/${tenant}/usage/hourly?${params.toString()}`;
+            endpoint = `/proxy1/tenant/${tenant}/usage/hourly?${params.toString()}`;
             titleEl.textContent = `Breakdown: ${tenantDisplayLabel(tenant)}`;
         } else if (viewMode === 'model') {
             params.set('namespace', item.namespace || '');
             params.set('funcname', item.funcname || '');
-            endpoint = `/demo/proxy1/tenant/${tenant}/usage/hourly-by-model?${params.toString()}`;
+            endpoint = `/proxy1/tenant/${tenant}/usage/hourly-by-model?${params.toString()}`;
             titleEl.textContent = `Breakdown: ${item.funcname || '--'} (${item.namespace || '--'})`;
         } else {
             params.set('namespace', item.namespace || '');
-            endpoint = `/demo/proxy1/tenant/${tenant}/usage/hourly-by-namespace?${params.toString()}`;
+            endpoint = `/proxy1/tenant/${tenant}/usage/hourly-by-namespace?${params.toString()}`;
             titleEl.textContent = `Breakdown: ${item.namespace || '--'}`;
         }
 
@@ -3737,16 +3737,16 @@
 
         switch (viewMode) {
             case 'tenant':
-                endpoint = `/demo/proxy1/tenant/${tenant}/usage/hourly?${timeParams}`;
+                endpoint = `/proxy1/tenant/${tenant}/usage/hourly?${timeParams}`;
                 break;
             case 'model':
-                endpoint = `/demo/proxy1/tenant/${tenant}/usage/by-model?${timeParams}`;
+                endpoint = `/proxy1/tenant/${tenant}/usage/by-model?${timeParams}`;
                 break;
             case 'namespace':
-                endpoint = `/demo/proxy1/tenant/${tenant}/usage/by-namespace?${timeParams}`;
+                endpoint = `/proxy1/tenant/${tenant}/usage/by-namespace?${timeParams}`;
                 break;
             default:
-                endpoint = `/demo/proxy1/tenant/${tenant}/usage/hourly?${timeParams}`;
+                endpoint = `/proxy1/tenant/${tenant}/usage/hourly?${timeParams}`;
                 break;
         }
 
@@ -4577,7 +4577,7 @@
             tenant: tenant
         });
 
-        const url = `/demo/generate_tenantuser?${params.toString()}`;
+        const url = `/generate_tenantuser?${params.toString()}`;
         try {
             const response = await fetchWithAuth(url);
 
@@ -4610,7 +4610,7 @@
             namespace: namespace
         });
 
-        const url = `/demo/generate_namespaceuser?${params.toString()}`;
+        const url = `/generate_namespaceuser?${params.toString()}`;
 
         try {
             const response = await fetchWithAuth(url);
@@ -4638,7 +4638,7 @@
     }
 
     async function fetchItems() {
-        const apikeys_resp = await fetchWithAuth('/demo/generate_apikeys');
+        const apikeys_resp = await fetchWithAuth('/generate_apikeys');
         const apikeys = await apikeys_resp.json();
         const apikey_tbody = document.querySelector('#items-table tbody');
         apikey_tbody.innerHTML = '';
@@ -4687,7 +4687,7 @@
             tenant_dropdown.appendChild(placeholderOption);
         }
 
-        const roles_resp = await fetchWithAuth('/demo/generate_roles');
+        const roles_resp = await fetchWithAuth('/generate_roles');
         const roles = await roles_resp.json();
 
         // Target both table bodies
@@ -4741,7 +4741,7 @@
 
         const funcs_tbody = document.querySelector('#models-table tbody');
         if (funcs_tbody) {
-            const funcs_resp = await fetchWithAuth('/demo/generate_funcs');
+            const funcs_resp = await fetchWithAuth('/generate_funcs');
             const funcs = await funcs_resp.json();
             funcs_tbody.innerHTML = '';
             funcs.forEach(key => {
@@ -4789,7 +4789,7 @@
         }
 
 
-        const namespaces_resp = await fetchWithAuth('/demo/generate_namespaces');
+        const namespaces_resp = await fetchWithAuth('/generate_namespaces');
         const namespaces = await namespaces_resp.json();
         const namespaces_tbody = document.querySelector('#namespaces-table tbody');
         namespaces_tbody.innerHTML = '';
@@ -4852,7 +4852,7 @@
 
         };
 
-        const tenants_resp = await fetchWithAuth('/demo/generate_tenants');
+        const tenants_resp = await fetchWithAuth('/generate_tenants');
         const tenants = await tenants_resp.json();
         upsertTenantDisplayMapFromList(tenants);
         const tenants_tbody = document.querySelector('#tenants-table tbody');
@@ -4979,7 +4979,7 @@
         const port = window.location.port;
         const schema = window.location.protocol;
 
-        url = schema + "//" + hostname + ":" + port + "/demo/proxy1/object/";
+        url = schema + "//" + hostname + ":" + port + "/proxy1/object/";
 
         const model_spec = document.getElementById('model_spec').value.trim();
         if (!model_spec) {
@@ -5005,7 +5005,7 @@
                 })
             };
 
-            const response = await fetchWithAuth("/demo/proxy/object/", options);
+            const response = await fetchWithAuth("/proxy/object/", options);
             const text = await response.text();
             if (response.status == '200') {
                 alert("Create Model successfully! " + text);
@@ -5029,7 +5029,7 @@
             const keys = Array.from(checkboxes).map(cb => cb.getAttribute('data-id'));
             if (keys.length > 0) {
                 await Promise.all(keys.map(key => {
-                    fetchWithAuth('/demo/proxy/object/function/' + key + "/", {
+                    fetchWithAuth('/proxy/object/function/' + key + "/", {
                         method: 'DELETE'
                     });
                 }));
@@ -5063,7 +5063,7 @@
         const port = window.location.port;
         const schema = window.location.protocol;
 
-        url = schema + "//" + hostname + ":" + port + "/demo/proxy1/object/";
+        url = schema + "//" + hostname + ":" + port + "/proxy1/object/";
         // url = "http://192.168.0.22:1250/proxy/object/";
 
         try {
@@ -5086,7 +5086,7 @@
                 })
             };
 
-            const apikeys_resp = await fetchWithAuth("/demo/proxy/object/", options);
+            const apikeys_resp = await fetchWithAuth("/proxy/object/", options);
             const text = await apikeys_resp.text();
 
             if (apikeys_resp.status === 200) {
@@ -5107,7 +5107,7 @@
             const keys = Array.from(checkboxes).map(cb => cb.getAttribute('data-id'));
             if (keys.length > 0) {
                 await Promise.all(keys.map(key => {
-                    fetchWithAuth('/demo/proxy/object/namespace/' + key + "/", {
+                    fetchWithAuth('/proxy/object/namespace/' + key + "/", {
                         method: 'DELETE'
                     });
                 }));
@@ -5128,7 +5128,7 @@
         const port = window.location.port;
         const schema = window.location.protocol;
 
-        url = schema + "//" + hostname + ":" + port + "/demo/proxy1/object/";
+        url = schema + "//" + hostname + ":" + port + "/proxy1/object/";
         // url = "http://192.168.0.22:1250/proxy/object/";
 
         try {
@@ -5151,7 +5151,7 @@
                 })
             };
 
-            const resp = await fetchWithAuth("/demo/proxy/object/", options);
+            const resp = await fetchWithAuth("/proxy/object/", options);
             const text = await resp.text();
 
             if (resp.status === 200) {
@@ -5172,7 +5172,7 @@
             const keys = Array.from(checkboxes).map(cb => cb.getAttribute('data-id'));
             if (keys.length > 0) {
                 await Promise.all(keys.map(key => {
-                    fetchWithAuth('/demo/proxy/object/tenant/' + key + "/", {
+                    fetchWithAuth('/proxy/object/tenant/' + key + "/", {
                         method: 'DELETE'
                     });
                 }));
@@ -5217,7 +5217,7 @@
         if (expiresDays) payload.expires_in_days = parseInt(expiresDays);
 
         try {
-            const resp = await fetchWithAuth("/demo/apikeys", {
+            const resp = await fetchWithAuth("/apikeys", {
                 method: 'PUT',
                 headers: {
                     'Accept': 'application/json',
@@ -5306,7 +5306,7 @@
             if (!confirm(`Delete ${checkboxes.length} selected API key(s)?`)) return;
 
             await Promise.all(Array.from(checkboxes).map(cb => {
-                return fetchWithAuth("/demo/apikeys", {
+                return fetchWithAuth("/apikeys", {
                     method: 'DELETE',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({

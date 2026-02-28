@@ -864,6 +864,25 @@ impl SqlAudit {
         Ok(row.0 as i64)
     }
 
+    /// Check whether a tenant credit record already exists for the given payment reference.
+    pub async fn HasTenantCreditPaymentRef(&self, tenant: &str, payment_ref: &str) -> Result<bool> {
+        let row: (bool,) = sqlx::query_as(
+            r#"
+            SELECT EXISTS(
+                SELECT 1
+                FROM TenantCreditHistory
+                WHERE tenant = $1 AND payment_ref = $2
+            )
+            "#,
+        )
+        .bind(tenant)
+        .bind(payment_ref)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(row.0)
+    }
+
     /// Add a billing rate row.
     pub async fn AddBillingRate(
         &self,

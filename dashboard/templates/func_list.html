@@ -314,7 +314,7 @@
                 const namespace = encodeURIComponent(row.dataset.namespace || '');
                 const name = encodeURIComponent(row.dataset.name || '');
                 try {
-                    const resp = await fetch(`/demo/proxy/object/function/${tenant}/${namespace}/${name}/`, {
+                    const resp = await fetch(`/proxy/object/function/${tenant}/${namespace}/${name}/`, {
                         method: 'DELETE',
                         headers: {
                             'Accept': 'application/json'
