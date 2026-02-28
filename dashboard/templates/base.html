@@ -335,7 +335,7 @@
 <body>
     {% set request_path = request.path if request is defined and request.path is defined else '' %}
     {% set request_path_no_slash = request_path.rstrip('/') %}
-    {% set nav_models_active = request_path_no_slash in ('', '/demo') or '/listfunc' in request_path or '/func_create' in request_path or '/func' in request_path or '/funclog' in request_path %}
+    {% set nav_models_active = request_path_no_slash in ('',) or '/listfunc' in request_path or '/func_create' in request_path or '/func' in request_path or '/funclog' in request_path %}
     {% set nav_pods_active = '/listpod' in request_path or '/pod' in request_path %}
     {% set nav_snapshots_active = '/listsnapshot' in request_path or '/snapshot' in request_path %}
     {% set nav_nodes_active = '/listnode' in request_path or '/node' in request_path %}
@@ -493,7 +493,7 @@
             }
 
             try {
-                const resp = await fetch('/demo/generate_tenants');
+                const resp = await fetch('/generate_tenants');
                 if (!resp.ok) {
                     refreshTenantBadge();
                     return;
@@ -533,7 +533,7 @@
             }
 
             try {
-                const resp = await fetch('/demo/generate_roles');
+                const resp = await fetch('/generate_roles');
                 if (!resp.ok) {
                     setNodesNavVisibility(false);
                     return;

@@ -65,7 +65,7 @@ def inject_dashboard_links():
     }
 
 #Create a Blueprint with a common prefix
-prefix_bp = Blueprint('prefix', __name__, url_prefix='/demo')
+prefix_bp = Blueprint('prefix', __name__, url_prefix='')
 
 def configure_logging():
     if "gunicorn" in multiprocessing.current_process().name.lower():

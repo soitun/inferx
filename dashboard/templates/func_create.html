@@ -1276,7 +1276,7 @@
                     command_model: Array.isArray(payload.spec?.commands) ? payload.spec.commands.find((x) => typeof x === 'string' && (x === '--model' || x.startsWith('--model='))) : undefined
                 });
 
-                const resp = await fetch('/demo/func_save', {
+                const resp = await fetch('/func_save', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1315,9 +1315,9 @@
 
         async function loadTenantsAndNamespaces() {
             const [tenantsResp, namespacesResp, rolesResp] = await Promise.all([
-                fetch('/demo/generate_tenants'),
-                fetch('/demo/generate_namespaces'),
-                fetch('/demo/generate_roles')
+                fetch('/generate_tenants'),
+                fetch('/generate_namespaces'),
+                fetch('/generate_roles')
             ]);
 
             if (!tenantsResp.ok) {
@@ -1350,7 +1350,7 @@
 
         async function loadNodeMaxVram() {
             try {
-                const resp = await fetch('/demo/nodes_max_vram');
+                const resp = await fetch('/nodes_max_vram');
                 if (!resp.ok) {
                     vramHint.textContent = `Could not load node max vRam (HTTP ${resp.status}).`;
                     return;
