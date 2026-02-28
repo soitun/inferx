@@ -26,7 +26,7 @@ use super::{
         AccessToken, ApikeyCreateRequest, GetTokenCache, ObjectType, PermissionType, UserRole,
     },
     gw_obj_repo::{FuncBrief, FuncDetail},
-    http_gateway::HttpGateway,
+    http_gateway::{HttpGateway, GATEWAY_CONFIG},
 };
 
 const ONBOARD_TENANT_PREFIX: &str = "tn-";
@@ -34,6 +34,9 @@ const ONBOARD_TENANT_SUFFIX_LEN: usize = 10;
 const ONBOARD_DEFAULT_NAMESPACE: &str = "default";
 const ONBOARD_MAX_ATTEMPTS: usize = 3;
 const ONBOARD_APIKEY_PREFIX: &str = "quickstart-inference";
+const ONBOARD_INITIAL_CREDIT_NOTE: &str = "Initial onboarding credit";
+const ONBOARD_INITIAL_CREDIT_ADDED_BY: &str = "system-onboard";
+const ONBOARD_INITIAL_CREDIT_PAYMENT_REF_PREFIX: &str = "onboard-initial-credit";
 
 impl HttpGateway {
     pub async fn Rbac(
@@ -405,7 +408,10 @@ impl HttpGateway {
         return Ok(users);
     }
 
-    pub async fn Onboard(&self, token: &Arc<AccessToken>) -> Result<(String, bool, String, String)> {
+    pub async fn Onboard(
+        &self,
+        token: &Arc<AccessToken>,
+    ) -> Result<(String, bool, String, String)> {
         if token.username == "anonymous" || token.sourceIsApikey || token.subject.is_empty() {
             return Err(Error::NoPermission);
         }
@@ -523,6 +529,13 @@ impl HttpGateway {
                 onboarding_apikey_name = created_apikey_name;
                 sql.UpdateOnboardStep(&sub, 4).await?;
                 row.saga_step = 4;
+            }
+
+            if row.saga_step < 5 {
+                self.EnsureOnboardInitialCredit(&row.tenant_name, &sub)
+                    .await?;
+                sql.UpdateOnboardStep(&sub, 5).await?;
+                row.saga_step = 5;
             }
 
             sql.CompleteOnboardWithProfile(&sub, &row.tenant_name, &display_name, &email)
@@ -677,6 +690,55 @@ impl HttpGateway {
                 return Err(e);
             }
         }
+    }
+
+    async fn EnsureOnboardInitialCredit(&self, tenant_name: &str, sub: &str) -> Result<()> {
+        let amount_cents = GATEWAY_CONFIG.onboardInitialCreditCents;
+        if amount_cents <= 0 {
+            return Ok(());
+        }
+
+        let payment_ref = BuildOnboardInitialCreditPaymentRef(tenant_name, sub);
+        if self
+            .sqlAudit
+            .HasTenantCreditPaymentRef(tenant_name, &payment_ref)
+            .await?
+        {
+            return Ok(());
+        }
+
+        self.sqlAudit
+            .AddTenantCredit(
+                tenant_name,
+                amount_cents,
+                "USD",
+                Some(ONBOARD_INITIAL_CREDIT_NOTE),
+                Some(&payment_ref),
+                Some(ONBOARD_INITIAL_CREDIT_ADDED_BY),
+            )
+            .await?;
+
+        let quota_exceeded = self.sqlAudit.RecalculateTenantQuota(tenant_name).await?;
+        let tenant_obj = self
+            .client
+            .Get(Tenant::KEY, SYSTEM_TENANT, SYSTEM_NAMESPACE, tenant_name, 0)
+            .await?;
+        let tenant_obj = match tenant_obj {
+            Some(obj) => obj,
+            None => {
+                return Err(Error::NotExist(format!(
+                    "onboard tenant {} does not exist while adding initial credit",
+                    tenant_name
+                )));
+            }
+        };
+        let mut tenant_obj = Tenant::FromDataObject(tenant_obj)?;
+        if tenant_obj.object.status.quota_exceeded != quota_exceeded {
+            tenant_obj.object.status.quota_exceeded = quota_exceeded;
+            self.client.Update(&tenant_obj.DataObject(), 0).await?;
+        }
+
+        Ok(())
     }
 
     async fn TenantExistsInStore(&self, tenant_name: &str) -> Result<bool> {
@@ -1659,6 +1721,24 @@ fn BuildOnboardInferenceApikeyName(tenant_name: &str, sub: &str) -> String {
     };
 
     format!("{}-{}-{}", ONBOARD_APIKEY_PREFIX, tenant_slug, sub_suffix)
+}
+
+fn BuildOnboardInitialCreditPaymentRef(tenant_name: &str, sub: &str) -> String {
+    let sub_slug = sub
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>();
+    let sub_suffix = if sub_slug.is_empty() {
+        "user".to_owned()
+    } else {
+        sub_slug.chars().take(16).collect::<String>()
+    };
+
+    format!(
+        "{}:{}:{}",
+        ONBOARD_INITIAL_CREDIT_PAYMENT_REF_PREFIX, tenant_name, sub_suffix
+    )
 }
 
 fn IsCreateConflictError(err: &Error) -> bool {

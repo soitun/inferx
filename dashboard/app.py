@@ -1299,12 +1299,25 @@ def build_sample_rest_call_for_ui(tenant: str, namespace: str, funcname: str, sa
     body = sample_query.get("body", {})
     if not isinstance(body, dict):
         body = {}
+    body_for_ui = dict(body)
+
+    prompt = sample_query.get("prompt")
+    api_type = str(sample_query.get("apiType", "") or "").strip().lower()
+    if (
+        isinstance(prompt, str)
+        and prompt.strip() != ""
+        and api_type == "text2text"
+        and "prompt" not in body_for_ui
+        and "messages" not in body_for_ui
+        and "input" not in body_for_ui
+    ):
+        body_for_ui["prompt"] = prompt
 
     token = str(apikey or "").strip()
     if token == "":
         token = "<INFERENCE_API_KEY(Find or create one on Admin|Apikeys page)>"
 
-    body_json = json.dumps(body, ensure_ascii=False)
+    body_json = json.dumps(body_for_ui, ensure_ascii=False)
     body_json = body_json.replace("'", "'\"'\"'")
     base_url = normalize_public_api_base_url()
     url = f"{base_url}/funccall/{tenant}/{namespace}/{funcname}/{path}"
@@ -1315,7 +1328,7 @@ def build_sample_rest_call_for_ui(tenant: str, namespace: str, funcname: str, sa
         auth_header_line = f"  -H 'Authorization: Bearer {token}' \\\n"
 
     return (
-        f"curl -X POST '{url}' \\\n"
+        f"curl -X POST {url} \\\n"
         f"  -H 'Content-Type: application/json' \\\n"
         f"{auth_header_line}"
         f"  -d '{body_json}'"

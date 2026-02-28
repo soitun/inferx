@@ -165,6 +165,7 @@ pub struct GatewayConfig {
     pub secretStoreAddr: String,
     pub keycloakconfig: KeycloadConfig,
     pub inferxAdminApikey: String,
+    pub onboardInitialCreditCents: i64,
     pub gatewayPort: u16,
 }
 
@@ -253,6 +254,27 @@ impl GatewayConfig {
             Err(_) => String::new(),
         };
 
+        let onboardInitialCreditCents = match std::env::var("ONBOARD_INITIAL_CREDIT_CENTS") {
+            Ok(s) => match s.parse::<i64>() {
+                Ok(v) if v >= 0 => v,
+                Ok(v) => {
+                    warn!(
+                        "invalid ONBOARD_INITIAL_CREDIT_CENTS value '{}' (negative {}), defaulting to 3000",
+                        &s, v
+                    );
+                    3000
+                }
+                Err(_) => {
+                    warn!(
+                        "invalid ONBOARD_INITIAL_CREDIT_CENTS value '{}', defaulting to 3000",
+                        &s
+                    );
+                    3000
+                }
+            },
+            Err(_) => 3000,
+        };
+
         let gatewayPort = if config.gatewayPort == 0 {
             DEFAULT_GATEWAY_PORT
         } else {
@@ -273,6 +295,7 @@ impl GatewayConfig {
                 realm: keycloakRealm,
             },
             inferxAdminApikey: inferxAdminApikey,
+            onboardInitialCreditCents: onboardInitialCreditCents,
             gatewayPort: gatewayPort,
         };
 

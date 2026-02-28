@@ -42,6 +42,8 @@ spec:
             value: "Gateway"
           - name: ENFORCE_BILLING
             value: "false"
+          - name: ONBOARD_INITIAL_CREDIT_CENTS
+            value: "3000"
           - name: INFERX_ADMIN_APIKEY
             value: 87831cdb-d07a-4dc1-9de0-fb232c9bf286
           - name: AUDITDB_ADDR
