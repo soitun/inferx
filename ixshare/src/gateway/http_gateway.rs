@@ -307,6 +307,7 @@ pub struct HttpGateway {
     pub funcAgentMgr: FuncAgentMgr,
     pub namespaceStore: NamespaceStore,
     pub sqlAudit: SqlAudit,
+    pub sqlBilling: SqlAudit,
     pub client: CacherClient,
 }
 
@@ -1637,7 +1638,7 @@ async fn GetAdminTenants(
     {
         Ok(mut profiles) => {
             let mut billing = match gw
-                .sqlAudit
+                .sqlBilling
                 .GetTenantBillingSummariesByTenantNames(&tenant_names)
                 .await
             {
@@ -2635,7 +2636,7 @@ async fn AddBillingRate(
     );
 
     match gw
-        .sqlAudit
+        .sqlBilling
         .AddBillingRate(
             usage_type,
             req.rate_cents_per_hour,
@@ -2716,7 +2717,7 @@ async fn AddTenantCredits(
         "AddTenantCredits: tenant={}, amount_cents={}, currency={}, note={:?}, payment_ref={:?}, added_by={:?}",
         &tenant, req.amount_cents, currency, req.note, req.payment_ref, added_by
     );
-    match gw.sqlAudit.AddTenantCredit(
+    match gw.sqlBilling.AddTenantCredit(
         &tenant,
         req.amount_cents,
         currency,
@@ -2726,7 +2727,7 @@ async fn AddTenantCredits(
     ).await {
         Ok(id) => {
             error!("AddTenantCredits: credit added with id={}", id);
-            let quota_exceeded = match gw.sqlAudit.RecalculateTenantQuota(&tenant).await {
+            let quota_exceeded = match gw.sqlBilling.RecalculateTenantQuota(&tenant).await {
                 Ok(v) => v,
                 Err(e) => {
                     let body = Body::from(format!("Failed to recalc tenant quota: {:?}", e));
@@ -2797,7 +2798,7 @@ async fn AddTenantCredits(
             }
 
             // Get updated balance
-            let balance = match gw.sqlAudit.GetTenantCreditBalance(&tenant).await {
+            let balance = match gw.sqlBilling.GetTenantCreditBalance(&tenant).await {
                 Ok(b) => b,
                 Err(e) => {
                     error!("AddTenantCredits: GetTenantCreditBalance failed: {:?}", e);
@@ -2882,7 +2883,7 @@ async fn GetBillingRateHistory(
         .filter(|t| !t.is_empty());
 
     match gw
-        .sqlAudit
+        .sqlBilling
         .ListBillingRateHistory(scope, tenant.as_deref(), limit, offset)
         .await
     {
@@ -2921,7 +2922,7 @@ async fn GetTenantCredits(
         return Ok(resp);
     }
 
-    match gw.sqlAudit.GetTenantBillingSummary(&tenant).await {
+    match gw.sqlBilling.GetTenantBillingSummary(&tenant).await {
         Ok((balance_cents, used_cents, _threshold, quota_exceeded, _total_credits, currency, _, _, _, _)) => {
             let resp_body = CreditResponse { balance_cents, used_cents, currency, quota_exceeded };
             let data = serde_json::to_string(&resp_body).unwrap();
@@ -2977,7 +2978,7 @@ async fn GetBillingCreditHistory(
         .filter(|t| t != "all" && t != "__all__");
 
     match gw
-        .sqlAudit
+        .sqlBilling
         .ListBillingCreditHistory(tenant.as_deref(), limit, offset)
         .await
     {
@@ -3027,11 +3028,11 @@ async fn GetTenantCreditHistory(
     }
 
     match gw
-        .sqlAudit
+        .sqlBilling
         .ListTenantCreditHistory(&tenant, limit, offset)
         .await
     {
-        Ok((records, total)) => match gw.sqlAudit.GetTenantCreditBalance(&tenant).await {
+        Ok((records, total)) => match gw.sqlBilling.GetTenantCreditBalance(&tenant).await {
             Ok(balance) => {
                 let resp_body = CreditHistoryResponse {
                     records,
@@ -3080,7 +3081,7 @@ async fn GetTenantBillingSummary(
         return Ok(resp);
     }
 
-    match gw.sqlAudit.GetTenantBillingSummary(&tenant).await {
+    match gw.sqlBilling.GetTenantBillingSummary(&tenant).await {
         Ok((balance_cents, used_cents, threshold_cents, quota_exceeded, total_credits_cents, currency,
             inference_cents, standby_cents, inference_ms, standby_ms)) => {
             let resp_body = BillingSummaryResponse {
@@ -3138,7 +3139,7 @@ async fn GetTenantHourlyUsage(
         };
 
     match gw
-        .sqlAudit
+        .sqlBilling
         .GetTenantHourlyUsageRange(&tenant, start_hour, end_hour)
         .await
     {
@@ -3190,7 +3191,7 @@ async fn GetTenantUsageByModel(
     let _deprecated_limit = params.limit;
 
     match gw
-        .sqlAudit
+        .sqlBilling
         .GetTenantUsageByModel(&tenant, start_hour, end_hour)
         .await
     {
@@ -3303,7 +3304,7 @@ async fn GetTenantHourlyUsageByModel(
         };
 
     match gw
-        .sqlAudit
+        .sqlBilling
         .GetFuncHourlyUsageRange(&tenant, &namespace, &funcname, start_hour, end_hour)
         .await
     {
@@ -3364,7 +3365,7 @@ async fn GetTenantHourlyUsageByNamespace(
         };
 
     match gw
-        .sqlAudit
+        .sqlBilling
         .GetNamespaceHourlyUsageRange(&tenant, &namespace, start_hour, end_hour)
         .await
     {
@@ -3419,7 +3420,7 @@ async fn GetTenantUsageByNamespace(
     let _deprecated_limit = params.limit;
 
     match gw
-        .sqlAudit
+        .sqlBilling
         .GetTenantUsageByNamespace(&tenant, start_hour, end_hour)
         .await
     {
@@ -3507,7 +3508,7 @@ async fn GetTenantUsageSummary(
 
     let hours = params.hours.unwrap_or(24).min(720).max(1);
 
-    match gw.sqlAudit.GetTenantAnalyticsSummary(&tenant, hours).await {
+    match gw.sqlBilling.GetTenantAnalyticsSummary(&tenant, hours).await {
         Ok((total_ms, total_cents, top_model_name, top_model_ms, top_namespace_name, top_namespace_ms, peak_hour, peak_hour_ms)) => {
             let top_model = top_model_name.map(|name| TopModelInfo {
                 funcname: name,

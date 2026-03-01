@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: db-pvc
+  name: auditdb-pvc
 spec:
   accessModes:
     - ReadWriteOnce
@@ -12,16 +12,16 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: db
+  name: auditdb
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: db
+      app: auditdb
   template:
     metadata:
       labels:
-        app: db
+        app: auditdb
     spec:
       nodeSelector:
         inferx_storage: data      
@@ -39,25 +39,25 @@ spec:
             - name: PGDATA
               value: /data/postgres
             - name: INIT_SQL
-              value: create_table.sql  
+              value: audit.sql
           volumeMounts:
             - name: db-data
               mountPath: /data/postgres
       volumes:
         - name: db-data
           hostPath:
-            path: /opt/inferx/data/postgres
+            path: /opt/inferx/data/postgres_audit
             type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: db
+  name: auditdb
 spec:
   selector:
-    app: db
+    app: auditdb
   ports:
     - port: 5432
       targetPort: 5432
-      nodePort: 30544
+      nodePort: 30542
   type: NodePort

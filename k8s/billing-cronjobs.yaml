@@ -32,15 +32,15 @@ spec:
                   sh /scripts/quota-check.sh
               env:
                 - name: PGHOST
-                  value: db
+                  value: billingdb
                 - name: PGPORT
                   value: "5432"
                 - name: PGUSER
-                  value: audit_user
+                  value: billing_user
                 - name: PGPASSWORD
                   value: "123456"
                 - name: PGDATABASE
-                  value: auditdb
+                  value: billingdb
                 - name: GATEWAY_URL
                   value: "http://gateway:4000"
                 - name: API_KEY
@@ -83,15 +83,15 @@ spec:
                   psql -f /scripts/hourly-aggregate.sql
               env:
                 - name: PGHOST
-                  value: db
+                  value: billingdb
                 - name: PGPORT
                   value: "5432"
                 - name: PGUSER
-                  value: audit_user
+                  value: billing_user
                 - name: PGPASSWORD
                   value: "123456"
                 - name: PGDATABASE
-                  value: auditdb
+                  value: billingdb
               volumeMounts:
                 - name: sql-scripts
                   mountPath: /scripts
