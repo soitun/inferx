@@ -481,9 +481,9 @@
                     </label>
                     <div>
                         <select id="gpu-count-select">
-                            <option value="1">1</option>
-                            <option value="2">2</option>
-                            <option value="4">4</option>
+                            {% for gpu_count in gpu_count_options %}
+                            <option value="{{ gpu_count }}">{{ gpu_count }}</option>
+                            {% endfor %}
                         </select>
                         <div class="hint">If you need create model with more GPUs, please <a href="{{ slack_invite_url }}" target="_blank" rel="noopener noreferrer">contact us</a>.</div>
                     </div>
@@ -543,7 +543,7 @@
                     <span class="field-help" tabindex="0" aria-label="Partial spec JSON help" data-tooltip="Edit the partial spec directly (image, commands, GPU resources, envs, policy, sample_query). In Advanced mode, spec.commands is the full runtime command list. Some runtime fields are still injected server-side." title="Edit the partial spec directly (image, commands, GPU resources, envs, policy, sample_query). In Advanced mode, spec.commands is the full runtime command list. Some runtime fields are still injected server-side.">i</span>
                 </span>
             </h3>
-            <textarea id="advanced-spec-json" rows="20" placeholder='{"image":"vllm/vllm-openai:v0.15.0","commands":[],"resources":{"GPU":{"Count":1,"vRam":24000}}}'></textarea>
+            <textarea id="advanced-spec-json" rows="20" placeholder='{"image":"vllm/vllm-openai:v0.12.0","commands":[],"resources":{"GPU":{"Count":1,"vRam":24000}}}'></textarea>
         </div>
     </div>
 
@@ -574,6 +574,7 @@
         const PAGE_MODE = {{ page_mode | tojson }};
         const INITIAL_MODEL = {{ initial_model_data | tojson }};
         const IMAGE_OPTIONS = {{ image_options | tojson }};
+        const SUPPORTED_GPU_COUNTS = {{ gpu_count_options | tojson }};
         const DEFAULT_ADVANCED_SAMPLE_QUERY_TEMPLATE = {{ default_advanced_sample_query_template | tojson }};
         // Keep in sync with backend/runtime func policy defaults.
         const DEFAULT_POLICY_QUEUE_TIMEOUT_SEC = 30.0;
@@ -997,16 +998,22 @@
         }
 
         function refreshGpuCountOptionsFromNodeCapacity() {
-            if (PAGE_MODE !== 'create') {
-                return;
-            }
-
             const currentValue = String(gpuCountSelect.value || '').trim();
             const currentCount = Number.parseInt(currentValue, 10);
-            const supportedCounts = [1, 2, 4];
+            const supportedCounts = (
+                Array.isArray(SUPPORTED_GPU_COUNTS)
+                    ? SUPPORTED_GPU_COUNTS
+                        .map((value) => Number.parseInt(value, 10))
+                        .filter((value) => Number.isInteger(value) && value > 0)
+                    : []
+            );
+            supportedCounts.sort((a, b) => a - b);
+            const maxSupportedCount = supportedCounts.length > 0
+                ? supportedCounts[supportedCounts.length - 1]
+                : 1;
             const maxCountForUi = (
                 Number.isInteger(nodeMaxGpuCount) && nodeMaxGpuCount > 0
-            ) ? Math.min(4, nodeMaxGpuCount) : 4;
+            ) ? Math.min(maxSupportedCount, nodeMaxGpuCount) : maxSupportedCount;
             const availableCounts = supportedCounts.filter((count) => count <= maxCountForUi);
             const finalCounts = availableCounts.length > 0 ? availableCounts : [1];
 

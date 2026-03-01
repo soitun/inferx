@@ -117,18 +117,68 @@ ONBOARD_BACKOFF_BASE_SEC = float(os.getenv('ONBOARD_BACKOFF_BASE_SEC', '0.5'))
 ONBOARD_TIMEOUT_SEC = float(os.getenv('ONBOARD_TIMEOUT_SEC', '10'))
 
 VLLM_IMAGE_WHITELIST = [
-    "vllm/vllm-openai:v0.15.0",
-    "vllm/vllm-openai:v0.14.0",
-    "vllm/vllm-openai:v0.13.0",
     "vllm/vllm-openai:v0.12.0",
+    "vllm/vllm-openai:v0.13.0",
+    "vllm/vllm-openai:v0.14.0",
+    "vllm/vllm-openai:v0.15.0",
+    "vllm/vllm-openai:v0.16.0",
     "vllm/vllm-omni:v0.14.0",
 ]
 
-GPU_RESOURCE_LOOKUP = {
+DEFAULT_GPU_RESOURCE_LOOKUP = {
     1: {"CPU": 10000, "Mem": 30000},
     2: {"CPU": 20000, "Mem": 60000},
     4: {"CPU": 20000, "Mem": 80000},
 }
+GPU_RESOURCE_LOOKUP_ENV = "INFERX_GPU_RESOURCE_LOOKUP_JSON"
+
+
+def load_gpu_resource_lookup():
+    raw = str(os.getenv(GPU_RESOURCE_LOOKUP_ENV, "") or "").strip()
+    if raw == "":
+        return dict(DEFAULT_GPU_RESOURCE_LOOKUP)
+
+    def _invalid(reason: str):
+        raise ValueError(f"{GPU_RESOURCE_LOOKUP_ENV} {reason}")
+
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict) or len(parsed) == 0:
+            _invalid("must be a non-empty JSON object")
+
+        normalized = {}
+        for key, value in parsed.items():
+            try:
+                gpu_count = int(key)
+            except Exception:
+                _invalid(f"has non-integer GPU count key: {key!r}")
+            if gpu_count <= 0:
+                _invalid(f"has non-positive GPU count key: {gpu_count}")
+            if not isinstance(value, dict):
+                _invalid(f"entry for GPU count {gpu_count} must be an object")
+
+            cpu = value.get("CPU")
+            mem = value.get("Mem")
+            if not isinstance(cpu, int) or isinstance(cpu, bool) or cpu <= 0:
+                _invalid(f"entry for GPU count {gpu_count} has invalid CPU (must be positive integer)")
+            if not isinstance(mem, int) or isinstance(mem, bool) or mem <= 0:
+                _invalid(f"entry for GPU count {gpu_count} has invalid Mem (must be positive integer)")
+
+            normalized[gpu_count] = {"CPU": cpu, "Mem": mem}
+
+        return dict(sorted(normalized.items()))
+    except Exception as e:
+        app.logger.warning(
+            "failed to parse %s (%s), using default lookup: %s",
+            GPU_RESOURCE_LOOKUP_ENV,
+            e,
+            DEFAULT_GPU_RESOURCE_LOOKUP,
+        )
+        return dict(DEFAULT_GPU_RESOURCE_LOOKUP)
+
+
+GPU_RESOURCE_LOOKUP = load_gpu_resource_lookup()
+SUPPORTED_GPU_COUNTS = sorted(GPU_RESOURCE_LOOKUP.keys())
 
 DEFAULT_MODEL_ENVS = [
     ["LD_LIBRARY_PATH", "/usr/local/lib/python3.12/dist-packages/nvidia/cuda_nvrtc/lib/:$LD_LIBRARY_PATH"],
@@ -894,7 +944,8 @@ def validate_partial_spec(spec, max_node_vram, max_node_gpu_count=0, editor_mode
     if not isinstance(gpu_count, int) or isinstance(gpu_count, bool):
         raise ValueError("`spec.resources.GPU.Count` must be an integer")
     if gpu_count not in GPU_RESOURCE_LOOKUP:
-        raise ValueError("`spec.resources.GPU.Count` must be one of: 1, 2, 4")
+        allowed_counts = ", ".join(str(v) for v in SUPPORTED_GPU_COUNTS)
+        raise ValueError(f"`spec.resources.GPU.Count` must be one of: {allowed_counts}")
     if max_node_gpu_count > 0 and gpu_count > max_node_gpu_count:
         raise ValueError(f"`spec.resources.GPU.Count` must be <= node max GPU count ({max_node_gpu_count})")
     if not isinstance(vram, int) or isinstance(vram, bool):
@@ -1706,6 +1757,7 @@ def FuncCreate():
         edit_key=edit_key,
         initial_model_data=initial_model_data,
         image_options=VLLM_IMAGE_WHITELIST,
+        gpu_count_options=SUPPORTED_GPU_COUNTS,
         default_advanced_sample_query_template=build_sample_query("Qwen/Qwen2.5-72B-Instruct"),
     )
 
