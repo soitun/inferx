@@ -113,7 +113,7 @@ $$;
 
 -- Initial global rates (idempotent)
 INSERT INTO BillingRate (usage_type, rate_cents_per_hour, effective_from, added_by)
-SELECT 'inference', 800, '2025-01-01', 'system'
+SELECT 'inference', 850, '2025-01-01', 'system'
 WHERE NOT EXISTS (
     SELECT 1
     FROM BillingRate
@@ -123,7 +123,7 @@ WHERE NOT EXISTS (
 );
 
 INSERT INTO BillingRate (usage_type, rate_cents_per_hour, effective_from, added_by)
-SELECT 'standby', 20, '2025-01-01', 'system'
+SELECT 'standby', 10, '2025-01-01', 'system'
 WHERE NOT EXISTS (
     SELECT 1
     FROM BillingRate
