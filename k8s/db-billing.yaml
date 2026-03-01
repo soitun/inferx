@@ -1,63 +1,52 @@
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: db-pvc
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 1Gi
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: db
+  name: billingdb
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: db
+      app: billingdb
   template:
     metadata:
       labels:
-        app: db
+        app: billingdb
     spec:
       nodeSelector:
-        inferx_storage: data      
+        inferx_storage: data
       containers:
         - name: postgres
           image: inferx/inferx_postgres:${VERSION}
           imagePullPolicy: IfNotPresent
           env:
             - name: POSTGRES_USER
-              value: audit_user
+              value: billing_user
             - name: POSTGRES_PASSWORD
               value: "123456"
             - name: POSTGRES_DB
-              value: auditdb
+              value: billingdb
             - name: PGDATA
               value: /data/postgres
             - name: INIT_SQL
-              value: create_table.sql  
+              value: billing.sql
           volumeMounts:
             - name: db-data
               mountPath: /data/postgres
       volumes:
         - name: db-data
           hostPath:
-            path: /opt/inferx/data/postgres
+            path: /opt/inferx/data/postgres_billing
             type: DirectoryOrCreate
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: db
+  name: billingdb
 spec:
   selector:
-    app: db
+    app: billingdb
   ports:
     - port: 5432
       targetPort: 5432
-      nodePort: 30544
+      nodePort: 30543
   type: NodePort

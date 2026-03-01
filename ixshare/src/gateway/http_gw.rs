@@ -700,14 +700,14 @@ impl HttpGateway {
 
         let payment_ref = BuildOnboardInitialCreditPaymentRef(tenant_name, sub);
         if self
-            .sqlAudit
+            .sqlBilling
             .HasTenantCreditPaymentRef(tenant_name, &payment_ref)
             .await?
         {
             return Ok(());
         }
 
-        self.sqlAudit
+        self.sqlBilling
             .AddTenantCredit(
                 tenant_name,
                 amount_cents,
@@ -718,7 +718,7 @@ impl HttpGateway {
             )
             .await?;
 
-        let quota_exceeded = self.sqlAudit.RecalculateTenantQuota(tenant_name).await?;
+        let quota_exceeded = self.sqlBilling.RecalculateTenantQuota(tenant_name).await?;
         let tenant_obj = self
             .client
             .Get(Tenant::KEY, SYSTEM_TENANT, SYSTEM_NAMESPACE, tenant_name, 0)

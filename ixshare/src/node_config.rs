@@ -161,6 +161,7 @@ pub struct GatewayConfig {
     pub nodeIp: String,
     pub schedulerPort: u16,
     pub auditdbAddr: String,
+    pub billingdbAddr: String,
     pub enforceBilling: bool,
     pub secretStoreAddr: String,
     pub keycloakconfig: KeycloadConfig,
@@ -223,6 +224,17 @@ impl GatewayConfig {
         let auditdbAddr = match std::env::var("AUDITDB_ADDR") {
             Ok(s) => s,
             Err(_) => config.auditdbAddr.clone(),
+        };
+
+        let billingdbAddr = match std::env::var("BILLINGDB_ADDR") {
+            Ok(s) => s,
+            Err(_) => {
+                if config.billingdbAddr.len() > 0 {
+                    config.billingdbAddr.clone()
+                } else {
+                    auditdbAddr.clone()
+                }
+            }
         };
 
         let enforceBilling = match std::env::var("ENFORCE_BILLING") {
@@ -289,6 +301,7 @@ impl GatewayConfig {
             schedulerPort: schedulerPort,
             secretStoreAddr: secretStoreAddr,
             auditdbAddr: auditdbAddr,
+            billingdbAddr: billingdbAddr,
             enforceBilling: enforceBilling,
             keycloakconfig: KeycloadConfig {
                 url: keycloakUrl,
@@ -312,6 +325,7 @@ pub struct SchedulerConfig {
     pub nodeIp: String,
     pub schedulerPort: u16,
     pub auditdbAddr: String,
+    pub billingdbAddr: String,
     pub enableSnapshotBilling: bool,
 }
 
@@ -349,6 +363,17 @@ impl SchedulerConfig {
             Err(_) => config.auditdbAddr.clone(),
         };
 
+        let billingdbAddr = match std::env::var("BILLINGDB_ADDR") {
+            Ok(s) => s,
+            Err(_) => {
+                if config.billingdbAddr.len() > 0 {
+                    config.billingdbAddr.clone()
+                } else {
+                    auditdbAddr.clone()
+                }
+            }
+        };
+
         let enableSnapshotBilling = match std::env::var("ENABLE_SNAPSHOT_BILLING") {
             Ok(s) => match s.parse::<bool>() {
                 Ok(v) => v,
@@ -370,6 +395,7 @@ impl SchedulerConfig {
             nodeIp: nodeIp,
             schedulerPort: schedulerPort,
             auditdbAddr: auditdbAddr,
+            billingdbAddr: billingdbAddr,
             enableSnapshotBilling: enableSnapshotBilling,
         };
 
@@ -477,6 +503,7 @@ pub struct NodeAgentConfig {
     pub memcache: ShareMem,
     pub tlsconfig: TLSConfig,
     pub auditdbAddr: String,
+    pub billingdbAddr: String,
     pub secretStoreAddr: String,
 
     pub initCudaHostAllocSize: i64, // GB
@@ -765,6 +792,17 @@ impl NodeAgentConfig {
             Err(_) => config.auditdbAddr.clone(),
         };
 
+        let billingdbAddr = match std::env::var("BILLINGDB_ADDR") {
+            Ok(s) => s,
+            Err(_) => {
+                if config.billingdbAddr.len() > 0 {
+                    config.billingdbAddr.clone()
+                } else {
+                    auditdbAddr.clone()
+                }
+            }
+        };
+
         let ret = Self {
             etcdAddrs: etcdAddrs,
             stateSvcAddrs: stateSvcAddrs,
@@ -785,6 +823,7 @@ impl NodeAgentConfig {
             memcache: config.sharemem.clone(),
             tlsconfig: config.tlsconfig.clone(),
             auditdbAddr: auditdbAddr,
+            billingdbAddr: billingdbAddr,
             secretStoreAddr: secretStoreAddr,
             initCudaHostAllocSize: initCudaHostAllocSize,
         };
@@ -858,6 +897,9 @@ pub struct NodeConfig {
 
     #[serde(default)]
     pub auditdbAddr: String,
+
+    #[serde(default)]
+    pub billingdbAddr: String,
 
     #[serde(default)]
     pub resources: ResourceConfig,

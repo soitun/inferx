@@ -455,14 +455,14 @@ impl UsageTickAuditAgent {
     }
 
     pub fn Enable() -> bool {
-        return NA_CONFIG.auditdbAddr.len() > 0;
+        return NA_CONFIG.billingdbAddr.len() > 0;
     }
 
     pub async fn Process(&self, mut rx: mpsc::Receiver<UsageTick>) -> Result<()> {
-        let addr = NA_CONFIG.auditdbAddr.clone();
-        info!("UsageTickAuditAgent: auditdb address {}", &addr);
+        let addr = NA_CONFIG.billingdbAddr.clone();
+        info!("UsageTickAuditAgent: billingdb address {}", &addr);
         if addr.len() == 0 {
-            info!("UsageTickAuditAgent: auditdb is not enabled");
+            info!("UsageTickAuditAgent: billingdb is not enabled");
             return Ok(());
         }
         let sqlaudit = SqlAudit::New(&addr).await?;

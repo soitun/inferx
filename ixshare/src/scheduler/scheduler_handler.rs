@@ -2432,8 +2432,8 @@ impl SchedulerHandler {
             }
         }
 
-        info!("emit_periodic_standby_ticks: emitted periodic ticks for {} active standby sessions",
-            self.standby_billing_sessions.len());
+        // info!("emit_periodic_standby_ticks: emitted periodic ticks for {} active standby sessions",
+        //     self.standby_billing_sessions.len());
     }
 
     /// Recover standby billing sessions on scheduler startup.

@@ -30,6 +30,10 @@ spec:
             value: "Scheduler"
           - name: STATESVC_ADDR
             value: "http://statesvc:1237"
+          - name: AUDITDB_ADDR
+            value: "postgresql://audit_user:123456@auditdb:5432/auditdb"
+          - name: BILLINGDB_ADDR
+            value: "postgresql://billing_user:123456@billingdb:5432/billingdb"
           - name: ETCD_ADDRS
             value: "http://localhost:2379"
           - name: SCHEDULER_PORT
