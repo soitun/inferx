@@ -1,3 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: billingdb-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -34,9 +45,8 @@ spec:
               mountPath: /data/postgres
       volumes:
         - name: db-data
-          hostPath:
-            path: /opt/inferx/data/postgres_billing
-            type: DirectoryOrCreate
+          persistentVolumeClaim:
+            claimName: billingdb-pvc
 ---
 apiVersion: v1
 kind: Service

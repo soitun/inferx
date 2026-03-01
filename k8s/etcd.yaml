@@ -1,3 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: etcd-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -34,9 +45,8 @@ spec:
             - "--initial-cluster=etcd-00=http://etcd-00:2380"
       volumes:
         - name: etcd-data
-          hostPath:
-            path: /opt/inferx/data/etcd
-            type: DirectoryOrCreate
+          persistentVolumeClaim:
+            claimName: etcd-pvc
 ---
 apiVersion: v1
 kind: Service
