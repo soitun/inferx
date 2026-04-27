@@ -162,18 +162,6 @@ impl FuncAgentMgr {
             match inner.get(&funcId) {
                 Some(agent) => agent.clone(),
                 None => {
-                    // BUG2A-REPRO: log all agents in map at creation time — if a previous
-                    // revision's agent is still present, it confirms the orphan leak
-                    let stale: Vec<&String> = inner.keys()
-                        .filter(|k| *k != &funcId)
-                        .collect();
-                    if !stale.is_empty() {
-                        warn!(
-                            "[BUG2A] Creating new FuncAgent for {} — stale agents still in map: {:?}",
-                            funcId,
-                            stale,
-                        );
-                    }
                     let agent = FuncAgent::New(func);
                     inner.insert(funcId, agent.clone());
                     agent
@@ -649,7 +637,6 @@ impl FuncAgent {
 
     pub async fn NewWorker(&self) -> Result<()> {
         let keepaliveTime = self.scaleinTimeout.load(Ordering::Relaxed);
-        warn!("[SCALEIN] NewWorker for {}/{}/{} scaleinTimeout={}ms", self.tenant, self.funcName, self.funcVersion, keepaliveTime);
 
         let workerId = self.NextWorkerId();
 
