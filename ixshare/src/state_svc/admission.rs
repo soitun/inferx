@@ -24,6 +24,8 @@ use inferxlib::obj_mgr::func_mgr::{FuncState, Function};
 use inferxlib::obj_mgr::namespace_mgr::Namespace;
 use inferxlib::obj_mgr::tenant_mgr::{Tenant, SYSTEM_NAMESPACE, SYSTEM_TENANT};
 
+const VIRTUAL_ENDPOINTS_NAMESPACE: &str = "endpoints";
+
 impl StateSvc {
     pub fn CreateObjCheck(&self, obj: &DataObject<Value>) -> Result<()> {
         match obj.objType.as_str() {
@@ -178,6 +180,8 @@ impl StateSvc {
     pub fn CreateNamespaceCheck(&self, obj: &DataObject<Value>) -> Result<()> {
         let namespace = Namespace::FromDataObject(obj.clone())?;
 
+        self.RejectVirtualEndpointsNamespace(&namespace.tenant, &namespace.name)?;
+
         if !self
             .tenantMgr
             .Contains(SYSTEM_TENANT, SYSTEM_NAMESPACE, &namespace.tenant)
@@ -210,6 +214,7 @@ impl StateSvc {
 
     pub fn CreateFuncCheck(&self, obj: &DataObject<Value>) -> Result<()> {
         let func = Function::FromDataObject(obj.clone())?;
+        self.RejectVirtualEndpointsNamespace(&func.tenant, &func.namespace)?;
         self.ContainersNamespace(&func.tenant, &func.namespace)?;
 
         let tenant = self.tenantMgr.Get("system", "system", &func.tenant)?;
@@ -294,6 +299,8 @@ impl StateSvc {
     pub fn UpdateObjCheck(&self, obj: &DataObject<Value>) -> Result<()> {
         match obj.objType.as_str() {
             Namespace::KEY => {
+                let namespace = Namespace::FromDataObject(obj.clone())?;
+                self.RejectVirtualEndpointsNamespace(&namespace.tenant, &namespace.name)?;
                 return Ok(());
             }
             Tenant::KEY => {
@@ -340,6 +347,7 @@ impl StateSvc {
 
     pub fn UpdateFuncCheck(&self, obj: &DataObject<Value>) -> Result<()> {
         let func = Function::FromDataObject(obj.clone())?;
+        self.RejectVirtualEndpointsNamespace(&func.tenant, &func.namespace)?;
         self.ContainersNamespace(&func.tenant, &func.namespace)?;
 
         if !self
@@ -393,5 +401,16 @@ impl StateSvc {
         }
 
         return Ok(());
+    }
+
+    fn RejectVirtualEndpointsNamespace(&self, tenant: &str, namespace: &str) -> Result<()> {
+        if tenant != SYSTEM_TENANT && namespace == VIRTUAL_ENDPOINTS_NAMESPACE {
+            return Err(Error::CommonError(format!(
+                "namespace {} is reserved for virtual endpoints; only FuncPolicy objects are allowed there",
+                VIRTUAL_ENDPOINTS_NAMESPACE
+            )));
+        }
+
+        Ok(())
     }
 }
