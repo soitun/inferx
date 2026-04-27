@@ -421,53 +421,131 @@
             const output = getElement('output');
             const prompt = String((getElement('prompt') || {}).value || '');
             const signal = startRequestUi();
-
             resetVisualOutputs();
 
-            try {
-                const response = await fetch(new URL(context.text2audioPath, window.location.origin).toString(), {
-                    method: 'POST',
-                    headers: {
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json',
-                        'X-Inferx-Timeout': '60',
-                    },
-                    body: JSON.stringify({
-                        prompt: prompt,
-                        tenant: context.tenant,
-                        namespace: context.namespace,
-                        funcname: context.name,
-                    }),
-                    signal: signal,
-                });
+            // --- CONFIGURATION ---
+            const SOURCE_RATE = 24000; // Updated to your target rate
+            const BUFFER_THRESHOLD = 0.03; // 150ms "safety" buffer to prevent stuttering
+            // ---------------------
 
+            let leftOverByte = null;
+            // Create and resume AudioContext before fetch (user gesture)
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            await audioCtx.resume();
+            let nextTime = audioCtx.currentTime;  // immediate playback
+            let isStarted = false
+
+            try {
+                const t0 = performance.now();
+
+                const response = await fetch(
+                    new URL(context.text2audioPath, window.location.origin).toString(),
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-Inferx-Timeout': '60', 'X-Accel-Buffering': 'no' },
+                        body: JSON.stringify({
+                            prompt: prompt,
+                            tenant: context.tenant,
+                            namespace: context.namespace,
+                            funcname: context.name,
+                            stream: true,
+                            response_format: "pcm",
+                            voice: 'Vivian',
+                        }),
+                        signal: signal,
+                        priority: 'high',
+                        cache: 'no-store'
+                    }
+                );
                 updateLatencyDisplays(response);
 
-                if (!response.ok) {
+                if (!response.ok || !response.body) {
                     setElementText(output, await response.text());
                     return;
                 }
 
-                const audioBlob = await response.blob();
-                const audioUrl = URL.createObjectURL(audioBlob);
-                const audio = getElement('myAudio');
-                if (audio) {
-                    audio.src = audioUrl;
-                    audio.style.display = 'block';
-                    audio.play().catch(() => {});
-                }
+                const reader = response.body.getReader();
                 notifyFirstOutput();
-                if (output) {
-                    output.hidden = true;
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+
+                    // Initialize Context on first chunk (browser requirement for user gesture)
+                    if (!audioCtx) {
+                        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                        nextTime = audioCtx.currentTime + 0.02;
+                    }
+
+                    let chunk = value;
+
+                    // Handle Byte Alignment for PCM16 (2 bytes per sample)
+                    if (leftOverByte !== null) {
+                        const combined = new Uint8Array(chunk.length + 1);
+                        combined[0] = leftOverByte;
+                        combined.set(chunk, 1);
+                        chunk = combined;
+                        leftOverByte = null;
+                    }
+
+                    if (chunk.byteLength % 2 !== 0) {
+                        leftOverByte = chunk[chunk.length - 1];
+                        chunk = chunk.slice(0, chunk.length - 1);
+                    }
+
+                    if (chunk.byteLength <= 0) continue;
+
+                    // Convert PCM16 to Float32
+                    const pcm16 = new Int16Array(chunk.buffer, chunk.byteOffset, chunk.byteLength / 2);
+                    const float32 = new Float32Array(pcm16.length);
+                    for (let i = 0; i < pcm16.length; i++) {
+                        float32[i] = pcm16[i] / 32768.0;
+                    }
+
+                    // Resample
+                    const resampled = resampleLinear(float32, SOURCE_RATE, audioCtx.sampleRate);
+
+                    // Create and Schedule Buffer
+                    const audioBuffer = audioCtx.createBuffer(1, resampled.length, audioCtx.sampleRate);
+                    audioBuffer.copyToChannel(resampled, 0);
+
+                    const source = audioCtx.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(audioCtx.destination);
+
+                    // JITTER MANAGEMENT:
+                    // If the network fell behind and we are already past 'nextTime', 
+                    // reset nextTime to slightly in the future to rebuild the buffer.
+                    if (nextTime < audioCtx.currentTime) {
+                        nextTime = audioCtx.currentTime + BUFFER_THRESHOLD;
+                    }
+
+                    source.start(nextTime);
+                    nextTime += audioBuffer.duration;
                 }
             } catch (error) {
                 if (!(error instanceof DOMException && error.name === 'AbortError')) {
-                    console.error('Error fetching audio output:', error);
-                    setElementText(output, String(error && error.message || error));
+                    console.error('Streaming Error:', error);
                 }
             } finally {
                 finishRequestUi();
             }
+        }
+
+        function resampleLinear(input, srcRate, dstRate) {
+            if (srcRate === dstRate) return input;
+            const ratio = srcRate / dstRate;
+            const newLength = Math.floor(input.length / ratio);
+            const output = new Float32Array(newLength);
+            for (let i = 0; i < newLength; i++) {
+                const pos = i * ratio;
+                const idx = Math.floor(pos);
+                const frac = pos - idx;
+                const s1 = input[idx] || 0;
+                const s2 = (idx + 1 < input.length) ? input[idx + 1] : s1;
+                output[i] = s1 + (s2 - s1) * frac;
+            }
+            return output;
         }
 
         function cancel() {
