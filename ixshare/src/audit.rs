@@ -538,6 +538,8 @@ pub struct TenantBillingAdminSummary {
     pub used_cents: i64,
 }
 
+const PLATFORM_TENANT: &str = "_platform";
+
 impl SqlAudit {
     pub async fn New(sqlSvcAddr: &str) -> Result<Self> {
         let url_parts = url::Url::parse(sqlSvcAddr).expect("Failed to parse URL");
@@ -1142,11 +1144,14 @@ impl SqlAudit {
         &self,
         tenant_names: &[String],
     ) -> Result<HashMap<String, TenantBillingAdminSummary>> {
-        if tenant_names.is_empty() {
+        let names: Vec<String> = tenant_names
+            .iter()
+            .filter(|name| name.as_str() != PLATFORM_TENANT)
+            .cloned()
+            .collect();
+        if names.is_empty() {
             return Ok(HashMap::new());
         }
-
-        let names = tenant_names.to_vec();
         let rows = sqlx::query_as::<_, TenantBillingAdminSummary>(
             r#"
             WITH input_tenants AS (
@@ -1186,6 +1191,10 @@ impl SqlAudit {
         &self,
         tenant: &str,
     ) -> Result<(i64, i64, i64, bool, i64, String, i64, i64, i64, i64)> {
+        if tenant == PLATFORM_TENANT {
+            return Ok((0, 0, 0, false, 0, "USD".to_string(), 0, 0, 0, 0));
+        }
+
         let row: (i64, i64, i64, bool, String, i64, i64) = sqlx::query_as(
             r#"
             SELECT

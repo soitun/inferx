@@ -19,12 +19,15 @@ use serde_json::Value;
 
 use super::state_svc::*;
 use crate::common::*;
+use crate::metastore::cache_store::BackendStore;
 use inferxlib::data_obj::{DataObject, ObjRef};
 use inferxlib::obj_mgr::func_mgr::{FuncState, Function};
 use inferxlib::obj_mgr::namespace_mgr::Namespace;
 use inferxlib::obj_mgr::tenant_mgr::{Tenant, SYSTEM_NAMESPACE, SYSTEM_TENANT};
 
 const VIRTUAL_ENDPOINTS_NAMESPACE: &str = "endpoints";
+const PLATFORM_TENANT: &str = "_platform";
+const PLATFORM_SHARED_NAMESPACE: &str = "_shared";
 
 impl StateSvc {
     pub fn CreateObjCheck(&self, obj: &DataObject<Value>) -> Result<()> {
@@ -53,6 +56,7 @@ impl StateSvc {
                 let func: Function = Function::FromDataObject(dataobj.clone())?;
                 let status = FunctionStatusDef {
                     version: func.Version(),
+                    published: Self::DefaultFunctionPublished(&func),
                     state: FuncState::Normal,
                     snapshotingFailureCnt: 0,
                     resumingFailureCnt: 0,
@@ -85,6 +89,7 @@ impl StateSvc {
                 let func: Function = Function::FromDataObject(dataobj.clone())?;
                 let status = FunctionStatusDef {
                     version: func.Version(),
+                    published: Self::DefaultFunctionPublished(&func),
                     state: FuncState::Normal,
                     snapshotingFailureCnt: 0,
                     resumingFailureCnt: 0,
@@ -99,11 +104,36 @@ impl StateSvc {
                     ..Default::default()
                 };
 
-                error!("CreateFuncStatus {:#?}", &funcstatus);
+                info!("UpdateFuncStatus {:#?}", &funcstatus);
 
                 let statusDataObj = funcstatus.DataObject();
 
-                self.store.Update(0, &statusDataObj, 0).await?;
+                let key = format!(
+                    "{}/{}/{}/{}",
+                    FunctionStatus::KEY,
+                    &func.tenant,
+                    &func.namespace,
+                    &func.name
+                );
+                let mut attempts = 0;
+                loop {
+                    attempts += 1;
+                    let expected_rev = match self.store.Get(&key, 0).await? {
+                        Some(current) => current.revision,
+                        None => 0,
+                    };
+
+                    match self.store.Update(expected_rev, &statusDataObj, 0).await {
+                        Ok(_) => break,
+                        Err(Error::UpdateRevNotMatchErr(e)) if attempts < 3 => {
+                            error!(
+                                "UpdateFuncStatus conflict for {} on attempt {} (expected_rev={}, actual_rev={}), retrying",
+                                key, attempts, e.expectRv, e.actualRv
+                            );
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
             }
             _ => (),
         }
@@ -412,5 +442,29 @@ impl StateSvc {
         }
 
         Ok(())
+    }
+
+    fn DefaultFunctionPublished(func: &Function) -> bool {
+        !Self::IsPlatformSharedFunc(&func.tenant, &func.namespace)
+    }
+
+    fn IsPlatformSharedFunc(tenant: &str, namespace: &str) -> bool {
+        tenant == PLATFORM_TENANT && namespace == PLATFORM_SHARED_NAMESPACE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StateSvc;
+
+    #[test]
+    fn default_function_published_for_platform_shared_is_false() {
+        assert!(StateSvc::IsPlatformSharedFunc("_platform", "_shared"));
+    }
+
+    #[test]
+    fn default_function_published_for_other_namespaces_is_true() {
+        assert!(!StateSvc::IsPlatformSharedFunc("tenant-a", "_shared"));
+        assert!(!StateSvc::IsPlatformSharedFunc("_platform", "models"));
     }
 }

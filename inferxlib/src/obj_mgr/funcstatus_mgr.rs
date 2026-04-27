@@ -25,6 +25,7 @@ use super::func_mgr::FuncState;
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct FunctionStatusDef {
     pub version: i64,
+    pub published: bool,
 
     pub state: FuncState,
     pub snapshotingFailureCnt: u64,

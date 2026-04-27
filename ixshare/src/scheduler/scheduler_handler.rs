@@ -32,6 +32,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use std::time::SystemTime;
 
+use chrono::Utc;
 use inferxlib::node::WorkerPodState;
 use inferxlib::obj_mgr::node_mgr::NAState;
 use inferxlib::resource::StandbyType;
@@ -42,13 +43,12 @@ use tokio::sync::Notify;
 use tokio::sync::Semaphore;
 use tokio::time::{Duration, Interval};
 use uuid::Uuid;
-use chrono::Utc;
 
-use crate::audit::UsageTick;
 use crate::audit::SnapshotScheduleAudit;
 use crate::audit::SqlAudit;
-use crate::audit::USAGE_TICK_AGENT;
+use crate::audit::UsageTick;
 use crate::audit::POD_AUDIT_AGENT;
+use crate::audit::USAGE_TICK_AGENT;
 use crate::common::*;
 use crate::gateway::metrics::Nodelabel;
 use crate::gateway::metrics::PodLabels;
@@ -5678,8 +5678,40 @@ impl SchedulerHandler {
 
                                     let client = GetClient().await.unwrap();
 
-                                    // update the func
-                                    client.Update(&status.DataObject(), 0).await.unwrap();
+                                    let mut attempts = 0;
+                                    loop {
+                                        attempts += 1;
+                                        let expected_rev = status.revision;
+                                        match client.Update(&status.DataObject(), expected_rev).await {
+                                            Ok(_) => break,
+                                            Err(e) if attempts < 3 => {
+                                                error!(
+                                                    "RemovePod funcstatus update conflict for {} on attempt {}: {:?}",
+                                                    funcKey, attempts, e
+                                                );
+                                                let latest = client
+                                                    .Get(
+                                                        FunctionStatus::KEY,
+                                                        &status.tenant,
+                                                        &status.namespace,
+                                                        &status.name,
+                                                        0,
+                                                    )
+                                                    .await
+                                                    .unwrap()
+                                                    .unwrap();
+                                                status = FunctionStatus::FromDataObject(latest).unwrap();
+                                                status.object.snapshotingFailureCnt += 1;
+                                                if status.object.snapshotingFailureCnt >= 3 {
+                                                    status.object.state = FuncState::Fail;
+                                                }
+                                            }
+                                            Err(e) => panic!(
+                                                "RemovePod failed to update funcstatus {} after {} attempts: {:?}",
+                                                funcKey, attempts, e
+                                            ),
+                                        }
+                                    }
                                 }
                             }
                         }

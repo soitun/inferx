@@ -92,3 +92,19 @@ $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER mce_updatetime BEFORE UPDATE ON CatalogModel
 FOR EACH ROW EXECUTE FUNCTION set_updatetime();
+
+CREATE TABLE Endpoints (
+    slug                    VARCHAR PRIMARY KEY,
+    func_revision           BIGINT NOT NULL,
+    brief_intro             TEXT,
+    detailed_intro          TEXT,
+    recommended_use_cases   JSONB NOT NULL DEFAULT '[]'::jsonb,
+    tags                    JSONB NOT NULL DEFAULT '[]'::jsonb,
+    provider                VARCHAR,
+    parameter_count_b       NUMERIC(10,2),
+    context_length          BIGINT,
+    published_at            TIMESTAMPTZ,
+    published_by            VARCHAR
+);
+
+CREATE INDEX idx_endpoints_tags ON Endpoints USING GIN (tags);
