@@ -1,4 +1,4 @@
-FROM vllm/vllm-openai:v0.12.0
+FROM vllm/vllm-openai:v0.19.1
 
 # Dependencies for Revyzor connector
 RUN pip install --no-cache-dir \
