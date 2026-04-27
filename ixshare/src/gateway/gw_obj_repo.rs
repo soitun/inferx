@@ -211,17 +211,17 @@ impl GwObjRepo {
     }
 
     pub fn FuncPolicy(&self, func: &Function) -> FuncPolicySpec {
+        // same-name funcpolicy has highest priority
+        if let Ok(p) = self.funcpolicyMgr.Get(&func.tenant, &func.namespace, &func.name) {
+            return p.object;
+        }
+
         let p = &func.object.spec.policy;
         match p {
             ObjRef::Obj(p) => return p.clone(),
             ObjRef::Link(l) => {
                 if l.objType != FuncPolicy::KEY {
                     return FuncPolicySpec::default();
-                    // return Err(Error::CommonError(format!(
-                    //     "FuncStatus::FuncPolicy for policy {} fail invalic link type {}",
-                    //     l.Key(),
-                    //     l.objType
-                    // )));
                 }
 
                 match self.funcpolicyMgr.Get(&func.tenant, &l.namespace, &l.name) {
@@ -630,10 +630,10 @@ impl GwObjRepo {
                         }
                         Function::KEY => {
                             let oldfunc = event.oldObj.clone().unwrap().To::<FuncObject>()?;
-                            // Function::FromDataObject(event.oldObj.clone().unwrap())?;
+                            let newfunc = obj.To::<FuncObject>()?;
+                            self.FuncAgentMgr().RetireAgent(&oldfunc.Id());
                             self.RemoveFunc(oldfunc)?;
-                            let func = obj.To::<FuncObject>()?;
-                            self.AddFunc(func)?;
+                            self.AddFunc(newfunc)?;
                         }
                         FunctionStatus::KEY => {
                             let func = obj.To::<FunctionStatusDef>()?;
@@ -681,6 +681,7 @@ impl GwObjRepo {
                         Function::KEY => {
                             let obj = event.oldObj.clone().unwrap();
                             let func = obj.To::<FuncObject>()?;
+                            self.FuncAgentMgr().RetireAgent(&func.Id());
                             self.RemoveFunc(func)?;
                         }
                         FunctionStatus::KEY => {

@@ -580,13 +580,13 @@ impl FuncWorker {
                         loop {
                             tokio::select! {
                                 _ = self.closeNotify.notified() => {
-                                    self.stop.store(false, Ordering::SeqCst);
+                                    self.FinishWorker().await;
+                                    self.funcAgent.RemoveWorker(self);
+                                    FuncAgent::spawn_return_worker_retry(self.clone(), false);
                                     return Ok(())
                                 }
                                 _ = tokio::time::sleep(Duration::from_millis(1)) => {
                                     if self.funcAgent.NeedLastWorker() {
-                                        // error!("scalein worker 1 timeout {}/{:?}", self.WorkerName(), self.keepaliveTime);
-                                        // self.PrintCounts().await;
                                         self.SetState(FuncWorkerState::Processing);
                                         break;
                                     }
@@ -596,31 +596,32 @@ impl FuncWorker {
                                     self.funcAgent.SendWorkerStatusUpdate(WorkerUpdate::IdleTimeout(self.clone()));
                                     return Ok(())
                                 }
-                                // Billing tick (every 60 seconds)
                                 _ = billing_tick_interval.tick() => {
                                     self.insert_billing_tick().await;
                                 }
                             }
                         }
                     } else {
-                        tokio::select! {
-                            _ = self.closeNotify.notified() => {
-                                self.stop.store(false, Ordering::SeqCst);
-                                // we clean all the waiting request
-                                //self.StopWorker().await?;
-                                return Ok(())
-                            }
-                            _ = reqQueue.WaitReq() => {
-                                self.SetState(FuncWorkerState::Processing);
-                            }
-                            _ = interval.tick() => {
-                                self.FinishWorker().await;
-                                self.funcAgent.SendWorkerStatusUpdate(WorkerUpdate::IdleTimeout(self.clone()));
-                                return Ok(())
-                            }
-                            // Billing tick (every 60 seconds)
-                            _ = billing_tick_interval.tick() => {
-                                self.insert_billing_tick().await;
+                        loop {
+                            tokio::select! {
+                                _ = self.closeNotify.notified() => {
+                                    self.FinishWorker().await;
+                                    self.funcAgent.RemoveWorker(self);
+                                    FuncAgent::spawn_return_worker_retry(self.clone(), false);
+                                    return Ok(())
+                                }
+                                _ = reqQueue.WaitReq() => {
+                                    self.SetState(FuncWorkerState::Processing);
+                                    break;
+                                }
+                                _ = interval.tick() => {
+                                    self.FinishWorker().await;
+                                    self.funcAgent.SendWorkerStatusUpdate(WorkerUpdate::IdleTimeout(self.clone()));
+                                    return Ok(())
+                                }
+                                _ = billing_tick_interval.tick() => {
+                                    self.insert_billing_tick().await;
+                                }
                             }
                         }
                     }
@@ -680,8 +681,9 @@ impl FuncWorker {
                         );
                         tokio::select! {
                             _ = self.closeNotify.notified() => {
-                                self.stop.store(false, Ordering::SeqCst);
-                                //self.StopWorker().await?;
+                                self.FinishWorker().await;
+                                self.funcAgent.RemoveWorker(self);
+                                FuncAgent::spawn_return_worker_retry(self.clone(), true);
                                 return Ok(())
                             }
                             _ = reqQueue.WaitReq() => {
@@ -724,8 +726,9 @@ impl FuncWorker {
                         );
                         tokio::select! {
                             _ = self.closeNotify.notified() => {
-                                self.stop.store(false, Ordering::SeqCst);
-                                //self.StopWorker().await?;
+                                self.FinishWorker().await;
+                                self.funcAgent.RemoveWorker(self);
+                                FuncAgent::spawn_return_worker_retry(self.clone(), true);
                                 return Ok(())
                             }
                             httpstate = idleClientRx.recv() => {
