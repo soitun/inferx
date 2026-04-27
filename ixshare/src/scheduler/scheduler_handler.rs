@@ -4397,10 +4397,9 @@ impl SchedulerHandler {
     pub const PRINT_SCHEDER_INFO: bool = false;
 
     pub async fn ProcessRemoveFunc(&mut self, spec: &Function) -> Result<()> {
-        let hasPod = self.RemovePodsByFunckey(&spec.Key())?;
-
+        let hasPod = self.RemovePodsByFunckey(&spec.Id())?;
         if !hasPod {
-            self.RemoveSnapshotByFunckey(&spec.Key())?;
+            self.RemoveSnapshotByFunckey(&spec.Id())?;
         }
 
         return Ok(());

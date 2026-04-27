@@ -162,6 +162,18 @@ impl FuncAgentMgr {
             match inner.get(&funcId) {
                 Some(agent) => agent.clone(),
                 None => {
+                    // BUG2A-REPRO: log all agents in map at creation time — if a previous
+                    // revision's agent is still present, it confirms the orphan leak
+                    let stale: Vec<&String> = inner.keys()
+                        .filter(|k| *k != &funcId)
+                        .collect();
+                    if !stale.is_empty() {
+                        warn!(
+                            "[BUG2A] Creating new FuncAgent for {} — stale agents still in map: {:?}",
+                            funcId,
+                            stale,
+                        );
+                    }
                     let agent = FuncAgent::New(func);
                     inner.insert(funcId, agent.clone());
                     agent
@@ -187,6 +199,23 @@ impl FuncAgentMgr {
                 }
             },
         };
+    }
+
+    pub fn RetireAgent(&self, funcId: &str) {
+        let agent = {
+            let mut inner = self.agents.lock().unwrap();
+            inner.remove(funcId)
+        };
+        if let Some(agent) = agent {
+            let workers: Vec<FuncWorker> = {
+                let lock = agent.workers.lock().unwrap();
+                lock.values().cloned().collect()
+            };
+            for worker in workers {
+                worker.closeNotify.notify_one();
+            }
+            agent.closeNotify.notify_one();
+        }
     }
 
     pub async fn DebugInfo(&self) -> serde_json::Value {
@@ -620,6 +649,7 @@ impl FuncAgent {
 
     pub async fn NewWorker(&self) -> Result<()> {
         let keepaliveTime = self.scaleinTimeout.load(Ordering::Relaxed);
+        warn!("[SCALEIN] NewWorker for {}/{}/{} scaleinTimeout={}ms", self.tenant, self.funcName, self.funcVersion, keepaliveTime);
 
         let workerId = self.NextWorkerId();
 
@@ -670,7 +700,7 @@ impl FuncAgent {
         statusUpdateTx.try_send(update).unwrap();
     }
 
-    fn spawn_return_worker_retry(worker: FuncWorker, failworker: bool) {
+    pub fn spawn_return_worker_retry(worker: FuncWorker, failworker: bool) {
         tokio::spawn(async move {
             let mut retry_count = 0;
             let max_retries = 10;
