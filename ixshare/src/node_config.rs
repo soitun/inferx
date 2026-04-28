@@ -20,12 +20,69 @@ use std::sync::Mutex;
 use crate::common::*;
 use crate::consts::*;
 use crate::gateway::auth_layer::KeycloadConfig;
+use inferxlib::obj_mgr::funcpolicy_mgr::FuncPolicySpec;
 use inferxlib::resource::{GPUSet, ResourceConfig};
 
 use std::collections::BTreeSet;
 use std::num::ParseIntError;
 
 pub const SNAPSHOT_DIR: &str = "/opt/inferx/snapshot";
+
+fn default_catalog_policy() -> FuncPolicySpec {
+    FuncPolicySpec {
+        standbyPerNode: 0,
+        ..Default::default()
+    }
+}
+
+fn merge_json_value(base: &mut serde_json::Value, overlay: serde_json::Value) {
+    match (base, overlay) {
+        (serde_json::Value::Object(base_map), serde_json::Value::Object(overlay_map)) => {
+            for (key, value) in overlay_map {
+                merge_json_value(
+                    base_map.entry(key).or_insert(serde_json::Value::Null),
+                    value,
+                );
+            }
+        }
+        (base_slot, overlay_value) => *base_slot = overlay_value,
+    }
+}
+
+fn resolve_catalog_default_policy(config: &NodeConfig) -> FuncPolicySpec {
+    match std::env::var("CATALOG_DEFAULT_POLICY") {
+        Ok(raw) => {
+            let mut base = serde_json::to_value(&config.catalog_default_policy)
+                .expect("catalog_default_policy should serialize");
+            let overlay = serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_else(|e| {
+                panic!("invalid CATALOG_DEFAULT_POLICY JSON '{}': {:?}", raw, e)
+            });
+            merge_json_value(&mut base, overlay);
+            serde_json::from_value(base)
+                .expect("CATALOG_DEFAULT_POLICY merge produced invalid FuncPolicySpec")
+        }
+        Err(_) => config.catalog_default_policy.clone(),
+    }
+}
+
+fn catalog_policy_unsupported_warning(policy: &FuncPolicySpec) -> Option<String> {
+    let mut unsupported = Vec::new();
+    if policy.minReplica > 0 {
+        unsupported.push(format!("min_replica={}", policy.minReplica));
+    }
+    if policy.standbyPerNode > 0 {
+        unsupported.push(format!("standby_per_node={}", policy.standbyPerNode));
+    }
+
+    if unsupported.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "catalog_default_policy ignores {} for endpoints routing; standby is controlled by the platform function",
+            unsupported.join(", ")
+        ))
+    }
+}
 
 lazy_static::lazy_static! {
     #[derive(Debug)]
@@ -168,6 +225,7 @@ pub struct GatewayConfig {
     pub inferxAdminApikey: String,
     pub onboardInitialCreditCents: i64,
     pub gatewayPort: u16,
+    pub catalogDefaultPolicy: FuncPolicySpec,
 }
 
 impl GatewayConfig {
@@ -296,6 +354,11 @@ impl GatewayConfig {
             config.gatewayPort
         };
 
+        let catalogDefaultPolicy = resolve_catalog_default_policy(config);
+        if let Some(msg) = catalog_policy_unsupported_warning(&catalogDefaultPolicy) {
+            warn!("{}", msg);
+        }
+
         let ret = Self {
             nodeName: nodeName,
             etcdAddrs: etcdAddrs,
@@ -313,6 +376,7 @@ impl GatewayConfig {
             inferxAdminApikey: inferxAdminApikey,
             onboardInitialCreditCents: onboardInitialCreditCents,
             gatewayPort: gatewayPort,
+            catalogDefaultPolicy,
         };
 
         info!("GatewayConfig is {:#?}", &ret);
@@ -383,8 +447,7 @@ impl SchedulerConfig {
                 Err(_) => {
                     warn!(
                         "invalid ENABLE_SNAPSHOT_BILLING value '{}', defaulting to {}",
-                        &s,
-                        config.enableSnapshotBilling
+                        &s, config.enableSnapshotBilling
                     );
                     config.enableSnapshotBilling
                 }
@@ -944,6 +1007,9 @@ pub struct NodeConfig {
 
     #[serde(default)]
     pub peerLoad: bool,
+
+    #[serde(default = "default_catalog_policy")]
+    pub catalog_default_policy: FuncPolicySpec,
 }
 
 impl NodeConfig {
@@ -959,5 +1025,97 @@ impl NodeConfig {
         } else {
             return self.snapshotDir.clone();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_node_config() -> NodeConfig {
+        NodeConfig {
+            nodeName: "node-a".to_owned(),
+            etcdAddrs: vec!["127.0.0.1:2379".to_owned()],
+            nodeIp: String::new(),
+            hostIpCidr: String::new(),
+            podMgrPort: 0,
+            tsotCniPort: 0,
+            tsotSvcPort: 0,
+            nodeagentStateSvcPort: 0,
+            stateSvcPort: 0,
+            schedulerPort: 0,
+            gatewayPort: 0,
+            cidr: String::new(),
+            stateSvcAddrs: vec!["127.0.0.1:5000".to_owned()],
+            tsotSocketPath: String::new(),
+            tsotGwSocketPath: String::new(),
+            runService: true,
+            auditdbAddr: String::new(),
+            billingdbAddr: String::new(),
+            resources: ResourceConfig::default(),
+            snapshotDir: String::new(),
+            enableBlobStore: false,
+            enableSnapshotBilling: false,
+            sharemem: ShareMem::default(),
+            tlsconfig: TLSConfig::default(),
+            keycloakconfig: KeycloadConfig::default(),
+            secretStoreAddr: String::new(),
+            peerLoad: false,
+            catalog_default_policy: default_catalog_policy(),
+        }
+    }
+
+    #[test]
+    fn default_catalog_policy_disables_standby() {
+        let policy = default_catalog_policy();
+        assert_eq!(policy.minReplica, 0);
+        assert_eq!(policy.maxReplica, 1);
+        assert_eq!(policy.standbyPerNode, 0);
+    }
+
+    #[test]
+    fn resolve_catalog_default_policy_uses_node_config_without_env() {
+        std::env::remove_var("CATALOG_DEFAULT_POLICY");
+
+        let mut config = test_node_config();
+        config.catalog_default_policy.maxReplica = 3;
+        config.catalog_default_policy.queueTimeout = 12.5;
+
+        let resolved = resolve_catalog_default_policy(&config);
+        assert_eq!(resolved.maxReplica, 3);
+        assert_eq!(resolved.queueTimeout, 12.5);
+        assert_eq!(resolved.standbyPerNode, 0);
+    }
+
+    #[test]
+    fn resolve_catalog_default_policy_merges_env_json() {
+        std::env::set_var(
+            "CATALOG_DEFAULT_POLICY",
+            r#"{"max_replica":2,"queue_timeout":9.5}"#,
+        );
+
+        let mut config = test_node_config();
+        config.catalog_default_policy.maxReplica = 5;
+        config.catalog_default_policy.queueLen = 77;
+
+        let resolved = resolve_catalog_default_policy(&config);
+        std::env::remove_var("CATALOG_DEFAULT_POLICY");
+
+        assert_eq!(resolved.maxReplica, 2);
+        assert_eq!(resolved.queueTimeout, 9.5);
+        assert_eq!(resolved.queueLen, 77);
+    }
+
+    #[test]
+    fn catalog_policy_warning_only_when_unsupported_fields_present() {
+        let supported = default_catalog_policy();
+        assert!(catalog_policy_unsupported_warning(&supported).is_none());
+
+        let mut unsupported = default_catalog_policy();
+        unsupported.minReplica = 1;
+        unsupported.standbyPerNode = 2;
+        let msg = catalog_policy_unsupported_warning(&unsupported).unwrap();
+        assert!(msg.contains("min_replica=1"));
+        assert!(msg.contains("standby_per_node=2"));
     }
 }
