@@ -22,7 +22,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
 
-use inferxlib::obj_mgr::funcpolicy_mgr::FuncPolicy;
+use inferxlib::obj_mgr::funcpolicy_mgr::{FuncPolicy, FuncPolicySpec};
 use opentelemetry::global::ObjectSafeSpan;
 use opentelemetry::trace::TraceContextExt;
 use opentelemetry::trace::Tracer;
@@ -77,7 +77,7 @@ use super::auth_layer::Grant;
 use super::auth_layer::ObjectType;
 use super::auth_layer::PermissionType;
 use super::auth_layer::{AccessToken, ApikeyCreateRequest, ApikeyDeleteRequest, GetTokenCache};
-use super::func_agent_mgr::FuncAgentMgr;
+use super::func_agent_mgr::{FuncAgentMgr, FuncIdentity, FuncRouteTarget};
 use super::func_agent_mgr::IxTimestamp;
 use super::func_agent_mgr::GW_OBJREPO;
 use super::func_worker::QHttpCallClient;
@@ -91,6 +91,9 @@ use super::scheduler_client::SCHEDULER_CLIENT;
 use super::secret::{EndpointMetadata, SqlSecret};
 pub static GATEWAY_ID: AtomicI64 = AtomicI64::new(-1);
 const FUNCCALL_MAX_BODY_BYTES: usize = 20 * 1024 * 1024;
+const VIRTUAL_ENDPOINTS_NAMESPACE: &str = "endpoints";
+const PLATFORM_TENANT: &str = "_platform";
+const PLATFORM_SHARED_NAMESPACE: &str = "_shared";
 
 lazy_static::lazy_static! {
     #[derive(Debug)]
@@ -266,6 +269,85 @@ fn quota_lookup_failed_response(tenant: &str) -> Response<Body> {
         .status(StatusCode::SERVICE_UNAVAILABLE)
         .body(body)
         .unwrap()
+}
+
+fn endpoint_policy_for_request(gw: &HttpGateway, tenant: &str, slug: &str) -> FuncPolicySpec {
+    match gw.objRepo.funcpolicyMgr.Get(tenant, VIRTUAL_ENDPOINTS_NAMESPACE, slug) {
+        Ok(policy) => policy.object,
+        Err(_) => GATEWAY_CONFIG.catalogDefaultPolicy.clone(),
+    }
+}
+
+fn resolve_funccall_target(
+    gw: &HttpGateway,
+    tenant: &str,
+    namespace: &str,
+    funcname: &str,
+) -> Result<FuncRouteTarget> {
+    if namespace != VIRTUAL_ENDPOINTS_NAMESPACE {
+        let func = gw.objRepo.GetFunc(tenant, namespace, funcname)?;
+        let version = func.Version();
+        let identity = FuncIdentity {
+            tenant: tenant.to_owned(),
+            namespace: namespace.to_owned(),
+            funcname: funcname.to_owned(),
+            version,
+        };
+
+        return Ok(FuncRouteTarget {
+            logical: identity.clone(),
+            physical: identity,
+            policy: GW_OBJREPO.get().unwrap().FuncPolicy(&func),
+            func,
+        });
+    }
+
+    let func = gw
+        .objRepo
+        .GetFunc(PLATFORM_TENANT, PLATFORM_SHARED_NAMESPACE, funcname)?;
+    let funcstatus = gw
+        .objRepo
+        .funcstatusMgr
+        .Get(PLATFORM_TENANT, PLATFORM_SHARED_NAMESPACE, funcname)
+        .map_err(|_| {
+            Error::NotExist(format!(
+                "endpoint funcstatus {}/{}/{} does not exist",
+                PLATFORM_TENANT, PLATFORM_SHARED_NAMESPACE, funcname
+            ))
+        })?;
+
+    if !funcstatus.object.published {
+        return Err(Error::CommonError(format!(
+            "endpoint {}/{} is unpublished",
+            namespace, funcname
+        )));
+    }
+
+    if funcstatus.object.version != func.Version() {
+        return Err(Error::CommonError(format!(
+            "endpoint funcstatus version {} does not match function version {} for endpoint {}",
+            funcstatus.object.version,
+            func.Version(),
+            funcname
+        )));
+    }
+
+    Ok(FuncRouteTarget {
+        logical: FuncIdentity {
+            tenant: tenant.to_owned(),
+            namespace: namespace.to_owned(),
+            funcname: funcname.to_owned(),
+            version: func.Version(),
+        },
+        physical: FuncIdentity {
+            tenant: PLATFORM_TENANT.to_owned(),
+            namespace: PLATFORM_SHARED_NAMESPACE.to_owned(),
+            funcname: funcname.to_owned(),
+            version: func.Version(),
+        },
+        policy: endpoint_policy_for_request(gw, tenant, funcname),
+        func,
+    })
 }
 
 fn enforce_tenant_quota_for_write(
@@ -1052,10 +1134,7 @@ async fn DirectFuncCall(
 
 async fn RetryGetClient(
     gw: &HttpGateway,
-    tenant: &str,
-    namespace: &str,
-    funcname: &str,
-    func: &Function,
+    route: &FuncRouteTarget,
     timeout: u64,
     timestamp: IxTimestamp,
 ) -> Result<(QHttpCallClient, bool)> {
@@ -1063,7 +1142,7 @@ async fn RetryGetClient(
     loop {
         match gw
             .funcAgentMgr
-            .GetClient(&tenant, &namespace, &funcname, &func, timeout, timestamp)
+            .GetClient(route, timeout, timestamp)
             .await
         {
             Err(e) => {
@@ -1072,9 +1151,9 @@ async fn RetryGetClient(
                     // trace!(
                     //     "RetryGetClient retry {} {}/{}/{} timeout {}",
                     //     retry,
-                    //     tenant,
-                    //     namespace,
-                    //     funcname,
+                    //     route.logical.tenant,
+                    //     route.logical.namespace,
+                    //     route.logical.funcname,
                     //     timestamp.Elapsed()
                     // );
                     continue;
@@ -1102,6 +1181,10 @@ async fn FailureResponse(e: Error, labels: &mut FunccallLabels, _status: Status)
         }
         Error::QueueFull => {
             error!("Http start fail with QueueFull");
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        Error::ServiceUnavailable => {
+            error!("Http start fail with ServiceUnavailable");
             StatusCode::SERVICE_UNAVAILABLE
         }
         Error::BAD_REQUEST(code) => {
@@ -1254,21 +1337,20 @@ async fn FuncCall(
     };
 
     let timestamp = IxTimestamp::default();
-    let func = match gw
-        .funcAgentMgr
-        .objRepo
-        .GetFunc(&tenant, &namespace, &funcname)
-    {
-        Ok(f) => f,
+    let route = match resolve_funccall_target(&gw, &tenant, &namespace, &funcname) {
+        Ok(route) => route,
         Err(e) => {
-            let errcode = StatusCode::INTERNAL_SERVER_ERROR;
+            let errcode = if namespace == VIRTUAL_ENDPOINTS_NAMESPACE {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
             let body = Body::from(format!("service failure {:?}", &e));
             let resp = Response::builder().status(errcode).body(body).unwrap();
             return Ok(resp);
         }
     };
-
-    let policy = GW_OBJREPO.get().unwrap().FuncPolicy(&func);
+    let policy = route.policy.clone();
 
     let timeout_header = req
         .headers()
@@ -1333,7 +1415,7 @@ async fn FuncCall(
         // let mut startupSpan = tracer.start_with_context("startup", &ttftCtx);
 
         let (mut tclient, tkeepalive) = match RetryGetClient(
-            &gw, &tenant, &namespace, &funcname, &func, timeout, timestamp,
+            &gw, &route, timeout, timestamp,
         )
         .await
         {
@@ -1375,7 +1457,7 @@ async fn FuncCall(
                 if retry > 1 {
                     error!(
                         "FuncCall retry success {} with try round {}",
-                        func.Id(),
+                        route.AgentKey(),
                         retry
                     );
                 }

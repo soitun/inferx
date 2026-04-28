@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use inferxlib::data_obj::ObjRef;
+use inferxlib::obj_mgr::func_mgr::Function;
 use inferxlib::obj_mgr::funcpolicy_mgr::{FuncPolicy, FuncPolicySpec, ScaleOutPolicy};
 use once_cell::sync::OnceCell;
 use serde_json::json;
@@ -31,12 +32,52 @@ use crate::common::*;
 use crate::gateway::secret::SqlSecret;
 use crate::gateway::scheduler_client::{LeasedWorker, SCHEDULER_CLIENT};
 use crate::scheduler::scheduler_handler::GetClient;
-use inferxlib::obj_mgr::func_mgr::*;
-
 use super::func_worker::*;
 use super::gw_obj_repo::GwObjRepo;
+use super::http_gateway::GATEWAY_CONFIG;
 
 pub static GW_OBJREPO: OnceCell<GwObjRepo> = OnceCell::new();
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FuncIdentity {
+    pub tenant: String,
+    pub namespace: String,
+    pub funcname: String,
+    pub version: i64,
+}
+
+impl FuncIdentity {
+    pub fn Key(&self) -> String {
+        format!(
+            "{}/{}/{}/{}",
+            self.tenant, self.namespace, self.funcname, self.version
+        )
+    }
+
+    pub fn Prefix(&self) -> String {
+        format!("{}/{}/{}", self.tenant, self.namespace, self.funcname)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FuncRouteTarget {
+    pub logical: FuncIdentity,
+    pub physical: FuncIdentity,
+    pub func: Function,
+    pub policy: FuncPolicySpec,
+}
+
+impl FuncRouteTarget {
+    pub fn AgentKey(&self) -> String {
+        self.logical.Key()
+    }
+
+    pub fn IsEndpointRoute(&self) -> bool {
+        self.logical.tenant != self.physical.tenant
+            || self.logical.namespace != self.physical.namespace
+            || self.logical.funcname != self.physical.funcname
+    }
+}
 
 static TIMESTAMP_COUNT: AtomicU64 = AtomicU64::new(0);
 lazy_static::lazy_static! {
@@ -152,32 +193,54 @@ impl FuncAgentMgr {
 
     pub async fn GetClient(
         &self,
-        tenant: &str,
-        namespace: &str,
-        funcname: &str,
-        func: &Function,
+        route: &FuncRouteTarget,
         timeout: u64,
         timestamp: IxTimestamp,
     ) -> Result<(QHttpCallClient, bool)> {
-        let agent = {
-            let funcId = func.Id();
+        let stale_agents = {
+            let logical_prefix = route.logical.Prefix();
+            let agent_key = route.AgentKey();
             let mut inner = self.agents.lock().unwrap();
-            match inner.get(&funcId) {
+            let stale: Vec<String> = inner
+                .keys()
+                .filter(|key| key.starts_with(&logical_prefix) && **key != agent_key)
+                .cloned()
+                .collect();
+
+            let agent = match inner.get(&agent_key) {
                 Some(agent) => agent.clone(),
                 None => {
-                    let agent = FuncAgent::New(func);
-                    inner.insert(funcId, agent.clone());
+                    let agent = FuncAgent::New(route);
+                    inner.insert(agent_key, agent.clone());
                     agent
                 }
-            }
+            };
+
+            (stale, agent)
         };
+        for func_id in stale_agents.0 {
+            self.RetireAgent(&func_id);
+        }
+
+        if route.IsEndpointRoute() {
+            return Err(Error::ServiceUnavailable);
+        }
+
+        let agent = stale_agents.1;
         let (tx, rx) = oneshot::channel();
-        agent.EnqReq(tenant, namespace, funcname, timestamp, timeout, tx)?;
+        agent.EnqReq(
+            &route.logical.tenant,
+            &route.logical.namespace,
+            &route.logical.funcname,
+            timestamp,
+            timeout,
+            tx,
+        )?;
         match rx.await {
             Err(e) => {
                 return Err(Error::CommonError(format!(
                     "funcworker fail ... {} {:?}",
-                    func.Id(),
+                    route.AgentKey(),
                     e
                 )));
             }
@@ -256,8 +319,12 @@ pub struct FuncAgentInner {
     pub tenant: String,
     pub namespace: String,
     pub funcName: String,
+    pub physicalTenant: String,
+    pub physicalNamespace: String,
+    pub physicalFuncName: String,
     pub func: Function,
     pub funcVersion: i64,
+    pub isEndpointRoute: bool,
 
     pub scaleoutPolicy: Mutex<ScaleOutPolicy>,
     pub scaleinTimeout: AtomicU64,
@@ -329,8 +396,8 @@ impl Deref for FuncAgent {
 }
 
 impl FuncAgent {
-    pub fn New(func: &Function) -> Self {
-        let policy = GW_OBJREPO.get().unwrap().FuncPolicy(func);
+    pub fn New(route: &FuncRouteTarget) -> Self {
+        let policy = route.policy.clone();
 
         let queueLen = policy.queueLen;
 
@@ -340,11 +407,15 @@ impl FuncAgent {
         let inner = FuncAgentInner {
             closeNotify: Arc::new(Notify::new()),
             stop: AtomicBool::new(false),
-            tenant: func.tenant.clone(),
-            namespace: func.namespace.clone(),
-            funcName: func.name.to_owned(),
-            funcVersion: func.Version(),
-            func: func.clone(),
+            tenant: route.logical.tenant.clone(),
+            namespace: route.logical.namespace.clone(),
+            funcName: route.logical.funcname.clone(),
+            physicalTenant: route.physical.tenant.clone(),
+            physicalNamespace: route.physical.namespace.clone(),
+            physicalFuncName: route.physical.funcname.clone(),
+            funcVersion: route.logical.version,
+            isEndpointRoute: route.IsEndpointRoute(),
+            func: route.func.clone(),
             reqQueueTx: rtx,
             workerStateUpdateTx: wtx,
             totalSlot: Arc::new(AtomicUsize::new(0)),
@@ -379,7 +450,18 @@ impl FuncAgent {
     }
 
     pub fn UpdatePolicy(&self) {
-        let policy = GW_OBJREPO.get().unwrap().FuncPolicy(&self.func);
+        let policy = if self.isEndpointRoute {
+            match GW_OBJREPO.get().unwrap().funcpolicyMgr.Get(
+                &self.tenant,
+                &self.namespace,
+                &self.funcName,
+            ) {
+                Ok(p) => p.object,
+                Err(_) => GATEWAY_CONFIG.catalogDefaultPolicy.clone(),
+            }
+        } else {
+            GW_OBJREPO.get().unwrap().FuncPolicy(&self.func)
+        };
 
         *self.scaleoutPolicy.lock().unwrap() = policy.scaleoutPolicy;
         self.scaleinTimeout
@@ -646,12 +728,18 @@ impl FuncAgent {
         let tenant;
         let namespace;
         let funcname;
+        let physical_tenant;
+        let physical_namespace;
+        let physical_funcname;
         let fprevision;
         let endpoint;
         {
             tenant = self.tenant.clone();
             namespace = self.namespace.clone();
             funcname = self.funcName.clone();
+            physical_tenant = self.physicalTenant.clone();
+            physical_namespace = self.physicalNamespace.clone();
+            physical_funcname = self.physicalFuncName.clone();
             fprevision = self.funcVersion;
             endpoint = self.func.object.spec.endpoint.clone();
         }
@@ -663,6 +751,9 @@ impl FuncAgent {
             &tenant,
             &namespace,
             &funcname,
+            &physical_tenant,
+            &physical_namespace,
+            &physical_funcname,
             fprevision,
             parallelLevel,
             10.max(keepaliveTime), // keepalive must be larger than 10 ms
@@ -743,9 +834,9 @@ impl FuncAgent {
             }
 
             let lw = LeasedWorker {
-                tenant: worker.tenant.clone(),
-                namespace: worker.namespace.clone(),
-                funcname: worker.funcname.clone(),
+                tenant: worker.physical_tenant.clone(),
+                namespace: worker.physical_namespace.clone(),
+                funcname: worker.physical_funcname.clone(),
                 fprevision: worker.fprevision,
                 id: worker.id.load(Ordering::Relaxed).to_string(),
             };

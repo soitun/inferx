@@ -130,6 +130,9 @@ pub struct FuncWorkerInner {
     pub tenant: String,
     pub namespace: String,
     pub funcname: String,
+    pub physical_tenant: String,
+    pub physical_namespace: String,
+    pub physical_funcname: String,
     pub fprevision: i64,
     pub id: AtomicIsize,
 
@@ -196,6 +199,9 @@ impl FuncWorker {
         tenant: &str,
         namespace: &str,
         funcname: &str,
+        physical_tenant: &str,
+        physical_namespace: &str,
+        physical_funcname: &str,
         fprevision: i64,
         parallelLeve: usize,
         keepaliveTime: u64,
@@ -223,6 +229,9 @@ impl FuncWorker {
             tenant: tenant.to_owned(),
             namespace: namespace.to_owned(),
             funcname: funcname.to_owned(),
+            physical_tenant: physical_tenant.to_owned(),
+            physical_namespace: physical_namespace.to_owned(),
+            physical_funcname: physical_funcname.to_owned(),
             fprevision: fprevision,
             id: AtomicIsize::new(-1),
             workerName: "".to_owned(), // todo: remove this
@@ -309,9 +318,9 @@ impl FuncWorker {
         let id = self.id.load(Ordering::Relaxed);
         return SCHEDULER_CLIENT
             .ReturnWorker(
-                &self.tenant,
-                &self.namespace,
-                &self.funcname,
+                &self.physical_tenant,
+                &self.physical_namespace,
+                &self.physical_funcname,
                 self.fprevision,
                 &format!("{}", id),
                 failworker,
@@ -323,9 +332,9 @@ impl FuncWorker {
     pub async fn LeaseWorker(&self) -> Result<LeaseWorkerResp> {
         return SCHEDULER_CLIENT
             .LeaseWorker(
-                &self.tenant,
-                &self.namespace,
-                &self.funcname,
+                &self.physical_tenant,
+                &self.physical_namespace,
+                &self.physical_funcname,
                 self.fprevision,
             )
             .await;
@@ -500,7 +509,11 @@ impl FuncWorker {
             // Pod name format matches gw_obj_repo.rs GetFuncPod usage
             let pod_name = format!(
                 "{}/{}/{}/{}/{}",
-                &self.tenant, &self.namespace, &self.funcname, self.fprevision, id
+                &self.physical_tenant,
+                &self.physical_namespace,
+                &self.physical_funcname,
+                self.fprevision,
+                id
             );
             let mut tracking_info = self.gpuTrackingInfo.lock().unwrap();
             tracking_info.lease_start = Some(std::time::Instant::now());
@@ -512,7 +525,11 @@ impl FuncWorker {
             tracking_info.last_tick_time = Some(std::time::Instant::now());
 
             if let Some(obj_repo) = GW_OBJREPO.get() {
-                if let Ok(pod) = obj_repo.GetFuncPod(&self.tenant, &self.namespace, &pod_name) {
+                if let Ok(pod) = obj_repo.GetFuncPod(
+                    &self.physical_tenant,
+                    &self.physical_namespace,
+                    &pod_name,
+                ) {
                     tracking_info.nodename = pod.object.spec.nodename.clone();
                     tracking_info.gpu_type = pod.object.spec.allocResources.gpuType.0.clone();
                     tracking_info.gpu_count = pod.object.spec.reqResources.gpu.gpuCount as i32;
