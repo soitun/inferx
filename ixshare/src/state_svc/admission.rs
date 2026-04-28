@@ -294,6 +294,7 @@ impl StateSvc {
     pub fn CreateFuncPolicyCheck(&self, obj: &DataObject<Value>) -> Result<()> {
         let p = FuncPolicy::FromDataObject(obj.clone())?;
 
+        Self::ValidateEndpointsFuncPolicy(&p.namespace, &p.object)?;
         self.FuncPolicyCheck(&p.tenant, &p.object)?;
         return Ok(());
     }
@@ -451,6 +452,28 @@ impl StateSvc {
     fn IsPlatformSharedFunc(tenant: &str, namespace: &str) -> bool {
         tenant == PLATFORM_TENANT && namespace == PLATFORM_SHARED_NAMESPACE
     }
+
+    fn ValidateEndpointsFuncPolicy(namespace: &str, p: &FuncPolicySpec) -> Result<()> {
+        if namespace != VIRTUAL_ENDPOINTS_NAMESPACE {
+            return Ok(());
+        }
+
+        if p.minReplica > 0 {
+            return Err(Error::CommonError(
+                "min_replica is not supported for endpoints FuncPolicy; standby is controlled by the platform function"
+                    .to_string(),
+            ));
+        }
+
+        if p.standbyPerNode > 0 {
+            return Err(Error::CommonError(
+                "standby_per_node is not supported for endpoints FuncPolicy; standby is controlled by the platform function"
+                    .to_string(),
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -466,5 +489,25 @@ mod tests {
     fn default_function_published_for_other_namespaces_is_true() {
         assert!(!StateSvc::IsPlatformSharedFunc("tenant-a", "_shared"));
         assert!(!StateSvc::IsPlatformSharedFunc("_platform", "models"));
+    }
+
+    #[test]
+    fn endpoints_policy_rejects_min_replica() {
+        let policy = FuncPolicySpec {
+            minReplica: 1,
+            ..Default::default()
+        };
+
+        assert!(StateSvc::ValidateEndpointsFuncPolicy("endpoints", &policy).is_err());
+    }
+
+    #[test]
+    fn endpoints_policy_rejects_standby_per_node() {
+        let policy = FuncPolicySpec {
+            standbyPerNode: 1,
+            ..Default::default()
+        };
+
+        assert!(StateSvc::ValidateEndpointsFuncPolicy("endpoints", &policy).is_err());
     }
 }

@@ -28,6 +28,7 @@ use tokio::time;
 
 use crate::audit::SqlAudit;
 use crate::common::*;
+use crate::gateway::secret::SqlSecret;
 use crate::gateway::scheduler_client::{LeasedWorker, SCHEDULER_CLIENT};
 use crate::scheduler::scheduler_handler::GetClient;
 use inferxlib::obj_mgr::func_mgr::*;
@@ -71,6 +72,7 @@ pub async fn GatewaySvc(notify: Option<Arc<Notify>>) -> Result<()> {
 
     let sqlaudit = SqlAudit::New(&auditdbAddr).await?;
     let sqlbilling = SqlAudit::New(&billingdbAddr).await?;
+    let sqlsecret = SqlSecret::New(&GATEWAY_CONFIG.secretStoreAddr).await?;
     let client = GetClient().await?;
 
     let objRepo = GwObjRepo::New(GATEWAY_CONFIG.stateSvcAddrs.to_vec())
@@ -86,6 +88,7 @@ pub async fn GatewaySvc(notify: Option<Arc<Notify>>) -> Result<()> {
         namespaceStore: namespaceStore,
         sqlAudit: sqlaudit,
         sqlBilling: sqlbilling,
+        sqlSecret: sqlsecret,
         client: client,
     };
 

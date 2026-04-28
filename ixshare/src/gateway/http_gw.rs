@@ -4,6 +4,7 @@ use inferxlib::{
     data_obj::DataObject,
     obj_mgr::{
         func_mgr::{FuncStatus, Function},
+        funcstatus_mgr::{FunctionStatus, FunctionStatusDef},
         funcpolicy_mgr::FuncPolicy,
         funcsnapshot_mgr::FuncSnapshot,
         namespace_mgr::{Namespace, NamespaceObject},
@@ -27,6 +28,7 @@ use super::{
     },
     gw_obj_repo::{FuncBrief, FuncDetail},
     http_gateway::{HttpGateway, GATEWAY_CONFIG},
+    secret::EndpointMetadata,
 };
 
 const ONBOARD_TENANT_PREFIX: &str = "tn-";
@@ -37,8 +39,131 @@ const ONBOARD_APIKEY_PREFIX: &str = "quickstart-inference";
 const ONBOARD_INITIAL_CREDIT_NOTE: &str = "Initial onboarding credit";
 const ONBOARD_INITIAL_CREDIT_ADDED_BY: &str = "system-onboard";
 const ONBOARD_INITIAL_CREDIT_PAYMENT_REF_PREFIX: &str = "onboard-initial-credit";
+const PLATFORM_TENANT: &str = "_platform";
+const PLATFORM_SHARED_NAMESPACE: &str = "_shared";
 
 impl HttpGateway {
+    pub async fn SaveEndpointMetadata(
+        &self,
+        token: &Arc<AccessToken>,
+        slug: &str,
+        metadata: &EndpointMetadata,
+    ) -> Result<i64> {
+        self.EnsurePlatformEndpointAdmin(token)?;
+        let func = self.GetPlatformEndpointFunc(slug).await?;
+        self.sqlSecret
+            .UpsertEndpointMetadata(slug, func.Version(), metadata)
+            .await?;
+        Ok(func.Version())
+    }
+
+    pub async fn PublishEndpoint(
+        &self,
+        token: &Arc<AccessToken>,
+        slug: &str,
+        metadata: &EndpointMetadata,
+    ) -> Result<i64> {
+        self.EnsurePlatformEndpointAdmin(token)?;
+
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            let func = self.GetPlatformEndpointFunc(slug).await?;
+            let mut status = self.GetPlatformEndpointStatus(slug).await?;
+
+            if status.object.version != func.Version() {
+                return Err(Error::CommonError(format!(
+                    "funcstatus version {} does not match function version {} for endpoint {}",
+                    status.object.version,
+                    func.Version(),
+                    slug
+                )));
+            }
+
+            self.sqlSecret
+                .PublishEndpoint(slug, func.Version(), metadata, &token.username)
+                .await?;
+
+            status.object.published = true;
+            match self.client.Update(&status.DataObject(), status.revision).await {
+                Ok(revision) => return Ok(revision),
+                Err(e) if attempts < 3 && IsCasConflictError(&e) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    pub async fn UnpublishEndpoint(
+        &self,
+        token: &Arc<AccessToken>,
+        slug: &str,
+    ) -> Result<i64> {
+        self.EnsurePlatformEndpointAdmin(token)?;
+
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            let mut status = self.GetPlatformEndpointStatus(slug).await?;
+
+            status.object.published = false;
+            match self.client.Update(&status.DataObject(), status.revision).await {
+                Ok(revision) => return Ok(revision),
+                Err(e) if attempts < 3 && IsCasConflictError(&e) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    fn EnsurePlatformEndpointAdmin(&self, token: &Arc<AccessToken>) -> Result<()> {
+        if !token.IsNamespaceAdmin(PLATFORM_TENANT, PLATFORM_SHARED_NAMESPACE) {
+            return Err(Error::NoPermission);
+        }
+
+        Ok(())
+    }
+
+    async fn GetPlatformEndpointFunc(&self, slug: &str) -> Result<Function> {
+        let obj = self
+            .client
+            .Get(
+                Function::KEY,
+                PLATFORM_TENANT,
+                PLATFORM_SHARED_NAMESPACE,
+                slug,
+                0,
+            )
+            .await?
+            .ok_or_else(|| {
+                Error::NotExist(format!(
+                    "endpoint function {}/{}/{} does not exist",
+                    PLATFORM_TENANT, PLATFORM_SHARED_NAMESPACE, slug
+                ))
+            })?;
+
+        Ok(Function::FromDataObject(obj)?)
+    }
+
+    async fn GetPlatformEndpointStatus(&self, slug: &str) -> Result<FunctionStatus> {
+        let obj = self
+            .client
+            .Get(
+                FunctionStatus::KEY,
+                PLATFORM_TENANT,
+                PLATFORM_SHARED_NAMESPACE,
+                slug,
+                0,
+            )
+            .await?
+            .ok_or_else(|| {
+                Error::NotExist(format!(
+                    "endpoint funcstatus {}/{}/{} does not exist",
+                    PLATFORM_TENANT, PLATFORM_SHARED_NAMESPACE, slug
+                ))
+            })?;
+
+        Ok(obj.To::<FunctionStatusDef>()?)
+    }
+
     pub async fn Rbac(
         &self,
         token: &Arc<AccessToken>,
@@ -1750,6 +1875,14 @@ fn IsCreateConflictError(err: &Error) -> bool {
                 || msg.contains("already exists")
                 || msg.contains("key exists")
         }
+        _ => false,
+    }
+}
+
+fn IsCasConflictError(err: &Error) -> bool {
+    match err {
+        Error::UpdateRevNotMatchErr(_) => true,
+        Error::CommonError(msg) => msg.contains("UpdateRevNotMatchErr"),
         _ => false,
     }
 }

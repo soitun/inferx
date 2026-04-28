@@ -88,6 +88,7 @@ use super::metrics::Status;
 use super::metrics::GATEWAY_METRICS;
 use super::metrics::METRICS_REGISTRY;
 use super::scheduler_client::SCHEDULER_CLIENT;
+use super::secret::{EndpointMetadata, SqlSecret};
 pub static GATEWAY_ID: AtomicI64 = AtomicI64::new(-1);
 const FUNCCALL_MAX_BODY_BYTES: usize = 20 * 1024 * 1024;
 
@@ -401,6 +402,7 @@ pub struct HttpGateway {
     pub namespaceStore: NamespaceStore,
     pub sqlAudit: SqlAudit,
     pub sqlBilling: SqlAudit,
+    pub sqlSecret: SqlSecret,
     pub client: CacherClient,
 }
 
@@ -437,6 +439,9 @@ impl HttpGateway {
             .route("/apikey/", delete(DeleteApikey))
             .route("/onboard", post(Onboard))
             .route("/admin/tenants", get(GetAdminTenants))
+            .route("/admin/endpoints/:slug/metadata", put(SaveEndpointMetadata))
+            .route("/admin/endpoints/:slug/publish", post(PublishEndpoint))
+            .route("/admin/endpoints/:slug/unpublish", post(UnpublishEndpoint))
             .route("/object/", put(CreateObj))
             .route("/object/:type/:tenant/:namespace/:name/", delete(DeleteObj))
             .route(
@@ -2005,6 +2010,83 @@ async fn CreateObj(
             return Ok(resp);
         }
     }
+}
+
+async fn SaveEndpointMetadata(
+    Extension(token): Extension<Arc<AccessToken>>,
+    State(gw): State<HttpGateway>,
+    Path(slug): Path<String>,
+    Json(metadata): Json<EndpointMetadata>,
+) -> SResult<Response, StatusCode> {
+    match gw.SaveEndpointMetadata(&token, &slug, &metadata).await {
+        Ok(version) => {
+            let body = Body::from(format!("{}", version));
+            let resp = Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "text/plain")
+                .body(body)
+                .unwrap();
+            Ok(resp)
+        }
+        Err(e) => {
+            Ok(error_response_for_endpoint_admin_action(e))
+        }
+    }
+}
+
+async fn PublishEndpoint(
+    Extension(token): Extension<Arc<AccessToken>>,
+    State(gw): State<HttpGateway>,
+    Path(slug): Path<String>,
+    Json(metadata): Json<EndpointMetadata>,
+) -> SResult<Response, StatusCode> {
+    match gw.PublishEndpoint(&token, &slug, &metadata).await {
+        Ok(version) => {
+            let body = Body::from(format!("{}", version));
+            let resp = Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "text/plain")
+                .body(body)
+                .unwrap();
+            Ok(resp)
+        }
+        Err(e) => {
+            Ok(error_response_for_endpoint_admin_action(e))
+        }
+    }
+}
+
+async fn UnpublishEndpoint(
+    Extension(token): Extension<Arc<AccessToken>>,
+    State(gw): State<HttpGateway>,
+    Path(slug): Path<String>,
+) -> SResult<Response, StatusCode> {
+    match gw.UnpublishEndpoint(&token, &slug).await {
+        Ok(version) => {
+            let body = Body::from(format!("{}", version));
+            let resp = Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "text/plain")
+                .body(body)
+                .unwrap();
+            Ok(resp)
+        }
+        Err(e) => {
+            Ok(error_response_for_endpoint_admin_action(e))
+        }
+    }
+}
+
+fn error_response_for_endpoint_admin_action(err: Error) -> Response {
+    let status = match &err {
+        Error::NoPermission => StatusCode::UNAUTHORIZED,
+        _ => StatusCode::BAD_REQUEST,
+    };
+
+    Response::builder()
+        .status(status)
+        .body(Body::from(format!("service failure {:?}", err)))
+        .unwrap()
 }
 
 async fn UpdateObj(

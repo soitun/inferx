@@ -57,6 +57,19 @@ pub struct TenantProfile {
     pub created_at: Option<chrono::NaiveDateTime>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct EndpointMetadata {
+    pub brief_intro: Option<String>,
+    pub detailed_intro: Option<String>,
+    #[serde(default)]
+    pub recommended_use_cases: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub provider: Option<String>,
+    pub parameter_count_b: Option<f64>,
+    pub context_length: Option<i64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SqlSecret {
     pub pool: PgPool,
@@ -492,5 +505,106 @@ impl SqlSecret {
             .execute(&self.pool)
             .await?;
         return Ok(());
+    }
+
+    pub async fn UpsertEndpointMetadata(
+        &self,
+        slug: &str,
+        func_revision: i64,
+        metadata: &EndpointMetadata,
+    ) -> Result<()> {
+        let query = r#"
+            INSERT INTO Endpoints (
+                slug,
+                func_revision,
+                brief_intro,
+                detailed_intro,
+                recommended_use_cases,
+                tags,
+                provider,
+                parameter_count_b,
+                context_length
+            ) VALUES (
+                $1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9
+            )
+            ON CONFLICT (slug)
+            DO UPDATE SET
+                brief_intro = EXCLUDED.brief_intro,
+                detailed_intro = EXCLUDED.detailed_intro,
+                recommended_use_cases = EXCLUDED.recommended_use_cases,
+                tags = EXCLUDED.tags,
+                provider = EXCLUDED.provider,
+                parameter_count_b = EXCLUDED.parameter_count_b,
+                context_length = EXCLUDED.context_length
+        "#;
+
+        sqlx::query(query)
+            .bind(slug)
+            .bind(func_revision)
+            .bind(&metadata.brief_intro)
+            .bind(&metadata.detailed_intro)
+            .bind(serde_json::to_value(&metadata.recommended_use_cases)?)
+            .bind(serde_json::to_value(&metadata.tags)?)
+            .bind(&metadata.provider)
+            .bind(metadata.parameter_count_b)
+            .bind(metadata.context_length)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn PublishEndpoint(
+        &self,
+        slug: &str,
+        func_revision: i64,
+        metadata: &EndpointMetadata,
+        published_by: &str,
+    ) -> Result<()> {
+        let query = r#"
+            INSERT INTO Endpoints (
+                slug,
+                func_revision,
+                brief_intro,
+                detailed_intro,
+                recommended_use_cases,
+                tags,
+                provider,
+                parameter_count_b,
+                context_length,
+                published_at,
+                published_by
+            ) VALUES (
+                $1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, NOW(), $10
+            )
+            ON CONFLICT (slug)
+            DO UPDATE SET
+                func_revision = EXCLUDED.func_revision,
+                brief_intro = EXCLUDED.brief_intro,
+                detailed_intro = EXCLUDED.detailed_intro,
+                recommended_use_cases = EXCLUDED.recommended_use_cases,
+                tags = EXCLUDED.tags,
+                provider = EXCLUDED.provider,
+                parameter_count_b = EXCLUDED.parameter_count_b,
+                context_length = EXCLUDED.context_length,
+                published_at = NOW(),
+                published_by = EXCLUDED.published_by
+        "#;
+
+        sqlx::query(query)
+            .bind(slug)
+            .bind(func_revision)
+            .bind(&metadata.brief_intro)
+            .bind(&metadata.detailed_intro)
+            .bind(serde_json::to_value(&metadata.recommended_use_cases)?)
+            .bind(serde_json::to_value(&metadata.tags)?)
+            .bind(&metadata.provider)
+            .bind(metadata.parameter_count_b)
+            .bind(metadata.context_length)
+            .bind(published_by)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
     }
 }
