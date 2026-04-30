@@ -5,7 +5,7 @@
     "name": "Qwen3-TTS-12Hz-0.6B-CustomVoice",
     "object": {
         "spec": {
-            "image": "vllm/vllm-omni:v0.14.0",
+            "image": "vllm/vllm-omni:v0.18.0",
             "commands": [
                 "vllm",
                 "serve",
@@ -19,7 +19,7 @@
                 "GPU": {
                     "Type": "Any",
                     "Count": 1,
-                    "vRam": 8000
+                    "vRam": 13000
                 },
                 "parallel": 100
             },
@@ -41,12 +41,13 @@
             },
             "sample_query": {
                 "apiType": "text2audio",
-                "prompt": "Can you provide ways to eat combinations of bananas and dragonfruits?",
+                "prompt": "Hello! The vLLM-Omni server is now running successfully and I am generating speech.",
                 "path": "v1/audio/speech",
                 "body": {
                     "input": "Hello! The vLLM-Omni server is now running successfully and I am generating speech.",
                     "voice": "Vivian",
-                    "response_format": "wav"
+                    "stream": "true",
+                    "response_format": "pcm"
                 }
             },
             "standby": {
