@@ -38,6 +38,7 @@ use axum::{
     routing::put, Extension, Router,
 };
 
+use chrono::{DateTime, Timelike, Utc};
 use hyper::header::CONTENT_TYPE;
 use inferxlib::obj_mgr::namespace_mgr::Namespace;
 use inferxlib::obj_mgr::tenant_mgr::{Tenant, SYSTEM_NAMESPACE, SYSTEM_TENANT};
@@ -46,7 +47,6 @@ use prometheus_client::encoding::text::encode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_http::cors::{Any, CorsLayer};
-use chrono::{DateTime, Timelike, Utc};
 
 use axum_server::tls_rustls::RustlsConfig;
 use http_body_util::BodyExt;
@@ -77,9 +77,9 @@ use super::auth_layer::Grant;
 use super::auth_layer::ObjectType;
 use super::auth_layer::PermissionType;
 use super::auth_layer::{AccessToken, ApikeyCreateRequest, ApikeyDeleteRequest, GetTokenCache};
-use super::func_agent_mgr::{FuncAgentMgr, FuncIdentity, FuncRouteTarget};
 use super::func_agent_mgr::IxTimestamp;
 use super::func_agent_mgr::GW_OBJREPO;
+use super::func_agent_mgr::{FuncAgentMgr, FuncIdentity, FuncRouteTarget};
 use super::func_worker::QHttpCallClient;
 use super::func_worker::RETRYABLE_HTTP_STATUS;
 use super::gw_obj_repo::{GwObjRepo, NamespaceStore};
@@ -250,10 +250,7 @@ fn tenant_quota_exceeded(gw: &HttpGateway, tenant: &str) -> Result<bool> {
 }
 
 fn quota_exceeded_response(tenant: &str) -> Response<Body> {
-    let body = Body::from(format!(
-        "service failure: tenant {} quota exceeded",
-        tenant
-    ));
+    let body = Body::from(format!("service failure: tenant {} quota exceeded", tenant));
     Response::builder()
         .status(StatusCode::TOO_MANY_REQUESTS)
         .body(body)
@@ -272,9 +269,13 @@ fn quota_lookup_failed_response(tenant: &str) -> Response<Body> {
 }
 
 fn endpoint_policy_for_request(gw: &HttpGateway, tenant: &str, slug: &str) -> FuncPolicySpec {
-    match gw.objRepo.funcpolicyMgr.Get(tenant, VIRTUAL_ENDPOINTS_NAMESPACE, slug) {
+    match gw
+        .objRepo
+        .funcpolicyMgr
+        .Get(tenant, VIRTUAL_ENDPOINTS_NAMESPACE, slug)
+    {
         Ok(policy) => policy.object,
-        Err(_) => GATEWAY_CONFIG.catalogDefaultPolicy.clone(),
+        Err(_) => GATEWAY_CONFIG.endpointsDefaultPolicy.clone(),
     }
 }
 
@@ -454,13 +455,9 @@ async fn TenantQuotaGuard(
         return Ok(next.run(req).await);
     }
 
-    if let Some(resp) = enforce_tenant_quota_for_request(
-        token,
-        &gw,
-        tenant,
-        req.method(),
-        req.uri().path(),
-    ) {
+    if let Some(resp) =
+        enforce_tenant_quota_for_request(token, &gw, tenant, req.method(), req.uri().path())
+    {
         trace!(
             "TenantQuotaGuard block: tenant {} path {}",
             tenant,
@@ -593,16 +590,28 @@ impl HttpGateway {
             .route("/billing/rates", get(GetBillingRateHistory))
             .route("/billing/credits/history", get(GetBillingCreditHistory))
             .route("/tenant/:tenant/credits", get(GetTenantCredits))
-            .route("/tenant/:tenant/credits/history", get(GetTenantCreditHistory))
-            .route("/tenant/:tenant/billing-summary", get(GetTenantBillingSummary))
+            .route(
+                "/tenant/:tenant/credits/history",
+                get(GetTenantCreditHistory),
+            )
+            .route(
+                "/tenant/:tenant/billing-summary",
+                get(GetTenantBillingSummary),
+            )
             .route("/tenant/:tenant/usage/hourly", get(GetTenantHourlyUsage))
-            .route("/tenant/:tenant/usage/hourly-by-model", get(GetTenantHourlyUsageByModel))
+            .route(
+                "/tenant/:tenant/usage/hourly-by-model",
+                get(GetTenantHourlyUsageByModel),
+            )
             .route(
                 "/tenant/:tenant/usage/hourly-by-namespace",
                 get(GetTenantHourlyUsageByNamespace),
             )
             .route("/tenant/:tenant/usage/by-model", get(GetTenantUsageByModel))
-            .route("/tenant/:tenant/usage/by-namespace", get(GetTenantUsageByNamespace))
+            .route(
+                "/tenant/:tenant/usage/by-namespace",
+                get(GetTenantUsageByNamespace),
+            )
             .route("/tenant/:tenant/usage/summary", get(GetTenantUsageSummary))
             .route("/metrics", get(GetMetrics))
             .route("/debug/trace_logging/:state", post(SetTraceLogging))
@@ -1140,11 +1149,7 @@ async fn RetryGetClient(
 ) -> Result<(QHttpCallClient, bool)> {
     let mut _retry = 0;
     loop {
-        match gw
-            .funcAgentMgr
-            .GetClient(route, timeout, timestamp)
-            .await
-        {
+        match gw.funcAgentMgr.GetClient(route, timeout, timestamp).await {
             Err(e) => {
                 _retry += 1;
                 if timestamp.Elapsed() < timeout {
@@ -1220,7 +1225,11 @@ pub struct Disconnect {
 }
 
 impl Disconnect {
-    pub fn New(req: serde_json::Value, headers: Vec<(String, String)>, labels: &FunccallLabels) -> Self {
+    pub fn New(
+        req: serde_json::Value,
+        headers: Vec<(String, String)>,
+        labels: &FunccallLabels,
+    ) -> Self {
         return Self {
             start: std::time::Instant::now(),
             cancel: AtomicBool::new(false),
@@ -1414,10 +1423,7 @@ async fn FuncCall(
 
         // let mut startupSpan = tracer.start_with_context("startup", &ttftCtx);
 
-        let (mut tclient, tkeepalive) = match RetryGetClient(
-            &gw, &route, timeout, timestamp,
-        )
-        .await
+        let (mut tclient, tkeepalive) = match RetryGetClient(&gw, &route, timeout, timestamp).await
         {
             Err(e) => {
                 let resp = FailureResponse(e, &mut labels, Status::ConnectFailure).await;
@@ -1760,19 +1766,26 @@ async fn Onboard(
 ) -> SResult<Response, StatusCode> {
     match gw.Onboard(&token).await {
         Ok((tenant_name, created, apikey, apikey_name)) => {
-            let apikey = if apikey.is_empty() { None } else { Some(apikey) };
+            let apikey = if apikey.is_empty() {
+                None
+            } else {
+                Some(apikey)
+            };
             let apikey_name = if apikey_name.is_empty() {
                 None
             } else {
                 Some(apikey_name)
             };
-            let body = Body::from(serde_json::to_string(&OnboardResponse {
-                tenant_name: tenant_name,
-                role: "admin".to_owned(),
-                created: created,
-                apikey,
-                apikey_name,
-            }).unwrap());
+            let body = Body::from(
+                serde_json::to_string(&OnboardResponse {
+                    tenant_name: tenant_name,
+                    role: "admin".to_owned(),
+                    created: created,
+                    apikey,
+                    apikey_name,
+                })
+                .unwrap(),
+            );
             let resp = Response::builder()
                 .status(StatusCode::OK)
                 .header(CONTENT_TYPE, "application/json")
@@ -1835,17 +1848,20 @@ async fn GetAdminTenants(
     match gw.objRepo.funcMgr.GetObjects("", "") {
         Ok(funcs) => {
             for func in funcs {
-                let is_normal = match gw
-                    .objRepo
-                    .funcstatusMgr
-                    .Get(&func.tenant, &func.namespace, &func.name)
-                {
-                    Ok(funcstatus) => matches!(funcstatus.object.state, FuncState::Normal),
-                    Err(_) => matches!(func.object.status.state, FuncState::Normal),
-                };
+                let is_normal =
+                    match gw
+                        .objRepo
+                        .funcstatusMgr
+                        .Get(&func.tenant, &func.namespace, &func.name)
+                    {
+                        Ok(funcstatus) => matches!(funcstatus.object.state, FuncState::Normal),
+                        Err(_) => matches!(func.object.status.state, FuncState::Normal),
+                    };
                 let is_catalog_backed = func.object.spec.catalogSource.is_some();
 
-                let entry = model_counts.entry(func.tenant.clone()).or_insert((0, 0, 0, 0));
+                let entry = model_counts
+                    .entry(func.tenant.clone())
+                    .or_insert((0, 0, 0, 0));
                 entry.3 += 1;
                 if is_normal {
                     entry.0 += 1;
@@ -1973,7 +1989,9 @@ fn is_apikey_duplicate_keyname_error(err: &Error) -> bool {
             }
 
             // Fallback for migrated environments where index names may differ.
-            db_err.message().contains("duplicate key value violates unique constraint")
+            db_err
+                .message()
+                .contains("duplicate key value violates unique constraint")
         }
         _ => false,
     }
@@ -2110,9 +2128,7 @@ async fn SaveEndpointMetadata(
                 .unwrap();
             Ok(resp)
         }
-        Err(e) => {
-            Ok(error_response_for_endpoint_admin_action(e))
-        }
+        Err(e) => Ok(error_response_for_endpoint_admin_action(e)),
     }
 }
 
@@ -2132,9 +2148,7 @@ async fn PublishEndpoint(
                 .unwrap();
             Ok(resp)
         }
-        Err(e) => {
-            Ok(error_response_for_endpoint_admin_action(e))
-        }
+        Err(e) => Ok(error_response_for_endpoint_admin_action(e)),
     }
 }
 
@@ -2153,9 +2167,7 @@ async fn UnpublishEndpoint(
                 .unwrap();
             Ok(resp)
         }
-        Err(e) => {
-            Ok(error_response_for_endpoint_admin_action(e))
-        }
+        Err(e) => Ok(error_response_for_endpoint_admin_action(e)),
     }
 }
 
@@ -2801,7 +2813,8 @@ async fn SetTenantQuotaExceeded(
     Json(req): Json<SetTenantQuotaExceededRequest>,
 ) -> SResult<Response, StatusCode> {
     if !token.IsInferxAdmin() {
-        let body = Body::from("Permission denied: Only InferxAdmin can update tenant quota_exceeded");
+        let body =
+            Body::from("Permission denied: Only InferxAdmin can update tenant quota_exceeded");
         let resp = Response::builder()
             .status(StatusCode::FORBIDDEN)
             .body(body)
@@ -3082,7 +3095,10 @@ async fn AddTenantCredits(
     // Validate currency (only USD supported for now)
     let currency = req.currency.as_deref().unwrap_or("USD");
     if currency != "USD" {
-        let body = Body::from(format!("Unsupported currency: {}. Only USD is supported.", currency));
+        let body = Body::from(format!(
+            "Unsupported currency: {}. Only USD is supported.",
+            currency
+        ));
         let resp = Response::builder()
             .status(StatusCode::BAD_REQUEST)
             .body(body)
@@ -3105,14 +3121,18 @@ async fn AddTenantCredits(
         "AddTenantCredits: tenant={}, amount_cents={}, currency={}, note={:?}, payment_ref={:?}, added_by={:?}",
         &tenant, req.amount_cents, currency, req.note, req.payment_ref, added_by
     );
-    match gw.sqlBilling.AddTenantCredit(
-        &tenant,
-        req.amount_cents,
-        currency,
-        req.note.as_deref(),
-        req.payment_ref.as_deref(),
-        added_by,
-    ).await {
+    match gw
+        .sqlBilling
+        .AddTenantCredit(
+            &tenant,
+            req.amount_cents,
+            currency,
+            req.note.as_deref(),
+            req.payment_ref.as_deref(),
+            added_by,
+        )
+        .await
+    {
         Ok(id) => {
             error!("AddTenantCredits: credit added with id={}", id);
             let quota_exceeded = match gw.sqlBilling.RecalculateTenantQuota(&tenant).await {
@@ -3173,10 +3193,12 @@ async fn AddTenantCredits(
             );
             if tenant_obj.object.status.quota_exceeded != quota_exceeded {
                 tenant_obj.object.status.quota_exceeded = quota_exceeded;
-                error!("AddTenantCredits: updating tenant quota_exceeded to {}", quota_exceeded);
+                error!(
+                    "AddTenantCredits: updating tenant quota_exceeded to {}",
+                    quota_exceeded
+                );
                 if let Err(e) = gw.client.Update(&tenant_obj.DataObject(), 0).await {
-                    let body =
-                        Body::from(format!("Failed to update tenant quota status: {:?}", e));
+                    let body = Body::from(format!("Failed to update tenant quota status: {:?}", e));
                     let resp = Response::builder()
                         .status(StatusCode::BAD_REQUEST)
                         .body(body)
@@ -3193,8 +3215,15 @@ async fn AddTenantCredits(
                     0
                 }
             };
-            error!("AddTenantCredits: returning id={}, balance_cents={}", id, balance);
-            let resp_body = AddCreditsResponse { success: true, credit_id: id, new_balance_cents: balance };
+            error!(
+                "AddTenantCredits: returning id={}, balance_cents={}",
+                id, balance
+            );
+            let resp_body = AddCreditsResponse {
+                success: true,
+                credit_id: id,
+                new_balance_cents: balance,
+            };
             let data = serde_json::to_string(&resp_body).unwrap();
             let body = Body::from(data);
             let resp = Response::builder()
@@ -3311,8 +3340,24 @@ async fn GetTenantCredits(
     }
 
     match gw.sqlBilling.GetTenantBillingSummary(&tenant).await {
-        Ok((balance_cents, used_cents, _threshold, quota_exceeded, _total_credits, currency, _, _, _, _)) => {
-            let resp_body = CreditResponse { balance_cents, used_cents, currency, quota_exceeded };
+        Ok((
+            balance_cents,
+            used_cents,
+            _threshold,
+            quota_exceeded,
+            _total_credits,
+            currency,
+            _,
+            _,
+            _,
+            _,
+        )) => {
+            let resp_body = CreditResponse {
+                balance_cents,
+                used_cents,
+                currency,
+                quota_exceeded,
+            };
             let data = serde_json::to_string(&resp_body).unwrap();
             let body = Body::from(data);
             let resp = Response::builder()
@@ -3338,7 +3383,8 @@ async fn GetBillingCreditHistory(
     Query(params): Query<BillingCreditHistoryQuery>,
 ) -> SResult<Response, StatusCode> {
     if !token.IsInferxAdmin() {
-        let body = Body::from("Permission denied: Only InferxAdmin can read billing credit history");
+        let body =
+            Body::from("Permission denied: Only InferxAdmin can read billing credit history");
         let resp = Response::builder()
             .status(StatusCode::FORBIDDEN)
             .body(body)
@@ -3470,8 +3516,18 @@ async fn GetTenantBillingSummary(
     }
 
     match gw.sqlBilling.GetTenantBillingSummary(&tenant).await {
-        Ok((balance_cents, used_cents, threshold_cents, quota_exceeded, total_credits_cents, currency,
-            inference_cents, standby_cents, inference_ms, standby_ms)) => {
+        Ok((
+            balance_cents,
+            used_cents,
+            threshold_cents,
+            quota_exceeded,
+            total_credits_cents,
+            currency,
+            inference_cents,
+            standby_cents,
+            inference_ms,
+            standby_ms,
+        )) => {
             let resp_body = BillingSummaryResponse {
                 balance_cents,
                 used_cents,
@@ -3582,25 +3638,41 @@ async fn GetTenantUsageByModel(
         Ok((items, total)) => {
             let usage: Vec<ModelUsageItem> = items
                 .into_iter()
-                .map(|(funcname, namespace, inference_ms, standby_ms, inference_cents, standby_cents, charge_cents)| {
-                    let usage_ms = inference_ms + standby_ms;
-                    ModelUsageItem {
+                .map(
+                    |(
                         funcname,
                         namespace,
                         inference_ms,
                         standby_ms,
-                        usage_ms,
-                        inference_gpu_hours: inference_ms as f64 / 3600000.0,
-                        standby_gpu_hours: standby_ms as f64 / 3600000.0,
-                        gpu_hours: usage_ms as f64 / 3600000.0,
                         inference_cents,
                         standby_cents,
                         charge_cents,
-                    }
-                })
+                    )| {
+                        let usage_ms = inference_ms + standby_ms;
+                        ModelUsageItem {
+                            funcname,
+                            namespace,
+                            inference_ms,
+                            standby_ms,
+                            usage_ms,
+                            inference_gpu_hours: inference_ms as f64 / 3600000.0,
+                            standby_gpu_hours: standby_ms as f64 / 3600000.0,
+                            gpu_hours: usage_ms as f64 / 3600000.0,
+                            inference_cents,
+                            standby_cents,
+                            charge_cents,
+                        }
+                    },
+                )
                 .collect();
 
-            let (total_inference_ms, total_standby_ms, total_inference_cents, total_standby_cents, total_cents) = total;
+            let (
+                total_inference_ms,
+                total_standby_ms,
+                total_inference_cents,
+                total_standby_cents,
+                total_cents,
+            ) = total;
             let total_ms = total_inference_ms + total_standby_ms;
 
             let resp_body = UsageByModelResponse {
@@ -3760,10 +3832,7 @@ async fn GetTenantHourlyUsageByNamespace(
             return Ok(resp);
         }
         Err(e) => {
-            let body = Body::from(format!(
-                "Failed to get hourly usage by namespace: {:?}",
-                e
-            ));
+            let body = Body::from(format!("Failed to get hourly usage by namespace: {:?}", e));
             let resp = Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .body(body)
@@ -3803,24 +3872,39 @@ async fn GetTenantUsageByNamespace(
         Ok((items, total)) => {
             let usage: Vec<NamespaceUsageItem> = items
                 .into_iter()
-                .map(|(namespace, inference_ms, standby_ms, inference_cents, standby_cents, charge_cents)| {
-                    let usage_ms = inference_ms + standby_ms;
-                    NamespaceUsageItem {
+                .map(
+                    |(
                         namespace,
                         inference_ms,
                         standby_ms,
-                        usage_ms,
-                        inference_gpu_hours: inference_ms as f64 / 3600000.0,
-                        standby_gpu_hours: standby_ms as f64 / 3600000.0,
-                        gpu_hours: usage_ms as f64 / 3600000.0,
                         inference_cents,
                         standby_cents,
                         charge_cents,
-                    }
-                })
+                    )| {
+                        let usage_ms = inference_ms + standby_ms;
+                        NamespaceUsageItem {
+                            namespace,
+                            inference_ms,
+                            standby_ms,
+                            usage_ms,
+                            inference_gpu_hours: inference_ms as f64 / 3600000.0,
+                            standby_gpu_hours: standby_ms as f64 / 3600000.0,
+                            gpu_hours: usage_ms as f64 / 3600000.0,
+                            inference_cents,
+                            standby_cents,
+                            charge_cents,
+                        }
+                    },
+                )
                 .collect();
 
-            let (total_inference_ms, total_standby_ms, total_inference_cents, total_standby_cents, total_cents) = total;
+            let (
+                total_inference_ms,
+                total_standby_ms,
+                total_inference_cents,
+                total_standby_cents,
+                total_cents,
+            ) = total;
             let total_ms = total_inference_ms + total_standby_ms;
 
             let resp_body = UsageByNamespaceResponse {
@@ -3884,8 +3968,21 @@ async fn GetTenantUsageSummary(
 
     let hours = params.hours.unwrap_or(24).min(720).max(1);
 
-    match gw.sqlBilling.GetTenantAnalyticsSummary(&tenant, hours).await {
-        Ok((total_ms, total_cents, top_model_name, top_model_ms, top_namespace_name, top_namespace_ms, peak_hour, peak_hour_ms)) => {
+    match gw
+        .sqlBilling
+        .GetTenantAnalyticsSummary(&tenant, hours)
+        .await
+    {
+        Ok((
+            total_ms,
+            total_cents,
+            top_model_name,
+            top_model_ms,
+            top_namespace_name,
+            top_namespace_ms,
+            peak_hour,
+            peak_hour_ms,
+        )) => {
             let top_model = top_model_name.map(|name| TopModelInfo {
                 funcname: name,
                 gpu_hours: top_model_ms as f64 / 3600000.0,

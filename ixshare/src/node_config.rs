@@ -28,7 +28,7 @@ use std::num::ParseIntError;
 
 pub const SNAPSHOT_DIR: &str = "/opt/inferx/snapshot";
 
-fn default_catalog_policy() -> FuncPolicySpec {
+fn default_endpoints_policy() -> FuncPolicySpec {
     FuncPolicySpec {
         standbyPerNode: 0,
         ..Default::default()
@@ -49,23 +49,23 @@ fn merge_json_value(base: &mut serde_json::Value, overlay: serde_json::Value) {
     }
 }
 
-fn resolve_catalog_default_policy(config: &NodeConfig) -> FuncPolicySpec {
-    match std::env::var("CATALOG_DEFAULT_POLICY") {
+fn resolve_endpoints_default_policy(config: &NodeConfig) -> FuncPolicySpec {
+    match std::env::var("ENDPOINTS_DEFAULT_POLICY") {
         Ok(raw) => {
-            let mut base = serde_json::to_value(&config.catalog_default_policy)
-                .expect("catalog_default_policy should serialize");
+            let mut base = serde_json::to_value(&config.endpoints_default_policy)
+                .expect("endpoints_default_policy should serialize");
             let overlay = serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_else(|e| {
-                panic!("invalid CATALOG_DEFAULT_POLICY JSON '{}': {:?}", raw, e)
+                panic!("invalid ENDPOINTS_DEFAULT_POLICY JSON '{}': {:?}", raw, e)
             });
             merge_json_value(&mut base, overlay);
             serde_json::from_value(base)
-                .expect("CATALOG_DEFAULT_POLICY merge produced invalid FuncPolicySpec")
+                .expect("ENDPOINTS_DEFAULT_POLICY merge produced invalid FuncPolicySpec")
         }
-        Err(_) => config.catalog_default_policy.clone(),
+        Err(_) => config.endpoints_default_policy.clone(),
     }
 }
 
-fn catalog_policy_unsupported_warning(policy: &FuncPolicySpec) -> Option<String> {
+fn endpoints_policy_unsupported_warning(policy: &FuncPolicySpec) -> Option<String> {
     let mut unsupported = Vec::new();
     if policy.minReplica > 0 {
         unsupported.push(format!("min_replica={}", policy.minReplica));
@@ -78,7 +78,7 @@ fn catalog_policy_unsupported_warning(policy: &FuncPolicySpec) -> Option<String>
         None
     } else {
         Some(format!(
-            "catalog_default_policy ignores {} for endpoints routing; standby is controlled by the platform function",
+            "endpoints_default_policy ignores {} for endpoints routing; standby is controlled by the platform function",
             unsupported.join(", ")
         ))
     }
@@ -225,7 +225,7 @@ pub struct GatewayConfig {
     pub inferxAdminApikey: String,
     pub onboardInitialCreditCents: i64,
     pub gatewayPort: u16,
-    pub catalogDefaultPolicy: FuncPolicySpec,
+    pub endpointsDefaultPolicy: FuncPolicySpec,
 }
 
 impl GatewayConfig {
@@ -354,8 +354,8 @@ impl GatewayConfig {
             config.gatewayPort
         };
 
-        let catalogDefaultPolicy = resolve_catalog_default_policy(config);
-        if let Some(msg) = catalog_policy_unsupported_warning(&catalogDefaultPolicy) {
+        let endpointsDefaultPolicy = resolve_endpoints_default_policy(config);
+        if let Some(msg) = endpoints_policy_unsupported_warning(&endpointsDefaultPolicy) {
             warn!("{}", msg);
         }
 
@@ -376,7 +376,7 @@ impl GatewayConfig {
             inferxAdminApikey: inferxAdminApikey,
             onboardInitialCreditCents: onboardInitialCreditCents,
             gatewayPort: gatewayPort,
-            catalogDefaultPolicy,
+            endpointsDefaultPolicy,
         };
 
         info!("GatewayConfig is {:#?}", &ret);
@@ -1008,8 +1008,8 @@ pub struct NodeConfig {
     #[serde(default)]
     pub peerLoad: bool,
 
-    #[serde(default = "default_catalog_policy")]
-    pub catalog_default_policy: FuncPolicySpec,
+    #[serde(default = "default_endpoints_policy")]
+    pub endpoints_default_policy: FuncPolicySpec,
 }
 
 impl NodeConfig {
@@ -1061,45 +1061,45 @@ mod tests {
             keycloakconfig: KeycloadConfig::default(),
             secretStoreAddr: String::new(),
             peerLoad: false,
-            catalog_default_policy: default_catalog_policy(),
+            endpoints_default_policy: default_endpoints_policy(),
         }
     }
 
     #[test]
-    fn default_catalog_policy_disables_standby() {
-        let policy = default_catalog_policy();
+    fn default_endpoints_policy_disables_standby() {
+        let policy = default_endpoints_policy();
         assert_eq!(policy.minReplica, 0);
         assert_eq!(policy.maxReplica, 1);
         assert_eq!(policy.standbyPerNode, 0);
     }
 
     #[test]
-    fn resolve_catalog_default_policy_uses_node_config_without_env() {
-        std::env::remove_var("CATALOG_DEFAULT_POLICY");
+    fn resolve_endpoints_default_policy_uses_node_config_without_env() {
+        std::env::remove_var("ENDPOINTS_DEFAULT_POLICY");
 
         let mut config = test_node_config();
-        config.catalog_default_policy.maxReplica = 3;
-        config.catalog_default_policy.queueTimeout = 12.5;
+        config.endpoints_default_policy.maxReplica = 3;
+        config.endpoints_default_policy.queueTimeout = 12.5;
 
-        let resolved = resolve_catalog_default_policy(&config);
+        let resolved = resolve_endpoints_default_policy(&config);
         assert_eq!(resolved.maxReplica, 3);
         assert_eq!(resolved.queueTimeout, 12.5);
         assert_eq!(resolved.standbyPerNode, 0);
     }
 
     #[test]
-    fn resolve_catalog_default_policy_merges_env_json() {
+    fn resolve_endpoints_default_policy_merges_env_json() {
         std::env::set_var(
-            "CATALOG_DEFAULT_POLICY",
+            "ENDPOINTS_DEFAULT_POLICY",
             r#"{"max_replica":2,"queue_timeout":9.5}"#,
         );
 
         let mut config = test_node_config();
-        config.catalog_default_policy.maxReplica = 5;
-        config.catalog_default_policy.queueLen = 77;
+        config.endpoints_default_policy.maxReplica = 5;
+        config.endpoints_default_policy.queueLen = 77;
 
-        let resolved = resolve_catalog_default_policy(&config);
-        std::env::remove_var("CATALOG_DEFAULT_POLICY");
+        let resolved = resolve_endpoints_default_policy(&config);
+        std::env::remove_var("ENDPOINTS_DEFAULT_POLICY");
 
         assert_eq!(resolved.maxReplica, 2);
         assert_eq!(resolved.queueTimeout, 9.5);
@@ -1107,14 +1107,14 @@ mod tests {
     }
 
     #[test]
-    fn catalog_policy_warning_only_when_unsupported_fields_present() {
-        let supported = default_catalog_policy();
-        assert!(catalog_policy_unsupported_warning(&supported).is_none());
+    fn endpoints_policy_warning_only_when_unsupported_fields_present() {
+        let supported = default_endpoints_policy();
+        assert!(endpoints_policy_unsupported_warning(&supported).is_none());
 
-        let mut unsupported = default_catalog_policy();
+        let mut unsupported = default_endpoints_policy();
         unsupported.minReplica = 1;
         unsupported.standbyPerNode = 2;
-        let msg = catalog_policy_unsupported_warning(&unsupported).unwrap();
+        let msg = endpoints_policy_unsupported_warning(&unsupported).unwrap();
         assert!(msg.contains("min_replica=1"));
         assert!(msg.contains("standby_per_node=2"));
     }

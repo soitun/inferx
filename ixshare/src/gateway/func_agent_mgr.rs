@@ -27,16 +27,73 @@ use tokio::sync::{mpsc, Notify};
 use tokio::sync::{oneshot, Mutex as TMutex};
 use tokio::time;
 
-use crate::audit::SqlAudit;
-use crate::common::*;
-use crate::gateway::secret::SqlSecret;
-use crate::gateway::scheduler_client::{LeasedWorker, SCHEDULER_CLIENT};
-use crate::scheduler::scheduler_handler::GetClient;
 use super::func_worker::*;
 use super::gw_obj_repo::GwObjRepo;
 use super::http_gateway::GATEWAY_CONFIG;
+use crate::audit::SqlAudit;
+use crate::common::*;
+use crate::gateway::scheduler_client::{LeasedWorker, SCHEDULER_CLIENT};
+use crate::gateway::secret::SqlSecret;
+use crate::scheduler::scheduler_handler::GetClient;
 
 pub static GW_OBJREPO: OnceCell<GwObjRepo> = OnceCell::new();
+
+#[derive(Debug, Default)]
+pub struct EndpointLeaseLimiterInner {
+    pub active_leases: Mutex<BTreeMap<String, u64>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct EndpointLeaseLimiter(Arc<EndpointLeaseLimiterInner>);
+
+impl Deref for EndpointLeaseLimiter {
+    type Target = Arc<EndpointLeaseLimiterInner>;
+
+    fn deref(&self) -> &Arc<EndpointLeaseLimiterInner> {
+        &self.0
+    }
+}
+
+impl EndpointLeaseLimiter {
+    pub fn New() -> Self {
+        Self::default()
+    }
+
+    pub fn TryAcquire(&self, key: &str, max_replica: u64) -> bool {
+        let mut leases = self.active_leases.lock().unwrap();
+        let current = leases.get(key).copied().unwrap_or(0);
+        if current >= max_replica {
+            return false;
+        }
+
+        leases.insert(key.to_owned(), current + 1);
+        true
+    }
+
+    pub fn Release(&self, key: &str) {
+        let mut leases = self.active_leases.lock().unwrap();
+        match leases.get_mut(key) {
+            None => (),
+            Some(current) => {
+                if *current <= 1 {
+                    leases.remove(key);
+                } else {
+                    *current -= 1;
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn Count(&self, key: &str) -> u64 {
+        self.active_leases
+            .lock()
+            .unwrap()
+            .get(key)
+            .copied()
+            .unwrap_or(0)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FuncIdentity {
@@ -168,6 +225,7 @@ pub async fn GatewaySvc(notify: Option<Arc<Notify>>) -> Result<()> {
 pub struct FuncAgentMgrInner {
     pub agents: Mutex<BTreeMap<String, FuncAgent>>,
     pub objRepo: GwObjRepo,
+    pub endpointLeaseLimiter: EndpointLeaseLimiter,
 }
 
 #[derive(Debug, Clone)]
@@ -186,6 +244,7 @@ impl FuncAgentMgr {
         let inner = FuncAgentMgrInner {
             agents: Mutex::new(BTreeMap::new()),
             objRepo: objRepo.clone(),
+            endpointLeaseLimiter: EndpointLeaseLimiter::New(),
         };
 
         return Self(Arc::new(inner));
@@ -210,7 +269,7 @@ impl FuncAgentMgr {
             let agent = match inner.get(&agent_key) {
                 Some(agent) => agent.clone(),
                 None => {
-                    let agent = FuncAgent::New(route);
+                    let agent = FuncAgent::New(route, self.endpointLeaseLimiter.clone());
                     inner.insert(agent_key, agent.clone());
                     agent
                 }
@@ -220,10 +279,6 @@ impl FuncAgentMgr {
         };
         for func_id in stale_agents.0 {
             self.RetireAgent(&func_id);
-        }
-
-        if route.IsEndpointRoute() {
-            return Err(Error::ServiceUnavailable);
         }
 
         let agent = stale_agents.1;
@@ -324,7 +379,9 @@ pub struct FuncAgentInner {
     pub physicalFuncName: String,
     pub func: Function,
     pub funcVersion: i64,
+    pub endpointLeaseKey: Option<String>,
     pub isEndpointRoute: bool,
+    pub endpointLeaseLimiter: EndpointLeaseLimiter,
 
     pub scaleoutPolicy: Mutex<ScaleOutPolicy>,
     pub scaleinTimeout: AtomicU64,
@@ -396,7 +453,7 @@ impl Deref for FuncAgent {
 }
 
 impl FuncAgent {
-    pub fn New(route: &FuncRouteTarget) -> Self {
+    pub fn New(route: &FuncRouteTarget, endpointLeaseLimiter: EndpointLeaseLimiter) -> Self {
         let policy = route.policy.clone();
 
         let queueLen = policy.queueLen;
@@ -414,7 +471,9 @@ impl FuncAgent {
             physicalNamespace: route.physical.namespace.clone(),
             physicalFuncName: route.physical.funcname.clone(),
             funcVersion: route.logical.version,
+            endpointLeaseKey: route.IsEndpointRoute().then(|| route.logical.Prefix()),
             isEndpointRoute: route.IsEndpointRoute(),
+            endpointLeaseLimiter,
             func: route.func.clone(),
             reqQueueTx: rtx,
             workerStateUpdateTx: wtx,
@@ -443,6 +502,24 @@ impl FuncAgent {
         return ret;
     }
 
+    fn TryAcquireEndpointLease(&self) -> bool {
+        match &self.endpointLeaseKey {
+            None => true,
+            Some(key) => {
+                let max_replica = match GW_OBJREPO.get().unwrap().funcpolicyMgr.Get(
+                    &self.tenant,
+                    &self.namespace,
+                    &self.funcName,
+                ) {
+                    Ok(policy) => policy.object.maxReplica,
+                    Err(_) => GATEWAY_CONFIG.endpointsDefaultPolicy.maxReplica,
+                };
+
+                self.endpointLeaseLimiter.TryAcquire(key, max_replica)
+            }
+        }
+    }
+
     pub fn TotalSlot(&self) -> usize {
         // let totalSlot = self.totalSlot.load(Ordering::SeqCst);
         // return totalSlot + self.startingSlot.load(Ordering::SeqCst);
@@ -457,7 +534,7 @@ impl FuncAgent {
                 &self.funcName,
             ) {
                 Ok(p) => p.object,
-                Err(_) => GATEWAY_CONFIG.catalogDefaultPolicy.clone(),
+                Err(_) => GATEWAY_CONFIG.endpointsDefaultPolicy.clone(),
             }
         } else {
             GW_OBJREPO.get().unwrap().FuncPolicy(&self.func)
@@ -721,6 +798,10 @@ impl FuncAgent {
     }
 
     pub async fn NewWorker(&self) -> Result<()> {
+        if !self.TryAcquireEndpointLease() {
+            return Ok(());
+        }
+
         let keepaliveTime = self.scaleinTimeout.load(Ordering::Relaxed);
 
         let workerId = self.NextWorkerId();
@@ -755,6 +836,8 @@ impl FuncAgent {
             &physical_namespace,
             &physical_funcname,
             fprevision,
+            self.endpointLeaseKey.clone(),
+            self.endpointLeaseLimiter.clone(),
             parallelLevel,
             10.max(keepaliveTime), // keepalive must be larger than 10 ms
             endpoint,
@@ -763,6 +846,9 @@ impl FuncAgent {
         .await
         {
             Err(e) => {
+                if let Some(key) = &self.endpointLeaseKey {
+                    self.endpointLeaseLimiter.Release(key);
+                }
                 error!(
                     "FuncAgent::ProcessReq new funcworker fail with error {:?}",
                     e
@@ -873,6 +959,30 @@ impl IxTimestamp {
 
     pub fn Elapsed(&self) -> u64 {
         return TIMESTAMP_START.elapsed().as_millis() as u64 - self.ms;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EndpointLeaseLimiter;
+
+    #[test]
+    fn endpoint_lease_limiter_enforces_cap_and_releases() {
+        let limiter = EndpointLeaseLimiter::New();
+        let key = "tenant/endpoints/slug";
+
+        assert!(limiter.TryAcquire(key, 2));
+        assert!(limiter.TryAcquire(key, 2));
+        assert!(!limiter.TryAcquire(key, 2));
+        assert_eq!(limiter.Count(key), 2);
+
+        limiter.Release(key);
+        assert_eq!(limiter.Count(key), 1);
+        assert!(limiter.TryAcquire(key, 2));
+
+        limiter.Release(key);
+        limiter.Release(key);
+        assert_eq!(limiter.Count(key), 0);
     }
 }
 
