@@ -874,7 +874,7 @@ def store_onboard_session(sub: str, onboard_info, onboarding_apikey: str = "", o
 def render_onboard_error(redirectpath: str, error_message: str, invite_code: str = ''):
     target = redirectpath
     if target == '':
-        target = url_for('prefix.ListFunc')
+        target = url_for('prefix.EndpointList')
 
     return render_template_string(
         """
@@ -916,7 +916,7 @@ def render_onboard_error(redirectpath: str, error_message: str, invite_code: str
 
 
 def post_login_flow(sub: str, access_token: str, redirectpath: str, invite_code: str):
-    target = redirectpath if redirectpath != '' else url_for('prefix.ListFunc')
+    target = redirectpath if redirectpath != '' else url_for('prefix.EndpointList')
 
     if invite_code == '':
         invite_code = session.get('pending_invite_code', '')
@@ -1291,7 +1291,7 @@ def auth_callback():
         compact_legacy_session_payload()
         log_session_cookie_size_comparison(token, userinfo)
 
-        target = redirectpath if redirectpath != '' else url_for('prefix.ListFunc')
+        target = redirectpath if redirectpath != '' else url_for('prefix.EndpointList')
         try:
             target, invite_code = post_login_flow(
                 sub,
@@ -1312,7 +1312,7 @@ def auth_callback():
 @require_login
 def onboard_retry():
     redirectpath = request.form.get('redirectpath', '')
-    target = redirectpath if redirectpath != '' else url_for('prefix.ListFunc')
+    target = redirectpath if redirectpath != '' else url_for('prefix.EndpointList')
     invite_code = request.form.get('invite_code', '')
     if invite_code == '':
         invite_code = session.get('pending_invite_code', '')

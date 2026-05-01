@@ -244,19 +244,19 @@
                             <button
                                 type="button"
                                 class="endpoint-copy-btn"
-                                data-tooltip="{{ client_preview.get('model_name', entry.get('model_name', slug)) }}"
-                                data-copy-value="{{ client_preview.get('model_name', entry.get('model_name', slug)) }}"
-                                onclick="copyEndpointSetupValue(this)"
-                                aria-label="Copy model"
-                            >Copy Model Name</button>
-                            <button
-                                type="button"
-                                class="endpoint-copy-btn"
                                 data-tooltip="{{ client_preview.get('api_base_url', '') }}"
                                 data-copy-value="{{ client_preview.get('api_base_url', '') }}"
                                 onclick="copyEndpointSetupValue(this)"
                                 aria-label="Copy endpoint"
                             >Copy Endpoint</button>
+                            <button
+                                type="button"
+                                class="endpoint-copy-btn"
+                                data-tooltip="{{ client_preview.get('model_name', entry.get('model_name', slug)) }}"
+                                data-copy-value="{{ client_preview.get('model_name', entry.get('model_name', slug)) }}"
+                                onclick="copyEndpointSetupValue(this)"
+                                aria-label="Copy model"
+                            >Copy Model Name</button>
                         </div>
                     </td>
                     {% endif %}
