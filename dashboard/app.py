@@ -1824,6 +1824,17 @@ def getfunc_response(tenant: str, namespace: str, funcname: str):
     return resp, response_json_or_none(resp)
 
 
+def get_published_endpoint_response(tenant: str, slug: str):
+    access_token = session.get('access_token', '')
+    if access_token == "":
+        headers = {}
+    else:
+        headers = {'Authorization': f'Bearer {access_token}'}
+    url = "{}/published-endpoint/{}/{}/".format(apihostaddr, tenant, slug)
+    resp = requests.get(url, headers=headers)
+    return resp, response_json_or_none(resp)
+
+
 def listsnapshots(tenant: str, namespace: str):
     access_token = session.get('access_token', '')
     if access_token == "":
@@ -2018,6 +2029,27 @@ def is_upstream_resource_unavailable(resp, payload) -> bool:
         "no such",
     )
     return any(marker in detail for marker in unavailable_markers)
+
+
+def is_upstream_permission_denied(resp, payload) -> bool:
+    if resp is None:
+        return False
+
+    if resp.status_code in (401, 403):
+        return True
+
+    detail = extract_upstream_error_message(resp, payload).lower()
+    if detail == "":
+        return False
+
+    denied_markers = (
+        "permission denied",
+        "no permission",
+        "nopermission",
+        "unauthorized",
+        "forbidden",
+    )
+    return any(marker in detail for marker in denied_markers)
 
 
 def render_resource_unavailable_page(
@@ -3208,6 +3240,17 @@ def maybe_get_catalog_entry_metadata(catalog_source):
     return metadata
 
 
+def query_catalog_entry_by_source(catalog_source):
+    normalized_source = normalize_catalog_source(catalog_source)
+    if normalized_source is None:
+        return None
+
+    try:
+        return query_catalog_entry_by_id(normalized_source["catalog_id"], active_only=False)
+    except Exception:
+        return None
+
+
 def ensure_catalog_db_available():
     if psycopg2 is None or RealDictCursor is None:
         raise RuntimeError("catalog support requires `psycopg2-binary` in the dashboard environment")
@@ -3969,6 +4012,659 @@ def build_catalog_deploy_target_selector_context(*, roles=None, inferx_admin=Non
             show_selected_tenant_in_summary=show_tenant_in_summary,
         ),
     }
+
+
+ENDPOINT_ENTRY_SELECT_COLUMNS = """
+    SELECT
+        slug,
+        func_revision,
+        brief_intro,
+        detailed_intro,
+        recommended_use_cases,
+        tags,
+        provider,
+        parameter_count_b,
+        context_length,
+        max_token_length,
+        concurrency,
+        last_published_at,
+        last_published_by
+    FROM Endpoints
+"""
+
+
+def ensure_endpoint_db_available():
+    ensure_catalog_db_available()
+
+
+def normalize_endpoint_row(row):
+    if not isinstance(row, dict):
+        raise ValueError("Invalid endpoint row")
+
+    entry = dict(row)
+    for key in ("tags", "recommended_use_cases"):
+        entry[key] = normalize_catalog_json_field(entry.get(key))
+
+    if not isinstance(entry.get("tags"), list):
+        entry["tags"] = []
+    if not isinstance(entry.get("recommended_use_cases"), list):
+        entry["recommended_use_cases"] = []
+
+    parameter_count = entry.get("parameter_count_b")
+    if parameter_count is not None:
+        try:
+            entry["parameter_count_b"] = float(parameter_count)
+        except Exception:
+            entry["parameter_count_b"] = None
+
+    concurrency = entry.get("concurrency")
+    if concurrency is not None:
+        try:
+            entry["concurrency"] = float(concurrency)
+        except Exception:
+            entry["concurrency"] = None
+
+    entry["last_published_at_display"] = format_catalog_datetime(entry.get("last_published_at"))
+    entry["last_published_at"] = normalize_catalog_datetime_value(entry.get("last_published_at"))
+    return entry
+
+
+def list_endpoint_rows():
+    ensure_endpoint_db_available()
+
+    query = f"""
+        {ENDPOINT_ENTRY_SELECT_COLUMNS}
+        ORDER BY slug ASC
+    """
+    try:
+        with psycopg2.connect(SECRDB_ADDR, connect_timeout=5) as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query)
+                rows = cursor.fetchall()
+    except Exception as e:
+        raise RuntimeError(f"failed to query endpoints: {e}")
+
+    return [normalize_endpoint_row(dict(row)) for row in rows]
+
+
+def query_endpoint_row_by_slug(slug: str):
+    ensure_endpoint_db_available()
+    normalized_slug = str(slug or "").strip()
+    if normalized_slug == "":
+        raise ValueError("endpoint slug is required")
+
+    query = f"""
+        {ENDPOINT_ENTRY_SELECT_COLUMNS}
+        WHERE slug = %s
+    """
+    try:
+        with psycopg2.connect(SECRDB_ADDR, connect_timeout=5) as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, (normalized_slug,))
+                row = cursor.fetchone()
+    except Exception as e:
+        raise RuntimeError(f"failed to query endpoint `{normalized_slug}`: {e}")
+
+    if row is None:
+        raise LookupError(f"endpoint `{normalized_slug}` not found")
+
+    return normalize_endpoint_row(dict(row))
+
+
+def gateway_request_headers(*, json_body=False):
+    access_token = session.get('access_token', '')
+    headers = {}
+    if access_token != "":
+        headers['Authorization'] = f'Bearer {access_token}'
+    if json_body:
+        headers["Content-Type"] = "application/json"
+    return headers
+
+
+def list_gateway_objects(obj_type: str, tenant: str, namespace: str):
+    url = f"{apihostaddr}/objects/{obj_type}/{tenant}/{namespace}/"
+    resp = requests.get(url, headers=gateway_request_headers())
+    payload = response_json_or_none(resp)
+    if not resp.ok:
+        detail = extract_upstream_error_message(resp, payload)
+        raise RuntimeError(
+            f"failed to list {obj_type} objects in {tenant}/{namespace}: "
+            f"HTTP {resp.status_code}{': ' + detail if detail else ''}"
+        )
+    return payload if isinstance(payload, list) else []
+
+
+def get_gateway_object(obj_type: str, tenant: str, namespace: str, name: str):
+    url = f"{apihostaddr}/object/{obj_type}/{tenant}/{namespace}/{name}/"
+    resp = requests.get(url, headers=gateway_request_headers())
+    payload = response_json_or_none(resp)
+    if is_upstream_resource_unavailable(resp, payload):
+        raise LookupError(f"{obj_type} `{tenant}/{namespace}/{name}` not found")
+    if not resp.ok:
+        detail = extract_upstream_error_message(resp, payload)
+        raise RuntimeError(
+            f"failed to load {obj_type} `{tenant}/{namespace}/{name}`: "
+            f"HTTP {resp.status_code}{': ' + detail if detail else ''}"
+        )
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"invalid {obj_type} response for `{tenant}/{namespace}/{name}`")
+    return payload
+
+
+def proxy_gateway_endpoint_admin_action(method: str, slug: str, *, metadata=None):
+    normalized_slug = str(slug or "").strip()
+    if normalized_slug == "":
+        raise ValueError("endpoint slug is required")
+
+    if method.upper() == "POST" and metadata is None:
+        url = f"{apihostaddr}/admin/endpoints/{normalized_slug}/unpublish"
+        resp = requests.post(url, headers=gateway_request_headers())
+    else:
+        suffix = "metadata" if method.upper() == "PUT" else "publish"
+        url = f"{apihostaddr}/admin/endpoints/{normalized_slug}/{suffix}"
+        resp = requests.request(
+            method.upper(),
+            url,
+            headers=gateway_request_headers(json_body=True),
+            json=metadata,
+        )
+
+    body = (resp.text or "").strip()
+    if not resp.ok:
+        raise RuntimeError(body if body != "" else f"HTTP {resp.status_code}")
+
+    try:
+        return int(body)
+    except Exception:
+        return body
+
+
+def endpoint_metadata_payload_from_prefill(data):
+    entry = data if isinstance(data, dict) else {}
+    context_length_raw = str(entry.get("context_length", "") or "").strip()
+    max_token_length_raw = str(entry.get("max_token_length", "") or "").strip()
+    return {
+        "brief_intro": str(entry.get("brief_intro", "") or "").strip(),
+        "detailed_intro": str(entry.get("detailed_intro", "") or "").strip(),
+        "recommended_use_cases": normalize_catalog_string_list(
+            entry.get("recommended_use_cases"),
+            "recommended_use_cases",
+        ),
+        "tags": normalize_catalog_string_list(entry.get("tags"), "tags"),
+        "provider": normalize_catalog_string_field(
+            entry.get("provider"),
+            "provider",
+            allow_empty=True,
+        ),
+        "parameter_count_b": normalize_catalog_parameter_count(entry.get("parameter_count_b")),
+        "context_length": None if context_length_raw == "" else int(context_length_raw),
+        "max_token_length": None if max_token_length_raw == "" else int(max_token_length_raw),
+        "concurrency": normalize_catalog_parameter_count(entry.get("concurrency")),
+    }
+
+
+def resolve_endpoint_model_name(sample_query, spec=None, fallback_slug: str = "") -> str:
+    model_name = extract_sample_query_model_target(sample_query)
+    if model_name == "":
+        try:
+            model_name = resolve_effective_model_target_from_spec(
+                spec,
+                commands_label="endpoint function commands",
+                sample_query_label="endpoint function sample_query.body.model",
+            )
+        except Exception:
+            model_name = ""
+    if model_name == "":
+        model_name = str(fallback_slug or "").strip()
+    return model_name
+
+
+def build_endpoint_client_setup_preview(tenant: str, slug: str, model_name: str, provider: str = ""):
+    base_url = normalize_public_api_base_url()
+    normalized_model_name = str(model_name or "").strip()
+    if normalized_model_name == "":
+        normalized_slug = str(slug or "").strip()
+        normalized_provider = str(provider or "").strip().strip("/")
+        normalized_model_name = f"{normalized_provider}/{normalized_slug}" if normalized_provider and normalized_slug else normalized_slug
+    return {
+        "api_base_url": f"{base_url}/funccall/{tenant}/endpoints/{slug}/v1",
+        "api_base_url_display": f"{base_url}/funccall/.../v1",
+        "auth_required": True,
+        "model_name": normalized_model_name,
+        "api_key": "<INFERENCE_API_KEY>",
+        "api_key_display": "<INFERENCE_API_KEY>",
+        "api_key_copyable": False,
+        "api_key_name": "",
+    }
+
+
+def build_endpoint_runtime_context(spec, sample_query, *, fallback_slug: str = ""):
+    spec_obj = spec if isinstance(spec, dict) else {}
+    sample_query_obj = sample_query if isinstance(sample_query, dict) else {}
+    body = sample_query_obj.get("body")
+    if not isinstance(body, dict):
+        body = {}
+
+    return {
+        "spec": spec_obj,
+        "sample_query": sample_query_obj,
+        "api_type": str(sample_query_obj.get("apiType", "") or "").strip(),
+        "path": str(sample_query_obj.get("path", "") or "").strip(),
+        "prompt": str(sample_query_obj.get("prompt", "") or "").strip(),
+        "map": clone_json_value(body),
+        "model_name": resolve_endpoint_model_name(sample_query_obj, spec_obj, fallback_slug=fallback_slug),
+        "enabled": isinstance(sample_query_obj, dict) and bool(sample_query_obj) and isinstance(body, dict) and bool(body),
+    }
+
+
+def resolve_endpoint_catalog_entry(slug: str, platform_func=None):
+    platform_spec = (((platform_func or {}).get("func") or {}).get("object") or {}).get("spec")
+    catalog_entry = query_catalog_entry_by_source(
+        platform_spec.get("catalog_source") if isinstance(platform_spec, dict) else None
+    )
+    if isinstance(catalog_entry, dict):
+        return catalog_entry
+
+    normalized_slug = str(slug or "").strip()
+    if normalized_slug == "":
+        return None
+
+    try:
+        return query_catalog_entry_by_slug(normalized_slug, active_only=False)
+    except Exception:
+        return None
+
+
+def fill_missing_endpoint_metadata_from_source(payload, source):
+    merged = clone_json_value(payload) if isinstance(payload, dict) else {}
+    if not isinstance(source, dict):
+        return merged
+
+    for key in (
+        "brief_intro",
+        "detailed_intro",
+        "recommended_use_cases",
+        "tags",
+        "provider",
+        "parameter_count_b",
+        "context_length",
+        "max_token_length",
+        "concurrency",
+    ):
+        current_value = merged.get(key)
+        source_value = source.get(key)
+
+        if key in ("recommended_use_cases", "tags"):
+            if isinstance(current_value, list) and current_value:
+                continue
+            if isinstance(source_value, list):
+                next_value = [str(item).strip() for item in source_value if str(item).strip() != ""]
+                if next_value:
+                    merged[key] = next_value
+            continue
+
+        if current_value not in ("", None):
+            continue
+        if source_value is None:
+            continue
+        if isinstance(source_value, str) and source_value.strip() == "":
+            continue
+        merged[key] = source_value
+
+    return merged
+
+
+def build_endpoint_editor_prefill(slug: str, existing_entry, platform_func):
+    prefill = {
+        "slug": slug,
+        "brief_intro": "",
+        "detailed_intro": "",
+        "recommended_use_cases": [],
+        "tags": [],
+        "provider": "",
+        "parameter_count_b": "",
+        "context_length": "",
+        "max_token_length": "",
+        "concurrency": "",
+    }
+
+    catalog_entry = resolve_endpoint_catalog_entry(slug, platform_func)
+
+    platform_spec = (((platform_func or {}).get("func") or {}).get("object") or {}).get("spec")
+    platform_commands = platform_spec.get("commands") if isinstance(platform_spec, dict) else []
+
+    for source in (existing_entry, catalog_entry):
+        if not isinstance(source, dict):
+            continue
+        for key in (
+            "brief_intro",
+            "detailed_intro",
+            "recommended_use_cases",
+            "tags",
+            "provider",
+            "parameter_count_b",
+            "context_length",
+            "max_token_length",
+            "concurrency",
+        ):
+            value = source.get(key)
+            if key in ("recommended_use_cases", "tags"):
+                if prefill[key]:
+                    continue
+                if isinstance(value, list) and value:
+                    prefill[key] = [str(item).strip() for item in value if str(item).strip() != ""]
+                continue
+            if prefill[key] not in ("", None, []):
+                continue
+            if value is None:
+                continue
+            if isinstance(value, str) and value.strip() == "":
+                continue
+            prefill[key] = value
+
+    if prefill["context_length"] in ("", None):
+        max_model_len = parse_named_command_arg(platform_commands, "--max-model-len")
+        if max_model_len != "":
+            try:
+                prefill["context_length"] = int(max_model_len)
+            except Exception:
+                pass
+
+    if prefill["parameter_count_b"] is None:
+        prefill["parameter_count_b"] = ""
+    if prefill["concurrency"] is None:
+        prefill["concurrency"] = ""
+
+    return prefill, catalog_entry
+
+
+def endpoint_state_from_sources(*, published: bool, metadata_entry, platform_detail):
+    platform_func = (platform_detail or {}).get("func") if isinstance(platform_detail, dict) else {}
+    func_state = ((((platform_func or {}).get("object") or {}).get("status") or {}).get("state") or "")
+    model_status = infer_model_status((platform_detail or {}).get("pods"), func_state, [])
+    has_metadata = isinstance(metadata_entry, dict)
+    has_publish_history = bool((metadata_entry or {}).get("last_published_at"))
+
+    if published:
+        return {"code": "published", "label": "Published"}
+    if model_status["code"] in ("ready", "standby"):
+        return {"code": "ready", "label": "Ready"}
+    if has_metadata or has_publish_history:
+        return {"code": "unpublished", "label": "Unpublished"}
+    return {"code": "deploying", "label": "Deploying"}
+
+
+def accessible_endpoint_tenant_names(roles):
+    if has_inferx_admin_role(roles):
+        tenant_names = []
+        for tenant_obj in listtenants():
+            if not isinstance(tenant_obj, dict):
+                continue
+            tenant_name = str(tenant_obj.get("name", "") or "").strip()
+            if tenant_name == "" or tenant_name.lower() == "system":
+                continue
+            tenant_names.append(tenant_name)
+        return sorted(set(tenant_names), key=lambda item: item.lower())
+
+    tenant_names = get_accessible_tenant_names_from_roles_for_create(roles)
+    if not tenant_names:
+        tenant_names = [
+            str(item).strip()
+            for item in session.get("tenant_names", [])
+            if str(item).strip() != ""
+        ]
+    active_tenant = str(session.get("active_tenant_name", "") or "").strip()
+    if active_tenant != "" and active_tenant not in tenant_names:
+        tenant_names.append(active_tenant)
+    return sorted(set(tenant_names), key=lambda item: item.lower())
+
+
+def enrich_endpoint_catalog_fallback(entry):
+    endpoint = clone_json_value(entry) if isinstance(entry, dict) else {}
+    slug = str(endpoint.get("slug", "") or "").strip()
+    try:
+        catalog_entry = query_catalog_entry_by_slug(slug, active_only=False)
+    except Exception:
+        catalog_entry = None
+
+    endpoint["catalog_entry"] = catalog_entry
+    endpoint["spec"] = (
+        (catalog_entry or {}).get("default_func_spec")
+        if isinstance(catalog_entry, dict)
+        else None
+    )
+    endpoint["sample_query"] = (
+        ((endpoint.get("spec") or {}).get("sample_query"))
+        if isinstance(endpoint.get("spec"), dict)
+        else None
+    )
+    endpoint["model_name"] = resolve_endpoint_model_name(
+        endpoint.get("sample_query"),
+        endpoint.get("spec"),
+        fallback_slug=slug,
+    )
+    return endpoint
+
+
+def load_live_endpoint_detail(
+    slug: str,
+    *,
+    allow_missing_live_spec: bool = False,
+    allow_missing_status: bool = False,
+):
+    normalized_slug = str(slug or "").strip()
+    if normalized_slug == "":
+        raise ValueError("endpoint slug is required")
+
+    metadata_entry = None
+    try:
+        metadata_entry = query_endpoint_row_by_slug(normalized_slug)
+    except LookupError:
+        metadata_entry = None
+
+    entry = enrich_endpoint_catalog_fallback(metadata_entry if metadata_entry is not None else {"slug": normalized_slug})
+    published = False
+    status_obj = None
+    try:
+        status_obj = get_gateway_object("funcstatus", "inferx", "endpoint", normalized_slug)
+        published = bool((((status_obj or {}).get("object") or {}).get("published")))
+    except LookupError:
+        raise
+    except Exception as e:
+        if not allow_missing_status or metadata_entry is None:
+            raise
+        if "No permission" not in str(e) and "permission" not in str(e).lower():
+            raise
+        # Tenant endpoint pages may not be allowed to read shared funcstatus directly.
+        # Fall back to metadata-backed visibility so the page can still render.
+        published = True
+
+    entry["published"] = published
+
+    platform_detail = None
+    resp, platform_detail_payload = getfunc_response("inferx", "endpoint", normalized_slug)
+    if is_upstream_resource_unavailable(resp, platform_detail_payload):
+        raise LookupError(f"endpoint `{normalized_slug}` not found")
+    if resp.ok:
+        if not isinstance(platform_detail_payload, dict):
+            raise RuntimeError(f"invalid function response for endpoint `{normalized_slug}`")
+        platform_detail = platform_detail_payload
+    elif not (allow_missing_live_spec and is_upstream_permission_denied(resp, platform_detail_payload)):
+        detail = extract_upstream_error_message(resp, platform_detail_payload)
+        raise RuntimeError(
+            f"failed to load endpoint `{normalized_slug}`: "
+            f"HTTP {resp.status_code}{': ' + detail if detail else ''}"
+        )
+
+    entry["platform_detail"] = platform_detail
+
+    platform_spec = (((platform_detail or {}).get("func") or {}).get("object") or {}).get("spec")
+    if isinstance(platform_spec, dict):
+        entry["spec"] = clone_json_value(platform_spec)
+        platform_sample_query = platform_spec.get("sample_query")
+        if isinstance(platform_sample_query, dict):
+            entry["sample_query"] = clone_json_value(platform_sample_query)
+
+    entry["model_name"] = resolve_endpoint_model_name(
+        entry.get("sample_query"),
+        entry.get("spec"),
+        fallback_slug=normalized_slug,
+    )
+    endpoint_state = endpoint_state_from_sources(
+        published=published,
+        metadata_entry=metadata_entry,
+        platform_detail=platform_detail,
+    )
+
+    return {
+        "entry": entry,
+        "metadata_entry": metadata_entry,
+        "platform_detail": platform_detail,
+        "published": published,
+        "endpoint_state": endpoint_state,
+    }
+
+
+def load_tenant_endpoint_detail(slug: str, tenant: str):
+    normalized_slug = str(slug or "").strip()
+    normalized_tenant = str(tenant or "").strip()
+    if normalized_slug == "":
+        raise ValueError("endpoint slug is required")
+    if normalized_tenant == "":
+        raise ValueError("tenant is required")
+
+    metadata_entry = None
+    try:
+        metadata_entry = query_endpoint_row_by_slug(normalized_slug)
+    except LookupError:
+        metadata_entry = None
+
+    entry = enrich_endpoint_catalog_fallback(metadata_entry if metadata_entry is not None else {"slug": normalized_slug})
+
+    resp, platform_detail_payload = get_published_endpoint_response(normalized_tenant, normalized_slug)
+    if is_upstream_resource_unavailable(resp, platform_detail_payload):
+        raise LookupError(f"endpoint `{normalized_slug}` not found")
+    if is_upstream_permission_denied(resp, platform_detail_payload):
+        raise PermissionError(f"endpoint `{normalized_slug}` unavailable")
+    if not resp.ok:
+        detail = extract_upstream_error_message(resp, platform_detail_payload)
+        raise RuntimeError(
+            f"failed to load endpoint `{normalized_slug}`: "
+            f"HTTP {resp.status_code}{': ' + detail if detail else ''}"
+        )
+    if not isinstance(platform_detail_payload, dict):
+        raise RuntimeError(f"invalid published endpoint response for `{normalized_slug}`")
+
+    platform_detail = platform_detail_payload
+    entry["platform_detail"] = platform_detail
+    entry["published"] = True
+
+    platform_spec = (((platform_detail or {}).get("func") or {}).get("object") or {}).get("spec")
+    if isinstance(platform_spec, dict):
+        entry["spec"] = clone_json_value(platform_spec)
+        platform_sample_query = platform_spec.get("sample_query")
+        if isinstance(platform_sample_query, dict):
+            entry["sample_query"] = clone_json_value(platform_sample_query)
+
+    entry["model_name"] = resolve_endpoint_model_name(
+        entry.get("sample_query"),
+        entry.get("spec"),
+        fallback_slug=normalized_slug,
+    )
+
+    return {
+        "entry": entry,
+        "metadata_entry": metadata_entry,
+        "platform_detail": platform_detail,
+        "published": True,
+        "endpoint_state": {"code": "published", "label": "Published"},
+    }
+
+
+def build_endpoint_list_entries(*, include_unpublished: bool, tenant: str = ""):
+    metadata_rows = {row["slug"]: row for row in list_endpoint_rows()}
+    status_rows = list_gateway_objects("funcstatus", "inferx", "endpoint")
+    platform_status = {}
+    for status in status_rows:
+        name = str(status.get("name", "") or "").strip()
+        if name != "":
+            platform_status[name] = status
+
+    slugs = sorted(set(metadata_rows.keys()) | set(platform_status.keys()))
+    entries = []
+    for slug in slugs:
+        published = bool((((platform_status.get(slug) or {}).get("object") or {}).get("published")))
+        if not include_unpublished and not published:
+            continue
+        entry = metadata_rows.get(slug)
+        if entry is None:
+            entry = {"slug": slug}
+        entry = enrich_endpoint_catalog_fallback(entry)
+        entry["published"] = published
+        platform_detail = None
+        normalized_tenant = str(tenant or "").strip()
+        if normalized_tenant != "":
+            try:
+                resp, platform_detail_payload = get_published_endpoint_response(normalized_tenant, slug)
+                if resp.ok and isinstance(platform_detail_payload, dict):
+                    platform_detail = platform_detail_payload
+            except Exception:
+                platform_detail = None
+
+        if platform_detail is None:
+            try:
+                platform_detail = getfunc("inferx", "endpoint", slug)
+            except Exception:
+                platform_detail = None
+
+        if isinstance(platform_detail, dict):
+            entry["platform_detail"] = platform_detail
+            platform_spec = (((platform_detail or {}).get("func") or {}).get("object") or {}).get("spec")
+            if isinstance(platform_spec, dict):
+                entry["spec"] = clone_json_value(platform_spec)
+                platform_sample_query = platform_spec.get("sample_query")
+                if isinstance(platform_sample_query, dict):
+                    entry["sample_query"] = clone_json_value(platform_sample_query)
+
+        entry["model_name"] = resolve_endpoint_model_name(
+            entry.get("sample_query"),
+            entry.get("spec"),
+            fallback_slug=slug,
+        )
+        entries.append(entry)
+
+    return entries
+
+
+def build_admin_endpoint_list_entries():
+    metadata_rows = {row["slug"]: row for row in list_endpoint_rows()}
+    platform_funcs = listfuncs("inferx", "endpoint")
+    status_rows = list_gateway_objects("funcstatus", "inferx", "endpoint")
+    platform_status = {}
+    for status in status_rows:
+        name = str(status.get("name", "") or "").strip()
+        if name != "":
+            platform_status[name] = status
+
+    entries = []
+    for func_brief in platform_funcs:
+        slug = str(((func_brief or {}).get("func") or {}).get("name") or "").strip()
+        if slug == "":
+            continue
+        platform_detail = getfunc("inferx", "endpoint", slug)
+        metadata_entry = metadata_rows.get(slug)
+        published = bool((((platform_status.get(slug) or {}).get("object") or {}).get("published")))
+        entry = enrich_endpoint_catalog_fallback(metadata_entry if metadata_entry is not None else {"slug": slug})
+        entry["platform_detail"] = platform_detail
+        entry["published"] = published
+        entry["state"] = endpoint_state_from_sources(
+            published=published,
+            metadata_entry=metadata_entry,
+            platform_detail=platform_detail,
+        )
+        entries.append(entry)
+
+    return entries
 
 
 def resolve_case_insensitive_catalog_target_value(valid_values, requested_value: str):
@@ -5326,6 +6022,14 @@ def build_sample_rest_call_for_ui(tenant: str, namespace: str, funcname: str, sa
     return " \\\n".join(curl_lines)
 
 
+def mask_sample_rest_call_for_ui(sample_rest_call: str, apikey: str) -> str:
+    rendered_call = str(sample_rest_call or "")
+    token = str(apikey or "").strip()
+    if rendered_call == "" or token == "":
+        return rendered_call
+    return rendered_call.replace(token, mask_apikey_for_ui(token))
+
+
 @prefix_bp.route('/text2img', methods=['POST'])
 @not_require_login
 def text2img():
@@ -5476,6 +6180,319 @@ def generate_namespaceuser():
     namespace = request.args.get('namespace')
     users = list_namespaceusers(role, tenant, namespace)
     return users
+
+
+@prefix_bp.route("/endpoints", methods=["GET"])
+@require_login
+def EndpointList():
+    view = str(request.args.get("view", "") or "").strip().lower()
+    roles = listroles()
+    is_inferx_admin = has_inferx_admin_role(roles)
+
+    if view == "" and is_inferx_admin:
+        view = "admin"
+
+    if view == "admin" and is_inferx_admin:
+        try:
+            entries = build_admin_endpoint_list_entries()
+        except Exception as e:
+            return json_error(f"failed to load admin endpoints: {e}", 500)
+        return render_template(
+            "endpoints_list.html",
+            endpoint_entries=entries,
+            is_admin_view=True,
+            selected_tenant="",
+            tenant_options=[],
+            public_api_base_url=normalize_public_api_base_url(),
+            endpoint_admin_href=dashboard_href("prefix.EndpointList", view="admin"),
+            endpoint_tenant_href=dashboard_href("prefix.EndpointList", view="tenant"),
+        )
+
+    tenant_options = accessible_endpoint_tenant_names(roles)
+    selected_tenant = str(request.args.get("tenant", "") or "").strip()
+    if selected_tenant != "" and selected_tenant not in tenant_options:
+        selected_tenant = ""
+    if selected_tenant == "" and tenant_options:
+        active_tenant = str(session.get("active_tenant_name", session.get("tenant_name", "")) or "").strip()
+        selected_tenant = active_tenant if active_tenant in tenant_options else tenant_options[0]
+
+    try:
+        entries = build_endpoint_list_entries(include_unpublished=False, tenant=selected_tenant)
+        onboarding_apikey, onboarding_apikey_name = resolve_onboarding_inference_apikey_for_ui(selected_tenant)
+    except Exception as e:
+        return json_error(f"failed to load endpoints: {e}", 500)
+
+    for entry in entries:
+        entry["client_setup_preview"] = build_endpoint_client_setup_preview(
+            selected_tenant,
+            entry.get("slug", ""),
+            entry.get("model_name", ""),
+            entry.get("provider", ""),
+        )
+
+    return render_template(
+        "endpoints_list.html",
+        endpoint_entries=entries,
+        is_admin_view=False,
+        selected_tenant=selected_tenant,
+        tenant_options=tenant_options,
+        api_key_display=mask_apikey_for_ui(onboarding_apikey) if onboarding_apikey else build_inference_apikey_placeholder(),
+        api_key_copy_value=onboarding_apikey if onboarding_apikey else build_inference_apikey_placeholder(),
+        api_key_copyable=bool(onboarding_apikey),
+        api_key_name=onboarding_apikey_name,
+        public_api_base_url=normalize_public_api_base_url(),
+        endpoint_admin_href=dashboard_href("prefix.EndpointList", view="admin"),
+        endpoint_tenant_href=dashboard_href("prefix.EndpointList", tenant=selected_tenant, view="tenant"),
+    )
+
+
+@prefix_bp.route("/endpoints/<slug>", methods=["GET"])
+@require_login
+def EndpointDetail(slug):
+    selected_tenant = str(request.args.get("tenant", session.get("active_tenant_name", session.get("tenant_name", ""))) or "").strip()
+    if selected_tenant == "":
+        tenant_options = accessible_endpoint_tenant_names(listroles())
+        selected_tenant = tenant_options[0] if tenant_options else ""
+
+    try:
+        detail = load_tenant_endpoint_detail(slug, selected_tenant)
+        entry = detail["entry"]
+        endpoint_state = detail["endpoint_state"]
+        if not detail["published"]:
+            raise LookupError(f"endpoint `{slug}` not found")
+    except LookupError:
+        return render_resource_unavailable_page(
+            resource_kind="Endpoint",
+            resource_name=slug,
+            tenant=selected_tenant,
+            namespace="endpoints",
+            message="This endpoint is no longer published.",
+            suggestion="It may have been unpublished or the URL may be outdated.",
+            primary_href=dashboard_href("prefix.EndpointList"),
+            primary_label="Back to Endpoints",
+            secondary_href=dashboard_href("prefix.CatalogList"),
+            secondary_label="Catalog",
+            status=404,
+        )
+    except PermissionError:
+        return render_resource_unavailable_page(
+            resource_kind="Endpoint",
+            resource_name=slug,
+            tenant=selected_tenant,
+            namespace="endpoints",
+            message="This endpoint is unavailable.",
+            suggestion="The URL may be outdated or this endpoint may not be available in the current tenant context.",
+            primary_href=dashboard_href("prefix.EndpointList"),
+            primary_label="Back to Endpoints",
+            secondary_href=dashboard_href("prefix.CatalogList"),
+            secondary_label="Catalog",
+            status=404,
+        )
+    except Exception as e:
+        return json_error(f"failed to load endpoint `{slug}`: {e}", 500)
+
+    onboarding_apikey, onboarding_apikey_name = resolve_onboarding_inference_apikey_for_ui(selected_tenant)
+    client_setup = build_client_setup_for_ui(
+        tenant=selected_tenant,
+        namespace="endpoints",
+        funcname=slug,
+        sample_query=entry.get("sample_query"),
+        apikey=onboarding_apikey,
+        apikey_name=onboarding_apikey_name,
+        spec=entry.get("spec"),
+    )
+    sample_rest_call = build_sample_rest_call_for_ui(
+        tenant=selected_tenant,
+        namespace="endpoints",
+        funcname=slug,
+        sample_query=entry.get("sample_query"),
+        apikey=onboarding_apikey,
+    )
+    sample_rest_call_display = mask_sample_rest_call_for_ui(sample_rest_call, onboarding_apikey)
+    runtime_context = build_endpoint_runtime_context(
+        entry.get("spec"),
+        entry.get("sample_query"),
+        fallback_slug=slug,
+    )
+    endpoint_funcspec = ""
+    try:
+        endpoint_funcspec = json.dumps(project_func_for_edit(entry.get("platform_detail"))["spec"], indent=4)
+    except Exception:
+        endpoint_funcspec = ""
+
+    return render_template(
+        "endpoint_detail.html",
+        endpoint_entry=entry,
+        is_admin_view=False,
+        selected_tenant=selected_tenant,
+        client_setup=client_setup,
+        sample_rest_call=sample_rest_call,
+        sample_rest_call_display=sample_rest_call_display,
+        interactive_enabled=runtime_context["enabled"],
+        interactive_api_type=runtime_context["api_type"],
+        interactive_path=runtime_context["path"],
+        interactive_prompt=runtime_context["prompt"],
+        interactive_map=runtime_context["map"],
+        endpoint_list_href=dashboard_href("prefix.EndpointList", tenant=selected_tenant),
+        endpoint_admin_href=dashboard_href("prefix.EndpointAdminDetail", slug=slug),
+        endpoint_tenant_href=dashboard_href("prefix.EndpointDetail", slug=slug, tenant=selected_tenant),
+        endpoint_state=endpoint_state,
+        endpoint_funcspec=endpoint_funcspec,
+    )
+
+
+@prefix_bp.route("/admin/endpoints/<slug>", methods=["GET"])
+@require_login
+@require_admin
+def EndpointAdminDetail(slug):
+    try:
+        detail = load_live_endpoint_detail(slug)
+        entry = detail["entry"]
+        endpoint_state = detail["endpoint_state"]
+    except LookupError:
+        return render_resource_unavailable_page(
+            resource_kind="Endpoint",
+            resource_name=slug,
+            tenant="inferx",
+            namespace="endpoint",
+            message="This platform endpoint is no longer available.",
+            suggestion="It may have been removed or renamed.",
+            primary_href=dashboard_href("prefix.EndpointList", view="admin"),
+            primary_label="Back to Endpoints",
+            secondary_href=dashboard_href("prefix.CatalogList"),
+            secondary_label="Catalog",
+            status=404,
+        )
+    except Exception as e:
+        return json_error(f"failed to load admin endpoint `{slug}`: {e}", 500)
+
+    client_setup = build_endpoint_client_setup_preview("<tenant>", slug, entry.get("model_name", ""), entry.get("provider", ""))
+    sample_rest_call = build_sample_rest_call_for_ui(
+        tenant="inferx",
+        namespace="endpoint",
+        funcname=slug,
+        sample_query=entry.get("sample_query"),
+        apikey="<INFERENCE_API_KEY>",
+    )
+    sample_rest_call_display = sample_rest_call
+    runtime_context = build_endpoint_runtime_context(
+        entry.get("spec"),
+        entry.get("sample_query"),
+        fallback_slug=slug,
+    )
+    endpoint_funcspec = ""
+    try:
+        endpoint_funcspec = json.dumps(project_func_for_edit(entry.get("platform_detail"))["spec"], indent=4)
+    except Exception:
+        endpoint_funcspec = ""
+    return render_template(
+        "endpoint_detail.html",
+        endpoint_entry=entry,
+        is_admin_view=True,
+        selected_tenant="",
+        client_setup=client_setup,
+        sample_rest_call=sample_rest_call,
+        sample_rest_call_display=sample_rest_call_display,
+        interactive_enabled=runtime_context["enabled"],
+        interactive_api_type=runtime_context["api_type"],
+        interactive_path=runtime_context["path"],
+        interactive_prompt=runtime_context["prompt"],
+        interactive_map=runtime_context["map"],
+        endpoint_list_href=dashboard_href("prefix.EndpointList", view="admin"),
+        endpoint_admin_href=dashboard_href("prefix.EndpointAdminDetail", slug=slug),
+        endpoint_tenant_href=dashboard_href("prefix.EndpointDetail", slug=slug, view="tenant"),
+        endpoint_state=endpoint_state,
+        endpoint_funcspec=endpoint_funcspec,
+    )
+
+
+@prefix_bp.route("/admin/endpoints/<slug>/edit", methods=["GET"])
+@require_login
+@require_admin
+def EndpointAdminEdit(slug):
+    try:
+        detail = load_live_endpoint_detail(slug, allow_missing_live_spec=False, allow_missing_status=False)
+        existing_entry = detail["metadata_entry"]
+        platform_detail = detail["platform_detail"]
+        endpoint_state = detail["endpoint_state"]
+        prefill, catalog_entry = build_endpoint_editor_prefill(slug, existing_entry, platform_detail)
+    except LookupError:
+        return render_resource_unavailable_page(
+            resource_kind="Endpoint",
+            resource_name=slug,
+            tenant="inferx",
+            namespace="endpoint",
+            message="This platform endpoint is no longer available.",
+            suggestion="It may have been removed or renamed.",
+            primary_href=dashboard_href("prefix.EndpointList", view="admin"),
+            primary_label="Back to Endpoints",
+            status=404,
+        )
+    except Exception as e:
+        return json_error(f"failed to load endpoint editor for `{slug}`: {e}", 500)
+
+    return render_template(
+        "endpoint_admin_edit.html",
+        endpoint_slug=slug,
+        endpoint_prefill=prefill,
+        endpoint_catalog_entry=catalog_entry,
+        endpoint_detail_href=dashboard_href("prefix.EndpointAdminDetail", slug=slug),
+        endpoint_state=endpoint_state,
+        catalog_tag_groups=CATALOG_TAG_GROUPS,
+        catalog_use_case_groups=CATALOG_RECOMMENDED_USE_CASE_GROUPS,
+    )
+
+
+@prefix_bp.route("/admin/endpoints/<slug>/metadata", methods=["PUT"])
+@require_login
+@require_admin
+def EndpointAdminSaveMetadata(slug):
+    req = request.get_json(silent=True) or {}
+    try:
+        payload = endpoint_metadata_payload_from_prefill(req)
+        version = proxy_gateway_endpoint_admin_action("PUT", slug, metadata=payload)
+    except ValueError as e:
+        return json_error(str(e), 400)
+    except Exception as e:
+        return json_error(f"failed to save endpoint metadata: {e}", 502)
+    return jsonify({"slug": slug, "version": version, "saved": True})
+
+
+@prefix_bp.route("/admin/endpoints/<slug>/publish", methods=["POST"])
+@require_login
+@require_admin
+def EndpointAdminPublish(slug):
+    req = request.get_json(silent=True) or {}
+    try:
+        payload = endpoint_metadata_payload_from_prefill(req)
+        existing_entry = None
+        try:
+            existing_entry = query_endpoint_row_by_slug(slug)
+        except LookupError:
+            existing_entry = None
+
+        if existing_entry is None:
+            platform_detail = getfunc("inferx", "endpoint", slug)
+            catalog_entry = resolve_endpoint_catalog_entry(slug, platform_detail)
+            payload = fill_missing_endpoint_metadata_from_source(payload, catalog_entry)
+
+        version = proxy_gateway_endpoint_admin_action("POST", slug, metadata=payload)
+    except ValueError as e:
+        return json_error(str(e), 400)
+    except Exception as e:
+        return json_error(f"failed to publish endpoint: {e}", 502)
+    return jsonify({"slug": slug, "version": version, "published": True})
+
+
+@prefix_bp.route("/admin/endpoints/<slug>/unpublish", methods=["POST"])
+@require_login
+@require_admin
+def EndpointAdminUnpublish(slug):
+    try:
+        version = proxy_gateway_endpoint_admin_action("POST", slug, metadata=None)
+    except Exception as e:
+        return json_error(f"failed to unpublish endpoint: {e}", 502)
+    return jsonify({"slug": slug, "version": version, "published": False})
 
 
 @prefix_bp.route("/catalog", methods=["GET"])
@@ -6681,6 +7698,10 @@ def GetFunc():
     )
     if sample_rest_call_for_ui != "":
         func["sampleRestCall"] = sample_rest_call_for_ui
+        func["sampleRestCallDisplay"] = mask_sample_rest_call_for_ui(
+            sample_rest_call_for_ui,
+            onboarding_apikey,
+        )
 
     is_inferx_admin = is_inferx_admin_user()
     initial_model_status = infer_model_status(func.get("pods", []), func_health_state, fails)

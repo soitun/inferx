@@ -190,6 +190,8 @@ pub async fn GatewaySvc(notify: Option<Arc<Notify>>) -> Result<()> {
         client: client,
     };
 
+    gateway.EnsurePlatformShared().await?;
+
     GW_OBJREPO.set(objRepo.clone()).unwrap();
 
     let handle = tokio::spawn(async move {

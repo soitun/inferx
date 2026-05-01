@@ -103,8 +103,14 @@ CREATE TABLE Endpoints (
     provider                VARCHAR,
     parameter_count_b       NUMERIC(10,2),
     context_length          BIGINT,
-    published_at            TIMESTAMPTZ,
-    published_by            VARCHAR
+    max_token_length        BIGINT,
+    concurrency             NUMERIC(10,2),
+    last_published_at       TIMESTAMPTZ,
+    last_published_by       VARCHAR,
+    updatetime              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_endpoints_tags ON Endpoints USING GIN (tags);
+
+CREATE TRIGGER endpoints_updatetime BEFORE UPDATE ON Endpoints
+FOR EACH ROW EXECUTE FUNCTION set_updatetime();

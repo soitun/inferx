@@ -68,6 +68,8 @@ pub struct EndpointMetadata {
     pub provider: Option<String>,
     pub parameter_count_b: Option<f64>,
     pub context_length: Option<i64>,
+    pub max_token_length: Option<i64>,
+    pub concurrency: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -523,9 +525,11 @@ impl SqlSecret {
                 tags,
                 provider,
                 parameter_count_b,
-                context_length
+                context_length,
+                max_token_length,
+                concurrency
             ) VALUES (
-                $1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9
+                $1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11
             )
             ON CONFLICT (slug)
             DO UPDATE SET
@@ -535,7 +539,9 @@ impl SqlSecret {
                 tags = EXCLUDED.tags,
                 provider = EXCLUDED.provider,
                 parameter_count_b = EXCLUDED.parameter_count_b,
-                context_length = EXCLUDED.context_length
+                context_length = EXCLUDED.context_length,
+                max_token_length = EXCLUDED.max_token_length,
+                concurrency = EXCLUDED.concurrency
         "#;
 
         sqlx::query(query)
@@ -548,6 +554,8 @@ impl SqlSecret {
             .bind(&metadata.provider)
             .bind(metadata.parameter_count_b)
             .bind(metadata.context_length)
+            .bind(metadata.max_token_length)
+            .bind(metadata.concurrency)
             .execute(&self.pool)
             .await?;
 
@@ -559,7 +567,7 @@ impl SqlSecret {
         slug: &str,
         func_revision: i64,
         metadata: &EndpointMetadata,
-        published_by: &str,
+        last_published_by: &str,
     ) -> Result<()> {
         let query = r#"
             INSERT INTO Endpoints (
@@ -572,10 +580,12 @@ impl SqlSecret {
                 provider,
                 parameter_count_b,
                 context_length,
-                published_at,
-                published_by
+                max_token_length,
+                concurrency,
+                last_published_at,
+                last_published_by
             ) VALUES (
-                $1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, NOW(), $10
+                $1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, NOW(), $12
             )
             ON CONFLICT (slug)
             DO UPDATE SET
@@ -587,8 +597,10 @@ impl SqlSecret {
                 provider = EXCLUDED.provider,
                 parameter_count_b = EXCLUDED.parameter_count_b,
                 context_length = EXCLUDED.context_length,
-                published_at = NOW(),
-                published_by = EXCLUDED.published_by
+                max_token_length = EXCLUDED.max_token_length,
+                concurrency = EXCLUDED.concurrency,
+                last_published_at = NOW(),
+                last_published_by = EXCLUDED.last_published_by
         "#;
 
         sqlx::query(query)
@@ -601,7 +613,9 @@ impl SqlSecret {
             .bind(&metadata.provider)
             .bind(metadata.parameter_count_b)
             .bind(metadata.context_length)
-            .bind(published_by)
+            .bind(metadata.max_token_length)
+            .bind(metadata.concurrency)
+            .bind(last_published_by)
             .execute(&self.pool)
             .await?;
 

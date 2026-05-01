@@ -538,7 +538,7 @@ pub struct TenantBillingAdminSummary {
     pub used_cents: i64,
 }
 
-const PLATFORM_TENANT: &str = "_platform";
+const PLATFORM_TENANT: &str = "inferx";
 
 impl SqlAudit {
     pub async fn New(sqlSvcAddr: &str) -> Result<Self> {

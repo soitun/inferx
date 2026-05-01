@@ -83,6 +83,7 @@ use super::func_agent_mgr::{FuncAgentMgr, FuncIdentity, FuncRouteTarget};
 use super::func_worker::QHttpCallClient;
 use super::func_worker::RETRYABLE_HTTP_STATUS;
 use super::gw_obj_repo::{GwObjRepo, NamespaceStore};
+use super::gw_obj_repo::FuncDetail;
 use super::metrics::FunccallLabels;
 use super::metrics::Status;
 use super::metrics::GATEWAY_METRICS;
@@ -92,8 +93,8 @@ use super::secret::{EndpointMetadata, SqlSecret};
 pub static GATEWAY_ID: AtomicI64 = AtomicI64::new(-1);
 const FUNCCALL_MAX_BODY_BYTES: usize = 20 * 1024 * 1024;
 const VIRTUAL_ENDPOINTS_NAMESPACE: &str = "endpoints";
-const PLATFORM_TENANT: &str = "_platform";
-const PLATFORM_SHARED_NAMESPACE: &str = "_shared";
+const PLATFORM_TENANT: &str = "inferx";
+const PLATFORM_SHARED_NAMESPACE: &str = "endpoint";
 
 lazy_static::lazy_static! {
     #[derive(Debug)]
@@ -575,6 +576,10 @@ impl HttpGateway {
             .route(
                 "/function/:tenant/:namespace/:funcname/",
                 get(GetFuncDetail),
+            )
+            .route(
+                "/published-endpoint/:tenant/:slug/",
+                get(GetPublishedEndpointDetail),
             )
             .route(
                 "/snapshot/:tenant/:namespace/:snapshotname/",
@@ -1350,7 +1355,13 @@ async fn FuncCall(
         Ok(route) => route,
         Err(e) => {
             let errcode = if namespace == VIRTUAL_ENDPOINTS_NAMESPACE {
-                StatusCode::SERVICE_UNAVAILABLE
+                match &e {
+                    Error::NotExist(_) => StatusCode::NOT_FOUND,
+                    Error::CommonError(msg) if msg.contains("is unpublished") => {
+                        StatusCode::NOT_FOUND
+                    }
+                    _ => StatusCode::SERVICE_UNAVAILABLE,
+                }
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
             };
@@ -4058,6 +4069,58 @@ async fn GetFuncDetail(
 ) -> SResult<Response, StatusCode> {
     match gw.GetFuncDetail(&token, &tenant, &namespace, &funcname) {
         Ok(detail) => {
+            let data = serde_json::to_string(&detail).unwrap();
+            let body = Body::from(format!("{}", data));
+            let resp = Response::builder()
+                .status(StatusCode::OK)
+                .body(body)
+                .unwrap();
+            return Ok(resp);
+        }
+        Err(e) => {
+            let body = Body::from(format!("service failure {:?}", e));
+            let resp = Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(body)
+                .unwrap();
+            return Ok(resp);
+        }
+    }
+}
+
+async fn GetPublishedEndpointDetail(
+    Extension(token): Extension<Arc<AccessToken>>,
+    State(gw): State<HttpGateway>,
+    Path((tenant, slug)): Path<(String, String)>,
+) -> SResult<Response, StatusCode> {
+    if !token.CheckScope("read") {
+        let body = Body::from("service failure NoPermission");
+        let resp = Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body(body)
+            .unwrap();
+        return Ok(resp);
+    }
+
+    if !token.IsTenantUser(&tenant) {
+        let body = Body::from("service failure NoPermission");
+        let resp = Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body(body)
+            .unwrap();
+        return Ok(resp);
+    }
+
+    match resolve_funccall_target(&gw, &tenant, VIRTUAL_ENDPOINTS_NAMESPACE, &slug) {
+        Ok(target) => {
+            let detail = FuncDetail {
+                sampleRestCall: target.func.SampleRestCall(),
+                func: target.func,
+                snapshots: Vec::new(),
+                pods: Vec::new(),
+                isAdmin: false,
+                policy: target.policy,
+            };
             let data = serde_json::to_string(&detail).unwrap();
             let body = Body::from(format!("{}", data));
             let resp = Response::builder()

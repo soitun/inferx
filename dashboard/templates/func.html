@@ -215,8 +215,11 @@
 
 <h2>Sample Rest Call</h2>
 <div class="copyable-area admin-rest-call">
-    <button class="copyable-area-copy" type="button" onclick="copyTextFromElement('restcall')">Copy</button>
+    <button class="copyable-area-copy" type="button" onclick="copyTextFromElement('restcall-copy')">Copy</button>
     <textarea id="restcall" rows="8" cols="120">
+{{ func.get("sampleRestCallDisplay", func["sampleRestCall"]) }}
+</textarea>
+    <textarea id="restcall-copy" rows="8" cols="120" hidden>
 {{ func["sampleRestCall"] }}
 </textarea>
 </div>

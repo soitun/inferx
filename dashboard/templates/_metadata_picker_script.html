@@ -1,0 +1,236 @@
+<script>
+    window.initMetadataChipPicker = function initMetadataChipPicker(config) {
+        const input = document.getElementById(config.inputId);
+        const addButton = document.getElementById(config.addButtonId);
+        const selectedNode = document.getElementById(config.selectedNodeId);
+        const suggestionsNode = document.getElementById(config.suggestionsNodeId);
+        const optionButtons = Array.from(document.querySelectorAll(config.optionSelector));
+        const initialNode = document.getElementById(config.initialValuesId);
+
+        function normalizeLabel(value) {
+            return String(value || '').trim().replace(/\s+/g, ' ');
+        }
+
+        function uniqueLabelList(values) {
+            const deduped = [];
+            const seen = new Set();
+            (Array.isArray(values) ? values : []).forEach((value) => {
+                const normalized = normalizeLabel(value);
+                if (normalized === '') {
+                    return;
+                }
+                const key = normalized.toLowerCase();
+                if (seen.has(key)) {
+                    return;
+                }
+                seen.add(key);
+                deduped.push(normalized);
+            });
+            return deduped;
+        }
+
+        function parseInitialValues() {
+            if (!initialNode) {
+                return [];
+            }
+            try {
+                return uniqueLabelList(JSON.parse(initialNode.textContent || '[]'));
+            } catch (_err) {
+                return [];
+            }
+        }
+
+        const curatedOptions = uniqueLabelList(
+            optionButtons.map((button) => button.dataset[config.optionDataKey] || '')
+        );
+        let selectedValues = parseInitialValues();
+        let activeSuggestionIndex = -1;
+
+        function closeSuggestions() {
+            activeSuggestionIndex = -1;
+            if (suggestionsNode) {
+                suggestionsNode.hidden = true;
+                suggestionsNode.innerHTML = '';
+            }
+        }
+
+        function getFilteredSuggestions() {
+            const query = normalizeLabel(input?.value || '').toLowerCase();
+            const selectedKeys = new Set(selectedValues.map((item) => item.toLowerCase()));
+            return curatedOptions.filter((value) => {
+                const key = value.toLowerCase();
+                if (selectedKeys.has(key) || query === '') {
+                    return false;
+                }
+                return key.includes(query);
+            }).slice(0, 8);
+        }
+
+        function renderSuggestions() {
+            if (!suggestionsNode) {
+                return;
+            }
+
+            const suggestions = getFilteredSuggestions();
+            suggestionsNode.innerHTML = '';
+            if (suggestions.length === 0) {
+                closeSuggestions();
+                return;
+            }
+
+            if (activeSuggestionIndex >= suggestions.length || activeSuggestionIndex < 0) {
+                activeSuggestionIndex = 0;
+            }
+
+            suggestions.forEach((value, index) => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = config.suggestionClass;
+                if (index === activeSuggestionIndex) {
+                    button.classList.add('is-active');
+                }
+                button.textContent = value;
+                button.addEventListener('mousedown', (event) => {
+                    event.preventDefault();
+                });
+                button.addEventListener('click', () => {
+                    commitValue(value);
+                });
+                suggestionsNode.appendChild(button);
+            });
+            suggestionsNode.hidden = false;
+        }
+
+        function renderSelected() {
+            if (!selectedNode) {
+                return;
+            }
+
+            selectedNode.innerHTML = '';
+            if (selectedValues.length === 0) {
+                selectedNode.classList.add('is-empty');
+                selectedNode.textContent = config.emptyText;
+            } else {
+                selectedNode.classList.remove('is-empty');
+                selectedValues.forEach((value) => {
+                    const chip = document.createElement('span');
+                    chip.className = config.chipClass;
+
+                    const text = document.createElement('span');
+                    text.textContent = value;
+                    chip.appendChild(text);
+
+                    const removeBtn = document.createElement('button');
+                    removeBtn.type = 'button';
+                    removeBtn.className = config.removeClass;
+                    removeBtn.textContent = 'x';
+                    removeBtn.setAttribute('aria-label', `Remove ${value}`);
+                    removeBtn.addEventListener('click', () => {
+                        removeValue(value);
+                    });
+                    chip.appendChild(removeBtn);
+                    selectedNode.appendChild(chip);
+                });
+            }
+
+            const selectedKeys = new Set(selectedValues.map((item) => item.toLowerCase()));
+            optionButtons.forEach((button) => {
+                const label = normalizeLabel(button.dataset[config.optionDataKey] || '');
+                button.classList.toggle('is-selected', selectedKeys.has(label.toLowerCase()));
+            });
+
+            renderSuggestions();
+        }
+
+        function setValues(values) {
+            selectedValues = uniqueLabelList(values);
+            renderSelected();
+        }
+
+        function addValue(value) {
+            setValues(selectedValues.concat([value]));
+        }
+
+        function removeValue(value) {
+            const normalizedTarget = normalizeLabel(value).toLowerCase();
+            setValues(selectedValues.filter((item) => item.toLowerCase() !== normalizedTarget));
+        }
+
+        function commitValue(value) {
+            const normalized = normalizeLabel(value);
+            if (normalized === '') {
+                return;
+            }
+            addValue(normalized);
+            if (input) {
+                input.value = '';
+                input.focus();
+            }
+            closeSuggestions();
+        }
+
+        function addCustomValueFromInput() {
+            commitValue(input?.value || '');
+        }
+
+        optionButtons.forEach((button) => {
+            button.addEventListener('click', () => {
+                const value = normalizeLabel(button.dataset[config.optionDataKey] || '');
+                if (value === '') {
+                    return;
+                }
+                if (selectedValues.some((item) => item.toLowerCase() === value.toLowerCase())) {
+                    removeValue(value);
+                } else {
+                    addValue(value);
+                }
+            });
+        });
+
+        addButton?.addEventListener('click', addCustomValueFromInput);
+        input?.addEventListener('input', () => {
+            activeSuggestionIndex = -1;
+            renderSuggestions();
+        });
+        input?.addEventListener('focus', renderSuggestions);
+        input?.addEventListener('keydown', (event) => {
+            const suggestions = getFilteredSuggestions();
+            if (event.key === 'ArrowDown' && suggestions.length > 0) {
+                event.preventDefault();
+                activeSuggestionIndex = (activeSuggestionIndex + 1 + suggestions.length) % suggestions.length;
+                renderSuggestions();
+                return;
+            }
+            if (event.key === 'ArrowUp' && suggestions.length > 0) {
+                event.preventDefault();
+                activeSuggestionIndex = (activeSuggestionIndex - 1 + suggestions.length) % suggestions.length;
+                renderSuggestions();
+                return;
+            }
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                if (suggestions.length > 0 && activeSuggestionIndex >= 0 && activeSuggestionIndex < suggestions.length) {
+                    commitValue(suggestions[activeSuggestionIndex]);
+                    return;
+                }
+                addCustomValueFromInput();
+                return;
+            }
+            if (event.key === 'Escape') {
+                closeSuggestions();
+            }
+        });
+        input?.addEventListener('blur', () => {
+            window.setTimeout(closeSuggestions, 120);
+        });
+
+        renderSelected();
+
+        return {
+            getValues() {
+                return selectedValues.slice();
+            },
+            setValues,
+        };
+    };
+</script>

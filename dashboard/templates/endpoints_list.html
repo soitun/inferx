@@ -1,0 +1,415 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<style>
+    .endpoint-shell { margin: 0 0 32px 0; }
+    .endpoint-header, .endpoint-toolbar, .endpoint-table-wrap {
+        background: #fff;
+        border: 1px solid #dbe3ef;
+        border-radius: 4px;
+        overflow: visible;
+    }
+    .endpoint-header, .endpoint-toolbar { padding: 14px; margin-bottom: 14px; }
+    .endpoint-header-top, .endpoint-toolbar-grid, .endpoint-row-title {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+    .endpoint-header-top { justify-content: space-between; align-items: flex-start; }
+    .endpoint-toolbar-grid > div { min-width: 180px; flex: 1 1 180px; }
+    .endpoint-toolbar label { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 600; color: #475569; }
+    .endpoint-toolbar input, .endpoint-toolbar select {
+        width: 100%; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 4px; padding: 8px 10px;
+    }
+    .endpoint-api-key {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: center;
+        border: 1px solid #cbd5e1;
+        border-radius: 4px;
+        background: #f8fafc;
+        padding: 10px 12px;
+        margin-top: 12px;
+    }
+    .endpoint-api-key code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .endpoint-slug-link { color: #1d4ed8; text-decoration: underline; text-underline-offset: 2px; font-family: inherit; }
+    .endpoint-client-cell { display: flex; gap: 8px; flex-wrap: wrap; }
+    .endpoint-copy-btn {
+        border: 1px solid #cbd5e1;
+        background: #fff;
+        color: #334155;
+        border-radius: 4px;
+        padding: 6px 10px;
+        cursor: pointer;
+        white-space: nowrap;
+        position: relative;
+        transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease;
+    }
+    .endpoint-copy-btn:hover:not(:disabled) {
+        background: #f8fafc;
+        border-color: #94a3b8;
+        color: #0f172a;
+        transform: translateY(-1px);
+    }
+    .endpoint-copy-btn::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        left: 50%;
+        bottom: calc(100% + 6px);
+        transform: translateX(-50%);
+        background: #111827;
+        color: #ffffff;
+        font-size: 11px;
+        line-height: 1.2;
+        padding: 3px 6px;
+        max-width: calc(100vw - 32px);
+        white-space: nowrap;
+        overflow-wrap: normal;
+        text-align: center;
+        border-radius: 4px;
+        box-shadow: 0 8px 18px rgba(15, 23, 42, 0.18);
+        opacity: 0;
+        pointer-events: none;
+        z-index: 30;
+    }
+    .endpoint-copy-btn:hover::after,
+    .endpoint-copy-btn:focus-visible::after {
+        opacity: 1;
+    }
+    .endpoint-copy-btn.copied {
+        background: #dcfce7;
+        border-color: #86efac;
+        color: #166534;
+    }
+    .endpoint-copy-btn.copy-failed {
+        background: #fef2f2;
+        border-color: #fca5a5;
+        color: #991b1b;
+    }
+    .endpoint-copy-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    .endpoint-state {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 3px 9px;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
+    }
+    .endpoint-state.published { background: #dcfce7; color: #166534; }
+    .endpoint-state.ready { background: #dbeafe; color: #1d4ed8; }
+    .endpoint-state.unpublished { background: #fef3c7; color: #92400e; }
+    .endpoint-state.deploying { background: #e2e8f0; color: #334155; }
+    .endpoint-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .endpoint-empty { color: #64748b; }
+    .endpoint-published-at { white-space: nowrap; }
+</style>
+
+<section class="endpoint-shell">
+    <div class="endpoint-header">
+        <div class="endpoint-header-top">
+            <div>
+                <h2 style="margin: 0;">{% if is_admin_view %}Endpoints Admin{% else %}Endpoints{% endif %}</h2>
+                <p style="margin: 6px 0 0 0; color: #64748b;">
+                    {% if is_admin_view %}
+                    Publish and curate `inferx/endpoint` endpoints.
+                    {% else %}
+                    Instantly usable endpoints. Integrate with your applications and workflows right away.
+                    {% endif %}
+                </p>
+            </div>
+            {% if endpoint_admin_href and endpoint_tenant_href %}
+            <div class="endpoint-actions">
+                {% if is_admin_view %}
+                <a class="ix-btn secondary" href="{{ endpoint_tenant_href }}">Tenant View</a>
+                {% elif dashboard_is_inferx_admin %}
+                <a class="ix-btn secondary" href="{{ endpoint_admin_href }}">Admin View</a>
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+
+        {% if not is_admin_view %}
+        <div style="margin-top: 12px; display: grid; gap: 12px;">
+            {% if tenant_options|length > 1 %}
+            <div style="max-width: 320px;">
+                <label for="tenant-selector" style="display: block; margin-bottom: 6px; font-size: 12px; font-weight: 600; color: #475569;">Tenant</label>
+                <select id="tenant-selector" onchange="window.location.href=this.value">
+                    {% for tenant_name in tenant_options %}
+                    <option value="{{ url_for('prefix.EndpointList', tenant=tenant_name, view='tenant') }}" {% if tenant_name == selected_tenant %}selected{% endif %}>{{ tenant_name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            {% endif %}
+            <div>
+                <div style="font-size: 12px; font-weight: 600; color: #475569; margin-bottom: 6px;">Inference API Key{% if api_key_name %} · {{ api_key_name }}{% endif %}</div>
+                <div class="endpoint-api-key">
+                    <code id="endpoint-api-key-value">{{ api_key_display }}</code>
+                    <button
+                        type="button"
+                        class="endpoint-copy-btn"
+                        data-tooltip="{% if api_key_copyable %}Copy API key{% else %}Create on Admin{% endif %}"
+                        data-copy-value="{{ api_key_copy_value }}"
+                        {% if not api_key_copyable %}disabled{% endif %}
+                        onclick="copyEndpointSetupValue(this)"
+                    >
+                        {% if api_key_copyable %}Copy{% else %}Create on Admin{% endif %}
+                    </button>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="endpoint-toolbar">
+        <div class="endpoint-toolbar-grid">
+            <div>
+                <label for="endpoint-search">Search</label>
+                <input id="endpoint-search" type="text" placeholder="Search endpoints, provider, tags, or use cases">
+            </div>
+            <div>
+                <label for="endpoint-provider-filter">Provider</label>
+                <select id="endpoint-provider-filter">
+                    <option value="">All providers</option>
+                    {% for provider in endpoint_entries | selectattr('provider', 'defined') | map(attribute='provider') | select('string') | reject('equalto', '') | unique | sort %}
+                    <option value="{{ provider }}">{{ provider }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="endpoint-tag-filter">Tag</label>
+                <select id="endpoint-tag-filter">
+                    <option value="">All tags</option>
+                    {% for tag in endpoint_entries | selectattr('tags', 'defined') | map(attribute='tags') | sum(start=[]) | unique | sort %}
+                    {% if tag %}
+                    <option value="{{ tag }}">{{ tag }}</option>
+                    {% endif %}
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="endpoint-use-case-filter">Use Case</label>
+                <select id="endpoint-use-case-filter">
+                    <option value="">All use cases</option>
+                    {% for use_case in endpoint_entries | selectattr('recommended_use_cases', 'defined') | map(attribute='recommended_use_cases') | sum(start=[]) | unique | sort %}
+                    {% if use_case %}
+                    <option value="{{ use_case }}">{{ use_case }}</option>
+                    {% endif %}
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <div class="endpoint-table-wrap">
+        <table class="ix-table" style="width: 100%;">
+            <thead>
+                <tr>
+                    <th style="text-align: left;">Name</th>
+                    <th style="text-align: left;">Brief Intro</th>
+                    <th style="text-align: left;">Max Token Length</th>
+                    <th style="text-align: left;">Concurrency</th>
+                    {% if not is_admin_view %}
+                    <th style="text-align: left;">Integration</th>
+                    {% endif %}
+                    {% if is_admin_view %}
+                    <th>State</th>
+                    <th>Published At</th>
+                    <th>Actions</th>
+                    {% endif %}
+                </tr>
+            </thead>
+            <tbody id="endpoint-table-body">
+                {% for entry in endpoint_entries %}
+                {% set slug = entry.get('slug', '') %}
+                {% set detail_href = url_for('prefix.EndpointAdminDetail', slug=slug) if is_admin_view else url_for('prefix.EndpointDetail', slug=slug, tenant=selected_tenant) %}
+                {% set client_preview = entry.get('client_setup_preview', {}) %}
+                <tr
+                    data-search="{{ (slug ~ ' ' ~ entry.get('provider', '') ~ ' ' ~ entry.get('brief_intro', '') ~ ' ' ~ entry.get('detailed_intro', '') ~ ' ' ~ ' '.join(entry.get('tags', [])) ~ ' ' ~ ' '.join(entry.get('recommended_use_cases', [])))|lower }}"
+                    data-tags="{{ (entry.get('tags', [])|join('||'))|lower }}"
+                    data-use-cases="{{ (entry.get('recommended_use_cases', [])|join('||'))|lower }}"
+                    data-provider="{{ entry.get('provider', '')|lower }}"
+                >
+                    <td style="text-align: left;">
+                        <a class="endpoint-slug-link" href="{{ detail_href }}">{{ slug }}</a>
+                    </td>
+                    <td style="text-align: left;">{{ entry.get('brief_intro', '') or 'No summary yet.' }}</td>
+                    <td style="text-align: left;">{{ entry.get('max_token_length', '') or '—' }}</td>
+                    <td style="text-align: left;">{% if entry.get('concurrency') is not none %}{{ '%.2fx'|format(entry.get('concurrency')) }}{% else %}—{% endif %}</td>
+                    {% if not is_admin_view %}
+                    <td style="text-align: left;">
+                        <div class="endpoint-client-cell">
+                            <button
+                                type="button"
+                                class="endpoint-copy-btn"
+                                data-tooltip="{{ client_preview.get('model_name', entry.get('model_name', slug)) }}"
+                                data-copy-value="{{ client_preview.get('model_name', entry.get('model_name', slug)) }}"
+                                onclick="copyEndpointSetupValue(this)"
+                                aria-label="Copy model"
+                            >Copy Model Name</button>
+                            <button
+                                type="button"
+                                class="endpoint-copy-btn"
+                                data-tooltip="{{ client_preview.get('api_base_url', '') }}"
+                                data-copy-value="{{ client_preview.get('api_base_url', '') }}"
+                                onclick="copyEndpointSetupValue(this)"
+                                aria-label="Copy endpoint"
+                            >Copy Endpoint</button>
+                        </div>
+                    </td>
+                    {% endif %}
+                    {% if is_admin_view %}
+                    {% set state = entry.get('state', {'code': 'deploying', 'label': 'Deploying'}) %}
+                    <td><span class="endpoint-state {{ state.code }}">{{ state.label }}</span></td>
+                    <td class="endpoint-published-at">{{ entry.get('last_published_at_display', '') or '—' }}</td>
+                    <td>
+                        <div class="ix-row-actions">
+                            {% if state.code == 'published' %}
+                            <a class="ix-btn secondary" href="{{ url_for('prefix.EndpointAdminEdit', slug=slug) }}">Edit</a>
+                            <button type="button" class="ix-btn danger" onclick="toggleEndpointPublish(this, {{ slug|tojson }}, false)">Unpublish</button>
+                            {% elif state.code in ('ready', 'unpublished') %}
+                            <a class="ix-btn secondary" href="{{ url_for('prefix.EndpointAdminEdit', slug=slug) }}">Edit</a>
+                            <a class="ix-btn" href="{{ url_for('prefix.EndpointAdminEdit', slug=slug) }}?mode=publish">Publish</a>
+                            {% else %}
+                            <a class="ix-btn secondary" href="{{ url_for('prefix.EndpointAdminEdit', slug=slug) }}">Edit</a>
+                            {% endif %}
+                        </div>
+                    </td>
+                    {% endif %}
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="{% if is_admin_view %}7{% else %}5{% endif %}" class="endpoint-empty">
+                        No endpoints are available right now.
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<script>
+    async function copyEndpointSetupText(text) {
+        if (!text) {
+            return false;
+        }
+
+        try {
+            await navigator.clipboard.writeText(text);
+            return true;
+        } catch (_err) {
+            try {
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.style.position = 'fixed';
+                textarea.style.left = '-9999px';
+                document.body.appendChild(textarea);
+                textarea.focus();
+                textarea.select();
+                const copied = document.execCommand('copy');
+                document.body.removeChild(textarea);
+                return copied;
+            } catch (_fallbackErr) {
+                return false;
+            }
+        }
+    }
+
+    async function copyEndpointSetupValue(button) {
+        if (!button) {
+            return;
+        }
+
+        let rawValue = button.getAttribute('data-copy-value') || '';
+        if (!rawValue) {
+            const siblingCode = button.parentElement ? button.parentElement.querySelector('code') : null;
+            rawValue = siblingCode ? String(siblingCode.textContent || '').trim() : '';
+        }
+        const copied = await copyEndpointSetupText(rawValue);
+
+        const existingTimer = Number(button.dataset.resetTimer || 0);
+        if (existingTimer) {
+            window.clearTimeout(existingTimer);
+        }
+
+        const defaultTooltip = button.getAttribute('data-default-tooltip') || button.getAttribute('data-tooltip') || 'Copy';
+        if (!button.getAttribute('data-default-tooltip')) {
+            button.setAttribute('data-default-tooltip', defaultTooltip);
+        }
+
+        if (!copied) {
+            button.classList.remove('copied');
+            button.classList.add('copy-failed');
+            button.setAttribute('data-tooltip', 'Copy failed');
+            button.dataset.resetTimer = String(window.setTimeout(() => {
+                button.classList.remove('copy-failed');
+                button.setAttribute('data-tooltip', defaultTooltip);
+                delete button.dataset.resetTimer;
+            }, 1400));
+            return;
+        }
+
+        button.classList.remove('copy-failed');
+        button.classList.add('copied');
+        button.setAttribute('data-tooltip', 'Copied');
+        button.dataset.resetTimer = String(window.setTimeout(() => {
+            button.classList.remove('copied');
+            button.setAttribute('data-tooltip', defaultTooltip);
+            delete button.dataset.resetTimer;
+        }, 1400));
+    }
+
+    document.querySelectorAll('.endpoint-copy-btn[data-copy-value]').forEach((button) => {
+        button.addEventListener('click', (event) => {
+            event.preventDefault();
+            copyEndpointSetupValue(button);
+        });
+    });
+
+    function applyEndpointFilters() {
+        const searchValue = (document.getElementById('endpoint-search')?.value || '').trim().toLowerCase();
+        const providerValue = (document.getElementById('endpoint-provider-filter')?.value || '').trim().toLowerCase();
+        const tagValue = (document.getElementById('endpoint-tag-filter')?.value || '').trim().toLowerCase();
+        const useCaseValue = (document.getElementById('endpoint-use-case-filter')?.value || '').trim().toLowerCase();
+
+        document.querySelectorAll('#endpoint-table-body tr[data-search]').forEach((row) => {
+            const matchesSearch = !searchValue || (row.dataset.search || '').includes(searchValue);
+            const matchesProvider = !providerValue || (row.dataset.provider || '') === providerValue;
+            const matchesTag = !tagValue || (row.dataset.tags || '').split('||').includes(tagValue);
+            const matchesUseCase = !useCaseValue || (row.dataset.useCases || '').split('||').includes(useCaseValue);
+            row.hidden = !(matchesSearch && matchesProvider && matchesTag && matchesUseCase);
+        });
+    }
+
+    async function toggleEndpointPublish(button, slug, publish) {
+        if (!slug || publish) return;
+        const confirmed = window.confirm(`Unpublish ${slug}?`);
+        if (!confirmed) return;
+        const original = button.textContent;
+        button.disabled = true;
+        button.textContent = 'Working...';
+        try {
+            const resp = await fetch({{ url_for('prefix.EndpointAdminUnpublish', slug='__slug__')|tojson }}.replace('__slug__', encodeURIComponent(slug)), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+            });
+            const payload = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(payload.error || `HTTP ${resp.status}`);
+            window.location.reload();
+        } catch (err) {
+            alert(`Unpublish failed: ${err.message || err}`);
+            button.disabled = false;
+            button.textContent = original;
+        }
+    }
+
+    ['endpoint-search', 'endpoint-provider-filter', 'endpoint-tag-filter', 'endpoint-use-case-filter'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', applyEndpointFilters);
+        if (el) el.addEventListener('change', applyEndpointFilters);
+    });
+</script>
+{% endblock %}

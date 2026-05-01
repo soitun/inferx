@@ -39,8 +39,8 @@ const ONBOARD_APIKEY_PREFIX: &str = "quickstart-inference";
 const ONBOARD_INITIAL_CREDIT_NOTE: &str = "Initial onboarding credit";
 const ONBOARD_INITIAL_CREDIT_ADDED_BY: &str = "system-onboard";
 const ONBOARD_INITIAL_CREDIT_PAYMENT_REF_PREFIX: &str = "onboard-initial-credit";
-const PLATFORM_TENANT: &str = "_platform";
-const PLATFORM_SHARED_NAMESPACE: &str = "_shared";
+const PLATFORM_TENANT: &str = "inferx";
+const PLATFORM_SHARED_NAMESPACE: &str = "endpoint";
 
 impl HttpGateway {
     pub async fn SaveEndpointMetadata(
@@ -730,6 +730,15 @@ impl HttpGateway {
     }
 
     async fn CreateOnboardTenant(&self, tenant_name: &str) -> Result<()> {
+        if self
+            .client
+            .Get(Tenant::KEY, SYSTEM_TENANT, SYSTEM_NAMESPACE, tenant_name, 0)
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+
         let tenant = Tenant {
             objType: Tenant::KEY.to_owned(),
             tenant: SYSTEM_TENANT.to_owned(),
@@ -748,6 +757,15 @@ impl HttpGateway {
     }
 
     async fn CreateOnboardNamespace(&self, tenant_name: &str, namespace: &str) -> Result<()> {
+        if self
+            .client
+            .Get(Namespace::KEY, tenant_name, SYSTEM_NAMESPACE, namespace, 0)
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+
         let ns = Namespace {
             objType: Namespace::KEY.to_owned(),
             tenant: tenant_name.to_owned(),
@@ -762,6 +780,20 @@ impl HttpGateway {
         };
 
         self.client.Create(&ns.DataObject()).await?;
+        return Ok(());
+    }
+
+    pub async fn EnsurePlatformShared(&self) -> Result<()> {
+        match self.CreateOnboardTenant(PLATFORM_TENANT).await {
+            Ok(()) => {}
+            Err(Error::NewKeyExistsErr(_)) | Err(Error::Exist(_)) => {}
+            Err(e) => return Err(e),
+        }
+        match self.CreateOnboardNamespace(PLATFORM_TENANT, PLATFORM_SHARED_NAMESPACE).await {
+            Ok(()) => {}
+            Err(Error::NewKeyExistsErr(_)) | Err(Error::Exist(_)) => {}
+            Err(e) => return Err(e),
+        }
         return Ok(());
     }
 

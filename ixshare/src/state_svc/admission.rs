@@ -26,8 +26,8 @@ use inferxlib::obj_mgr::namespace_mgr::Namespace;
 use inferxlib::obj_mgr::tenant_mgr::{Tenant, SYSTEM_NAMESPACE, SYSTEM_TENANT};
 
 const VIRTUAL_ENDPOINTS_NAMESPACE: &str = "endpoints";
-const PLATFORM_TENANT: &str = "_platform";
-const PLATFORM_SHARED_NAMESPACE: &str = "_shared";
+const PLATFORM_TENANT: &str = "inferx";
+const PLATFORM_SHARED_NAMESPACE: &str = "endpoint";
 
 impl StateSvc {
     pub fn CreateObjCheck(&self, obj: &DataObject<Value>) -> Result<()> {
@@ -482,13 +482,13 @@ mod tests {
 
     #[test]
     fn default_function_published_for_platform_shared_is_false() {
-        assert!(StateSvc::IsPlatformSharedFunc("_platform", "_shared"));
+        assert!(StateSvc::IsPlatformSharedFunc("inferx", "endpoint"));
     }
 
     #[test]
     fn default_function_published_for_other_namespaces_is_true() {
-        assert!(!StateSvc::IsPlatformSharedFunc("tenant-a", "_shared"));
-        assert!(!StateSvc::IsPlatformSharedFunc("_platform", "models"));
+        assert!(!StateSvc::IsPlatformSharedFunc("tenant-a", "endpoint"));
+        assert!(!StateSvc::IsPlatformSharedFunc("inferx", "models"));
     }
 
     #[test]

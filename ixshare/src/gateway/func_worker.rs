@@ -220,9 +220,9 @@ impl FuncWorker {
         let (etx, erx) = mpsc::channel(parallelLeve * 2);
 
         let connectPool = ConnectionPool::New(
-            tenant,
-            namespace,
-            funcname,
+            physical_tenant,
+            physical_namespace,
+            physical_funcname,
             fprevision,
             endpoint.clone(),
             finishTx.clone(),

@@ -112,6 +112,20 @@
         return JSON.parse(JSON.stringify(value));
     }
 
+    function mergeHeaders(baseHeaders, extraHeaders) {
+        const merged = Object.assign({}, baseHeaders || {});
+        if (!extraHeaders || typeof extraHeaders !== 'object') {
+            return merged;
+        }
+        Object.entries(extraHeaders).forEach(function ([key, value]) {
+            if (value == null) {
+                return;
+            }
+            merged[String(key)] = String(value);
+        });
+        return merged;
+    }
+
     function formatLatencyValue(value) {
         const text = String(value || '').trim();
         return text === '' ? '-' : text;
@@ -649,6 +663,18 @@
             }
         }
 
+        function notifySuccess() {
+            if (typeof context.onRequestSuccess === 'function') {
+                context.onRequestSuccess();
+            }
+        }
+
+        function notifyError(message) {
+            if (typeof context.onRequestError === 'function') {
+                context.onRequestError(String(message || 'Request failed.'));
+            }
+        }
+
         async function loadImage() {
             const preview = getElement('preview');
             if (!preview) {
@@ -909,7 +935,10 @@
             audioPreview.style.display = 'none';
         }
 
-        function buildFunccallUrl() {
+        function buildFunccallUrl(overrides) {
+            if (overrides && overrides.requestUrl) {
+                return String(overrides.requestUrl);
+            }
             const sampleQueryPath = context.apiType === 'text2text'
                 ? 'v1/chat/completions'
                 : context.sampleQueryPath;
@@ -920,6 +949,25 @@
                 context.name,
                 sampleQueryPath,
             ]);
+        }
+
+        function applyPromptToRequestMap(requestMap, promptText) {
+            const nextMap = cloneMapValue(requestMap) || {};
+
+            if (Array.isArray(nextMap.messages)) {
+                const patched = buildText2TextChatRequestMap(nextMap, promptText);
+                if (typeof patched === 'object' && patched) {
+                    return patched;
+                }
+            }
+
+            if (typeof nextMap.prompt === 'string' || !Object.prototype.hasOwnProperty.call(nextMap, 'input')) {
+                nextMap.prompt = promptText;
+            }
+            if (typeof nextMap.input === 'string') {
+                nextMap.input = promptText;
+            }
+            return nextMap;
         }
 
         function buildText2TextChatRequestMap(requestMap, prompt) {
@@ -1109,7 +1157,7 @@
             notifyFinish();
         }
 
-        async function streamOutputText() {
+        async function streamOutputText(overrides) {
             const output = getElement('output');
             const debug = getElement('debug');
             const prompt = getPromptValue();
@@ -1195,6 +1243,8 @@
                     requestHeaders['Content-Type'] = 'application/json';
                 }
 
+                requestHeaders = mergeHeaders(requestHeaders, overrides && overrides.extraHeaders);
+
                 appendElementText(debug, JSON.stringify(requestMap, null, 2));
                 if (isTranscription) {
                     appendElementText(debug, '\n' + JSON.stringify({
@@ -1208,7 +1258,7 @@
                     timeoutPayloadBytes
                 );
 
-                const response = await fetch(buildFunccallUrl(), {
+                const response = await fetch(buildFunccallUrl(overrides), {
                     method: 'POST',
                     headers: requestHeaders,
                     body: body,
@@ -1218,7 +1268,9 @@
                 updateLatencyDisplays(response);
 
                 if (!response.ok) {
-                    setElementText(output, await response.text());
+                    const errorText = await response.text();
+                    setElementText(output, errorText);
+                    notifyError(errorText || ('HTTP ' + response.status));
                     return;
                 }
 
@@ -1241,6 +1293,7 @@
                         setElementText(output, responseText);
                     }
                     notifyFirstOutput();
+                    notifySuccess();
                     return;
                 }
 
@@ -1279,6 +1332,7 @@
                             const parsed = JSON.parse(jsonPart);
                             const content = parsed.choices?.[0]?.delta?.content ?? parsed.choices?.[0]?.text ?? '';
                             if (content) {
+                                notifySuccess();
                                 notifyFirstOutput();
                                 appendElementText(output, content);
                                 tokenCount += 1;
@@ -1299,6 +1353,7 @@
                     if (context.apiType === 'image2text') {
                         setImageSourceStatus(String(error && error.message || error), 'error');
                     }
+                    notifyError(String(error && error.message || error));
                     setElementText(output, String(error && error.message || error));
                 }
             } finally {
@@ -1306,7 +1361,7 @@
             }
         }
 
-        async function streamOutputImage() {
+        async function streamOutputImage(overrides) {
             const output = getElement('output');
             const prompt = String((getElement('prompt') || {}).value || '');
             const signal = startRequestUi();
@@ -1314,26 +1369,38 @@
             resetVisualOutputs();
 
             try {
-                const response = await fetch(new URL(context.text2imgPath, window.location.origin).toString(), {
+                let requestUrl = new URL(context.text2imgPath, window.location.origin).toString();
+                let requestHeaders = {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                    'X-Inferx-Timeout': '60',
+                };
+                let requestBody = JSON.stringify({
+                    prompt: prompt,
+                    tenant: context.tenant,
+                    namespace: context.namespace,
+                    funcname: context.name,
+                });
+
+                if (overrides && overrides.requestUrl) {
+                    requestUrl = buildFunccallUrl(overrides);
+                    requestHeaders = mergeHeaders(requestHeaders, overrides.extraHeaders);
+                    requestBody = JSON.stringify(applyPromptToRequestMap(context.map, prompt));
+                }
+
+                const response = await fetch(requestUrl, {
                     method: 'POST',
-                    headers: {
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json',
-                        'X-Inferx-Timeout': '60',
-                    },
-                    body: JSON.stringify({
-                        prompt: prompt,
-                        tenant: context.tenant,
-                        namespace: context.namespace,
-                        funcname: context.name,
-                    }),
+                    headers: requestHeaders,
+                    body: requestBody,
                     signal: signal,
                 });
 
                 updateLatencyDisplays(response);
 
                 if (!response.ok) {
-                    setElementText(output, await response.text());
+                    const errorText = await response.text();
+                    setElementText(output, errorText);
+                    notifyError(errorText || ('HTTP ' + response.status));
                     return;
                 }
 
@@ -1348,6 +1415,7 @@
                     image.src = base64Data;
                     image.style.display = 'block';
                 }
+                notifySuccess();
                 notifyFirstOutput();
                 if (output) {
                     output.hidden = true;
@@ -1355,6 +1423,7 @@
             } catch (error) {
                 if (!(error instanceof DOMException && error.name === 'AbortError')) {
                     console.error('Error fetching image output:', error);
+                    notifyError(String(error && error.message || error));
                     setElementText(output, String(error && error.message || error));
                 }
             } finally {
@@ -1362,7 +1431,7 @@
             }
         }
 
-        async function streamOutputAudio() {
+        async function streamOutputAudio(overrides) {
             const output = getElement('output');
             const prompt = String((getElement('prompt') || {}).value || '');
             const signal = startRequestUi();
@@ -1370,26 +1439,38 @@
             resetVisualOutputs();
 
             try {
-                const response = await fetch(new URL(context.text2audioPath, window.location.origin).toString(), {
+                let requestUrl = new URL(context.text2audioPath, window.location.origin).toString();
+                let requestHeaders = {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                    'X-Inferx-Timeout': '60',
+                };
+                let requestBody = JSON.stringify({
+                    prompt: prompt,
+                    tenant: context.tenant,
+                    namespace: context.namespace,
+                    funcname: context.name,
+                });
+
+                if (overrides && overrides.requestUrl) {
+                    requestUrl = buildFunccallUrl(overrides);
+                    requestHeaders = mergeHeaders(requestHeaders, overrides.extraHeaders);
+                    requestBody = JSON.stringify(applyPromptToRequestMap(context.map, prompt));
+                }
+
+                const response = await fetch(requestUrl, {
                     method: 'POST',
-                    headers: {
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json',
-                        'X-Inferx-Timeout': '60',
-                    },
-                    body: JSON.stringify({
-                        prompt: prompt,
-                        tenant: context.tenant,
-                        namespace: context.namespace,
-                        funcname: context.name,
-                    }),
+                    headers: requestHeaders,
+                    body: requestBody,
                     signal: signal,
                 });
 
                 updateLatencyDisplays(response);
 
                 if (!response.ok) {
-                    setElementText(output, await response.text());
+                    const errorText = await response.text();
+                    setElementText(output, errorText);
+                    notifyError(errorText || ('HTTP ' + response.status));
                     return;
                 }
 
@@ -1401,6 +1482,7 @@
                     audio.style.display = 'block';
                     audio.play().catch(() => {});
                 }
+                notifySuccess();
                 notifyFirstOutput();
                 if (output) {
                     output.hidden = true;
@@ -1408,6 +1490,7 @@
             } catch (error) {
                 if (!(error instanceof DOMException && error.name === 'AbortError')) {
                     console.error('Error fetching audio output:', error);
+                    notifyError(String(error && error.message || error));
                     setElementText(output, String(error && error.message || error));
                 }
             } finally {
@@ -1421,16 +1504,16 @@
             }
         }
 
-        async function streamOutput() {
+        async function streamOutput(overrides) {
             if (context.apiType === 'text2img') {
-                await streamOutputImage();
+                await streamOutputImage(overrides);
                 return;
             }
             if (context.apiType === 'text2audio') {
-                await streamOutputAudio();
+                await streamOutputAudio(overrides);
                 return;
             }
-            await streamOutputText();
+            await streamOutputText(overrides);
         }
 
         if (context.apiType === 'image2text') {
@@ -1501,6 +1584,7 @@
             loadImage: loadImage,
             loadAudio: loadAudio,
             streamOutput: streamOutput,
+            streamOutputWithOverrides: streamOutput,
             cancel: cancel,
             isInferenceInFlight: function () {
                 return inferenceInFlight;
