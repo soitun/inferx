@@ -235,9 +235,9 @@ fn tenant_from_path(path: &str) -> Option<&str> {
     }
 }
 
-fn tenant_quota_exceeded(gw: &HttpGateway, tenant: &str) -> Result<bool> {
+fn tenant_quota_state(gw: &HttpGateway, tenant: &str) -> Result<(bool, bool)> {
     if tenant.is_empty() {
-        return Ok(false);
+        return Ok((false, false));
     }
 
     match gw
@@ -245,7 +245,7 @@ fn tenant_quota_exceeded(gw: &HttpGateway, tenant: &str) -> Result<bool> {
         .tenantMgr
         .Get(SYSTEM_TENANT, SYSTEM_NAMESPACE, tenant)
     {
-        Ok(t) => Ok(t.object.status.quota_exceeded),
+        Ok(t) => Ok((t.object.spec.quota_exempt, t.object.status.quota_exceeded)),
         Err(e) => Err(e.into()),
     }
 }
@@ -354,9 +354,10 @@ fn enforce_tenant_quota_for_write(
         return None;
     }
 
-    match tenant_quota_exceeded(gw, tenant) {
-        Ok(true) => return Some(quota_exceeded_response(tenant)),
-        Ok(false) => {}
+    match tenant_quota_state(gw, tenant) {
+        Ok((true, _)) => return None,
+        Ok((false, true)) => return Some(quota_exceeded_response(tenant)),
+        Ok((false, false)) => {}
         Err(e) => {
             error!("tenant quota lookup failed for {}: {:?}", tenant, e);
             return Some(quota_lookup_failed_response(tenant));
@@ -383,8 +384,9 @@ fn enforce_tenant_quota_for_request(
         return None;
     }
 
-    match tenant_quota_exceeded(gw, tenant) {
-        Ok(true) => {
+    match tenant_quota_state(gw, tenant) {
+        Ok((true, _)) => return None,
+        Ok((false, true)) => {
             if is_funccall_path(path) {
                 return Some(quota_exceeded_response(tenant));
             }
@@ -398,7 +400,7 @@ fn enforce_tenant_quota_for_request(
 
             return Some(quota_exceeded_response(tenant));
         }
-        Ok(false) => {}
+        Ok((false, false)) => {}
         Err(e) => {
             error!("tenant quota lookup failed for {}: {:?}", tenant, e);
             return Some(quota_lookup_failed_response(tenant));
@@ -2508,6 +2510,7 @@ struct BillingSummaryResponse {
     used_cents: i64,
     threshold_cents: i64,
     quota_exceeded: bool,
+    quota_exempt: bool,
     total_credits_cents: i64,
     currency: String,
     period: BillingSummaryPeriod,
@@ -3532,11 +3535,18 @@ async fn GetTenantBillingSummary(
             inference_ms,
             standby_ms,
         )) => {
+            let quota_exempt = gw
+                .objRepo
+                .tenantMgr
+                .Get(SYSTEM_TENANT, SYSTEM_NAMESPACE, &tenant)
+                .map(|t| t.object.spec.quota_exempt)
+                .unwrap_or(false);
             let resp_body = BillingSummaryResponse {
                 balance_cents,
                 used_cents,
                 threshold_cents,
                 quota_exceeded,
+                quota_exempt,
                 total_credits_cents,
                 currency,
                 period: BillingSummaryPeriod {

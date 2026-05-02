@@ -12,9 +12,9 @@ data:
     INSERT INTO TenantQuota (tenant)
     SELECT DISTINCT tenant
     FROM (
-      SELECT tenant FROM UsageTick WHERE processed_at IS NULL AND tenant <> '_platform'
+      SELECT tenant FROM UsageTick WHERE processed_at IS NULL
       UNION
-      SELECT tenant FROM TenantCreditHistory WHERE tenant <> '_platform'
+      SELECT tenant FROM TenantCreditHistory
     ) all_tenants
     ON CONFLICT (tenant) DO NOTHING;
 
@@ -32,7 +32,6 @@ data:
         t.tick_time
       FROM UsageTick t
       WHERE t.processed_at IS NULL
-        AND t.tenant <> '_platform'
       ORDER BY t.id
       LIMIT 10000
       FOR UPDATE SKIP LOCKED
@@ -835,7 +834,6 @@ data:
       FROM UsageTick t
       WHERE t.tick_time >= date_trunc('hour', NOW() - INTERVAL '3 hours')
         AND t.tick_time < date_trunc('hour', NOW())
-        AND t.tenant <> '_platform'
     ),
     hourly AS (
       SELECT
@@ -937,7 +935,6 @@ data:
       JOIN params p ON TRUE
       WHERE t.tick_time >= p.start_hour
         AND t.tick_time < p.end_hour
-        AND t.tenant <> '_platform'
     ),
     hourly AS (
       SELECT

@@ -455,6 +455,10 @@
         color: red;
     }
 
+    .status-exempted {
+        color: #2563eb;
+    }
+
     .billing-info-banner {
         margin: 0 0 16px 0;
         padding: 12px 14px;
@@ -998,7 +1002,7 @@
             </div>
             <div class="summary-card">
                 <h4>Status</h4>
-                <div id="status-value">--</div>
+                <div id="status-value" style="text-align: left;">--</div>
             </div>
         </div>
 
@@ -1043,7 +1047,9 @@
                 <div style="display: flex; justify-content: space-between; font-size: 10px; color: #888; margin-top: 4px;">
                     <div>
                         <span style="display: inline-block; width: 10px; height: 10px; background: #4CAF50;"></span> Inference
-                        <span style="display: inline-block; width: 10px; height: 10px; background: #2196F3; margin-left: 10px;"></span> Snapshot Retention
+                        <span id="usage-legend-standby" style="display: inline;">
+                            <span style="display: inline-block; width: 10px; height: 10px; background: #2196F3; margin-left: 10px;"></span> Snapshot Retention
+                        </span>
                     </div>
                     <div>(Local)</div>
                 </div>
@@ -1062,13 +1068,13 @@
                                 <th style="text-align: right; cursor: pointer;" onclick="sortUsageTable('inf_hours')">
                                     Inference (hrs) <span id="usage-sort-inf-hours-icon"></span>
                                 </th>
-                                <th style="text-align: right; cursor: pointer;" onclick="sortUsageTable('sby_hours')">
+                                <th class="usage-standby-col" style="text-align: right; cursor: pointer;" onclick="sortUsageTable('sby_hours')">
                                     Snapshot Retention (hrs) <span id="usage-sort-sby-hours-icon"></span>
                                 </th>
                                 <th style="text-align: right; cursor: pointer;" onclick="sortUsageTable('inf_cost')">
                                     Inference (USD) <span id="usage-sort-inf-cost-icon"></span>
                                 </th>
-                                <th style="text-align: right; cursor: pointer;" onclick="sortUsageTable('sby_cost')">
+                                <th class="usage-standby-col" style="text-align: right; cursor: pointer;" onclick="sortUsageTable('sby_cost')">
                                     Snapshot Retention (USD) <span id="usage-sort-sby-cost-icon"></span>
                                 </th>
                                 <th style="text-align: right; cursor: pointer;" onclick="sortUsageTable('total_cost')">
@@ -1081,9 +1087,9 @@
                             <tr>
                                 <td style="text-align: left;">Total</td>
                                 <td id="usage-table-total-inf-hours" style="text-align: right;">--</td>
-                                <td id="usage-table-total-sby-hours" style="text-align: right;">--</td>
+                                <td id="usage-table-total-sby-hours" class="usage-standby-col" style="text-align: right;">--</td>
                                 <td id="usage-table-total-inf-cost" style="text-align: right;">--</td>
-                                <td id="usage-table-total-sby-cost" style="text-align: right;">--</td>
+                                <td id="usage-table-total-sby-cost" class="usage-standby-col" style="text-align: right;">--</td>
                                 <td id="usage-table-total-cost" style="text-align: right;">--</td>
                             </tr>
                         </tfoot>
@@ -1169,6 +1175,90 @@
                 </div>
 
                 <div id="analytics-table-area" style="display: none;">
+                    <div id="analytics-model-split-area" style="display: none;">
+                        <div id="analytics-regular-model-section" style="display: none; margin-bottom: 16px;">
+                            <h4 id="analytics-regular-model-title" style="margin: 0 0 8px 0;">Deployed Model Usage</h4>
+                            <div style="overflow-x: auto;">
+                                <table id="analytics-regular-model-table" class="billing-analytics-table" style="min-width: 920px;">
+                                    <thead>
+                                        <tr>
+                                            <th style="text-align: left; padding: 8px; cursor: pointer;" onclick="sortAnalyticsTable('name')">
+                                                Model <span id="regular-sort-name-icon"></span>
+                                            </th>
+                                            <th style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsTable('inf_hours')">
+                                                Inference (hrs) <span id="regular-sort-inf-hours-icon"></span>
+                                            </th>
+                                            <th style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsTable('sby_hours')">
+                                                Snapshot Retention (hrs) <span id="regular-sort-sby-hours-icon"></span>
+                                            </th>
+                                            <th style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsTable('inf_cost')">
+                                                Inference (USD) <span id="regular-sort-inf-cost-icon"></span>
+                                            </th>
+                                            <th style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsTable('sby_cost')">
+                                                Snapshot Retention (USD) <span id="regular-sort-sby-cost-icon"></span>
+                                            </th>
+                                            <th style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsTable('total_cost')">
+                                                Total (USD) <span id="regular-sort-total-cost-icon"></span>
+                                            </th>
+                                            <th style="text-align: right; padding: 8px; width: 200px; cursor: pointer;" onclick="sortAnalyticsTable('percent')">
+                                                % of Total <span id="regular-sort-percent-icon"></span>
+                                            </th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                    <tfoot>
+                                        <tr>
+                                            <td style="padding: 8px;">Total</td>
+                                            <td id="analytics-regular-total-inf-hours" style="text-align: right; padding: 8px;">--</td>
+                                            <td id="analytics-regular-total-sby-hours" style="text-align: right; padding: 8px;">--</td>
+                                            <td id="analytics-regular-total-inf-cost" style="text-align: right; padding: 8px;">--</td>
+                                            <td id="analytics-regular-total-sby-cost" style="text-align: right; padding: 8px;">--</td>
+                                            <td id="analytics-regular-total-cost" style="text-align: right; padding: 8px;">--</td>
+                                            <td id="analytics-regular-total-percent" style="text-align: right; padding: 8px;">--</td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div id="analytics-endpoint-model-section" style="display: none;">
+                            <h4 id="analytics-endpoint-model-title" style="margin: 0 0 8px 0;">Endpoint Usage</h4>
+                            <div style="overflow-x: auto;">
+                                <table id="analytics-endpoint-model-table" class="billing-analytics-table" style="min-width: 760px;">
+                                    <thead>
+                                        <tr>
+                                            <th style="text-align: left; padding: 8px; cursor: pointer;" onclick="sortAnalyticsTable('name')">
+                                                Endpoint <span id="endpoint-sort-name-icon"></span>
+                                            </th>
+                                            <th style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsTable('inf_hours')">
+                                                Inference (hrs) <span id="endpoint-sort-inf-hours-icon"></span>
+                                            </th>
+                                            <th style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsTable('inf_cost')">
+                                                Inference (USD) <span id="endpoint-sort-inf-cost-icon"></span>
+                                            </th>
+                                            <th style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsTable('total_cost')">
+                                                Total (USD) <span id="endpoint-sort-total-cost-icon"></span>
+                                            </th>
+                                            <th style="text-align: right; padding: 8px; width: 200px; cursor: pointer;" onclick="sortAnalyticsTable('percent')">
+                                                % of Total <span id="endpoint-sort-percent-icon"></span>
+                                            </th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                    <tfoot>
+                                        <tr>
+                                            <td style="padding: 8px;">Total</td>
+                                            <td id="analytics-endpoint-total-inf-hours" style="text-align: right; padding: 8px;">--</td>
+                                            <td id="analytics-endpoint-total-inf-cost" style="text-align: right; padding: 8px;">--</td>
+                                            <td id="analytics-endpoint-total-cost" style="text-align: right; padding: 8px;">--</td>
+                                            <td id="analytics-endpoint-total-percent" style="text-align: right; padding: 8px;">--</td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
                     <div style="overflow-x: auto;">
                         <table id="analytics-table" class="billing-analytics-table" style="min-width: 920px;">
                             <thead>
@@ -1179,13 +1269,13 @@
                                     <th style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsTable('inf_hours')">
                                         Inference (hrs) <span id="sort-inf-hours-icon"></span>
                                     </th>
-                                    <th style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsTable('sby_hours')">
+                                    <th class="analytics-summary-standby-col" style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsTable('sby_hours')">
                                         Snapshot Retention (hrs) <span id="sort-sby-hours-icon"></span>
                                     </th>
                                     <th style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsTable('inf_cost')">
                                         Inference (USD) <span id="sort-inf-cost-icon"></span>
                                     </th>
-                                    <th style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsTable('sby_cost')">
+                                    <th class="analytics-summary-standby-col" style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsTable('sby_cost')">
                                         Snapshot Retention (USD) <span id="sort-sby-cost-icon"></span>
                                     </th>
                                     <th style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsTable('total_cost')">
@@ -1201,9 +1291,9 @@
                                 <tr>
                                     <td style="padding: 8px;">Total</td>
                                     <td id="analytics-table-total-inf-hours" style="text-align: right; padding: 8px;">--</td>
-                                    <td id="analytics-table-total-sby-hours" style="text-align: right; padding: 8px;">--</td>
+                                    <td id="analytics-table-total-sby-hours" class="analytics-summary-standby-col" style="text-align: right; padding: 8px;">--</td>
                                     <td id="analytics-table-total-inf-cost" style="text-align: right; padding: 8px;">--</td>
-                                    <td id="analytics-table-total-sby-cost" style="text-align: right; padding: 8px;">--</td>
+                                    <td id="analytics-table-total-sby-cost" class="analytics-summary-standby-col" style="text-align: right; padding: 8px;">--</td>
                                     <td id="analytics-table-total-cost" style="text-align: right; padding: 8px;">--</td>
                                     <td style="text-align: right; padding: 8px;">100%</td>
                                 </tr>
@@ -1234,13 +1324,13 @@
                                     <th style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsGroupDetailTable('inf_hours')">
                                         Inference (hrs) <span id="detail-sort-inf-hours-icon"></span>
                                     </th>
-                                    <th style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsGroupDetailTable('sby_hours')">
+                                    <th class="analytics-detail-standby-col" style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsGroupDetailTable('sby_hours')">
                                         Snapshot Retention (hrs) <span id="detail-sort-sby-hours-icon"></span>
                                     </th>
                                     <th style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsGroupDetailTable('inf_cost')">
                                         Inference (USD) <span id="detail-sort-inf-cost-icon"></span>
                                     </th>
-                                    <th style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsGroupDetailTable('sby_cost')">
+                                    <th class="analytics-detail-standby-col" style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsGroupDetailTable('sby_cost')">
                                         Snapshot Retention (USD) <span id="detail-sort-sby-cost-icon"></span>
                                     </th>
                                     <th style="text-align: right; padding: 8px; cursor: pointer;" onclick="sortAnalyticsGroupDetailTable('total_cost')">
@@ -1253,9 +1343,9 @@
                                 <tr>
                                     <td style="padding: 8px;">Total</td>
                                     <td id="analytics-group-total-inf-hours" style="text-align: right; padding: 8px;">--</td>
-                                    <td id="analytics-group-total-sby-hours" style="text-align: right; padding: 8px;">--</td>
+                                    <td id="analytics-group-total-sby-hours" class="analytics-detail-standby-col" style="text-align: right; padding: 8px;">--</td>
                                     <td id="analytics-group-total-inf-cost" style="text-align: right; padding: 8px;">--</td>
-                                    <td id="analytics-group-total-sby-cost" style="text-align: right; padding: 8px;">--</td>
+                                    <td id="analytics-group-total-sby-cost" class="analytics-detail-standby-col" style="text-align: right; padding: 8px;">--</td>
                                     <td id="analytics-group-total-cost" style="text-align: right; padding: 8px;">--</td>
                                 </tr>
                             </tfoot>
@@ -2558,12 +2648,84 @@
         });
     }
 
+    function isEndpointNamespace(namespace) {
+        const normalized = String(namespace || '').trim().toLowerCase();
+        return normalized === 'endpoints';
+    }
+
+    function isEndpointAnalyticsItem(item) {
+        return isEndpointNamespace(item?.namespace);
+    }
+
+    function getEntryStandbyMs(entry) {
+        return typeof entry?.standby_ms === 'number' ? entry.standby_ms : 0;
+    }
+
+    function getEntryStandbyCents(entry) {
+        if (typeof entry?.standby_numer === 'number') return Math.trunc(entry.standby_numer / 3600000);
+        return typeof entry?.standby_cents === 'number' ? entry.standby_cents : 0;
+    }
+
+    function rowHasStandbyUsage(entry) {
+        return getEntryStandbyMs(entry) > 0 || getEntryStandbyCents(entry) > 0;
+    }
+
+    function rowsHaveStandbyUsage(rows) {
+        return Array.isArray(rows) && rows.some(rowHasStandbyUsage);
+    }
+
+    function setBillingStatus(statusEl, quotaExceeded, quotaExempt) {
+        if (!statusEl) return;
+
+        if (quotaExceeded && quotaExempt) {
+            statusEl.innerHTML = '<span class="status-exceeded">● Quota Exceeded</span><br><span class="status-exempted">● Exempted</span>';
+            statusEl.className = '';
+            return;
+        }
+
+        if (quotaExceeded) {
+            statusEl.textContent = '● Quota Exceeded';
+            statusEl.className = 'status-exceeded';
+            return;
+        }
+
+        if (quotaExempt) {
+            statusEl.innerHTML = '<span class="status-active">● Active</span><br><span class="status-exempted">● Exempted</span>';
+            statusEl.className = '';
+            return;
+        }
+
+        statusEl.textContent = '● Active';
+        statusEl.className = 'status-active';
+    }
+
+    function setElementsVisibilityByClass(className, visible, visibleDisplay = 'table-cell') {
+        document.querySelectorAll(`.${className}`).forEach(el => {
+            el.style.display = visible ? visibleDisplay : 'none';
+        });
+    }
+
+    function setUsageStandbyVisibility(show) {
+        setElementsVisibilityByClass('usage-standby-col', show);
+        const standbyLegendEl = document.getElementById('usage-legend-standby');
+        if (standbyLegendEl) standbyLegendEl.style.display = show ? 'inline' : 'none';
+    }
+
+    function setAnalyticsSummaryStandbyVisibility(show) {
+        setElementsVisibilityByClass('analytics-summary-standby-col', show);
+    }
+
+    function setAnalyticsDetailStandbyVisibility(show) {
+        setElementsVisibilityByClass('analytics-detail-standby-col', show);
+    }
+
     async function loadBillingSummary(tenant) {
         try {
             // Try billing-summary endpoint first (Phase 3), fall back to credits + tenant status (Phase 1)
             let data;
             let hasBillingSummary = false;
             let tenantStatus = null;
+            let tenantSpec = null;
 
             try {
                 const summaryResp = await fetchWithAuth(`/proxy1/tenant/${tenant}/billing-summary`);
@@ -2590,6 +2752,7 @@
                     try {
                         const tenantObj = await tenantResp.json();
                         tenantStatus = tenantObj.object?.status || tenantObj.status || null;
+                        tenantSpec = tenantObj.object?.spec || tenantObj.spec || null;
                     } catch (e) {
                         console.warn('Failed to parse tenant object:', e);
                     }
@@ -2610,21 +2773,16 @@
 
                 const infCents = data.period?.inference_cents || 0;
                 const sbyCents = data.period?.standby_cents || 0;
-                document.getElementById('used-breakdown').innerHTML =
-                    `<span>Inference: ${formatUsd(infCents)}</span> | <span>Snapshot Retention: ${formatUsd(sbyCents)}</span>`;
+                document.getElementById('used-breakdown').innerHTML = sbyCents > 0
+                    ? `<span>Inference: ${formatUsd(infCents)}</span> | <span>Snapshot Retention: ${formatUsd(sbyCents)}</span>`
+                    : `<span>Inference: ${formatUsd(infCents)}</span>`;
 
                 const thresholdCents = data.threshold_cents || 0;
                 document.getElementById('threshold-value').textContent = formatUsd(thresholdCents);
 
                 // Status - use quota_exceeded from server
                 const statusEl = document.getElementById('status-value');
-                if (data.quota_exceeded) {
-                    statusEl.textContent = '● Quota Exceeded';
-                    statusEl.className = 'status-exceeded';
-                } else {
-                    statusEl.textContent = '● Active';
-                    statusEl.className = 'status-active';
-                }
+                setBillingStatus(statusEl, data.quota_exceeded === true, data.quota_exempt === true);
             } else {
                 // Fallback: use existing /credits endpoint + tenant object for status
                 document.getElementById('used-value').textContent = '--';
@@ -2634,13 +2792,11 @@
                 // Get status from tenant object
                 const statusEl = document.getElementById('status-value');
                 if (tenantStatus) {
-                    if (tenantStatus.quota_exceeded === true) {
-                        statusEl.textContent = '● Quota Exceeded';
-                        statusEl.className = 'status-exceeded';
-                    } else {
-                        statusEl.textContent = '● Active';
-                        statusEl.className = 'status-active';
-                    }
+                    setBillingStatus(
+                        statusEl,
+                        tenantStatus.quota_exceeded === true,
+                        tenantSpec?.quota_exempt === true
+                    );
                 } else {
                     statusEl.textContent = '● Unknown';
                     statusEl.className = '';
@@ -2703,6 +2859,8 @@
         const displayData = granularity === 'hourly'
             ? [...billingUsageRawRows]
             : aggregateHourlyUsageByGranularity(billingUsageRawRows, granularity);
+        const showStandby = rowsHaveStandbyUsage(displayData);
+        setUsageStandbyVisibility(showStandby);
 
         const maxCents = Math.max(...displayData.map(u =>
             (u.inference_cents || 0) + (u.standby_cents || 0)
@@ -2721,11 +2879,13 @@
             const infHrs = (infMs / 3600000).toFixed(2);
             const sbyHrs = (sbyMs / 3600000).toFixed(2);
             const periodLabel = formatBillingUsagePeriodLabel(u, granularity, 'tooltip');
-            const tooltip = `${periodLabel} | Inference: ${formatUsd(infCents)} (${infHrs} hrs) | Snapshot Retention: ${formatUsd(sbyCents)} (${sbyHrs} hrs) | Total: ${formatUsd(totalCents)}`;
+            const tooltip = showStandby
+                ? `${periodLabel} | Inference: ${formatUsd(infCents)} (${infHrs} hrs) | Snapshot Retention: ${formatUsd(sbyCents)} (${sbyHrs} hrs) | Total: ${formatUsd(totalCents)}`
+                : `${periodLabel} | Inference: ${formatUsd(infCents)} (${infHrs} hrs) | Total: ${formatUsd(totalCents)}`;
 
             return `<div class="usage-bar-stack" style="height: ${totalHeight}%" title="${tooltip}">` +
                 `<div class="usage-bar-inference" style="height: ${infPct}%"></div>` +
-                `<div class="usage-bar-standby" style="height: ${sbyPct}%"></div>` +
+                (showStandby ? `<div class="usage-bar-standby" style="height: ${sbyPct}%"></div>` : '') +
                 `</div>`;
         }).join('');
 
@@ -2812,6 +2972,7 @@
         billingUsageTableRows = Array.isArray(displayData) ? displayData : [];
         billingUsageTableGranularity = granularity || 'hourly';
         usageTableGranularityEl.textContent = getBillingUsageGranularityLabel(billingUsageTableGranularity);
+        setUsageStandbyVisibility(rowsHaveStandbyUsage(billingUsageTableRows));
 
         const sortedRows = [...billingUsageTableRows].sort((a, b) => {
             let aVal;
@@ -2872,9 +3033,9 @@
                 <tr>
                     <td style="text-align: left;">${periodLabel}</td>
                     <td style="text-align: right;">${infHours.toFixed(2)}</td>
-                    <td style="text-align: right;">${sbyHours.toFixed(2)}</td>
+                    <td class="usage-standby-col" style="text-align: right;">${sbyHours.toFixed(2)}</td>
                     <td style="text-align: right;">${formatUsd(infCents)}</td>
-                    <td style="text-align: right;">${formatUsd(sbyCents)}</td>
+                    <td class="usage-standby-col" style="text-align: right;">${formatUsd(sbyCents)}</td>
                     <td style="text-align: right;">${formatUsd(totalCents)}</td>
                 </tr>
             `;
@@ -3802,7 +3963,9 @@
             params.set('namespace', item.namespace || '');
             params.set('funcname', item.funcname || '');
             endpoint = `/proxy1/tenant/${tenant}/usage/hourly-by-model?${params.toString()}`;
-            titleEl.textContent = `Breakdown: ${item.funcname || '--'} (${item.namespace || '--'})`;
+            titleEl.textContent = isEndpointAnalyticsItem(item)
+                ? `Breakdown: Endpoint ${item.funcname || '--'}`
+                : `Breakdown: ${item.funcname || '--'} (${item.namespace || '--'})`;
         } else {
             params.set('namespace', item.namespace || '');
             endpoint = `/proxy1/tenant/${tenant}/usage/hourly-by-namespace?${params.toString()}`;
@@ -3913,6 +4076,7 @@
             totalInfNumer += getAnalyticsInferenceNumer(u);
             totalSbyNumer += getAnalyticsStandbyNumer(u);
         });
+        setAnalyticsDetailStandbyVisibility(totalSbyMs > 0 || totalSbyNumer > 0);
 
         tbody.innerHTML = sortedRows.map(u => {
             const infMs = u.inference_ms || 0;
@@ -3928,9 +4092,9 @@
                 <tr style="border-bottom: 1px solid #eee;">
                     <td style="padding: 8px; text-align: left;">${periodLabel}</td>
                     <td style="padding: 8px; text-align: right;">${infHours.toFixed(2)}</td>
-                    <td style="padding: 8px; text-align: right;">${sbyHours.toFixed(2)}</td>
+                    <td class="analytics-detail-standby-col" style="padding: 8px; text-align: right;">${sbyHours.toFixed(2)}</td>
                     <td style="padding: 8px; text-align: right;">${formatUsd(infCents)}</td>
-                    <td style="padding: 8px; text-align: right;">${formatUsd(sbyCents)}</td>
+                    <td class="analytics-detail-standby-col" style="padding: 8px; text-align: right;">${formatUsd(sbyCents)}</td>
                     <td style="padding: 8px; text-align: right;">${formatUsd(totalCents)}</td>
                 </tr>
             `;
@@ -4166,7 +4330,239 @@
         const funcname = String(item?.funcname || '').trim();
         if (!tenant || !namespace || !funcname) return '';
 
+        if (isEndpointNamespace(namespace)) {
+            return `{{ hosturl }}endpoints/${encodeURIComponent(funcname)}?tenant=${encodeURIComponent(tenant)}`;
+        }
+
         return `{{ hosturl }}func?tenant=${encodeURIComponent(tenant)}&namespace=${encodeURIComponent(namespace)}&name=${encodeURIComponent(funcname)}`;
+    }
+
+    function compareAnalyticsItems(a, b, viewMode, totalCents) {
+        let aVal;
+        let bVal;
+        const aInfMs = a.inference_ms || 0;
+        const aSbyMs = a.standby_ms || 0;
+        const aInfCents = a.inference_cents || 0;
+        const aSbyCents = a.standby_cents || 0;
+        const aTotalCents = (typeof a.charge_cents === 'number') ? a.charge_cents : (aInfCents + aSbyCents);
+        const bInfMs = b.inference_ms || 0;
+        const bSbyMs = b.standby_ms || 0;
+        const bInfCents = b.inference_cents || 0;
+        const bSbyCents = b.standby_cents || 0;
+        const bTotalCents = (typeof b.charge_cents === 'number') ? b.charge_cents : (bInfCents + bSbyCents);
+
+        if (analyticsSortColumn === 'name') {
+            aVal = viewMode === 'model'
+                ? a.funcname
+                : (viewMode === 'namespace' ? a.namespace : billingAnalyticsTenantLabel(a.tenant));
+            bVal = viewMode === 'model'
+                ? b.funcname
+                : (viewMode === 'namespace' ? b.namespace : billingAnalyticsTenantLabel(b.tenant));
+            return analyticsSortDirection === 'asc'
+                ? aVal.localeCompare(bVal)
+                : bVal.localeCompare(aVal);
+        }
+
+        switch (analyticsSortColumn) {
+            case 'inf_hours':
+                aVal = aInfMs;
+                bVal = bInfMs;
+                break;
+            case 'sby_hours':
+                aVal = aSbyMs;
+                bVal = bSbyMs;
+                break;
+            case 'inf_cost':
+                aVal = aInfCents;
+                bVal = bInfCents;
+                break;
+            case 'sby_cost':
+                aVal = aSbyCents;
+                bVal = bSbyCents;
+                break;
+            case 'percent':
+                aVal = totalCents > 0 ? (aTotalCents / totalCents) : 0;
+                bVal = totalCents > 0 ? (bTotalCents / totalCents) : 0;
+                break;
+            case 'total_cost':
+            default:
+                aVal = aTotalCents;
+                bVal = bTotalCents;
+                break;
+        }
+        return analyticsSortDirection === 'asc' ? (aVal - bVal) : (bVal - aVal);
+    }
+
+    function updateAnalyticsSplitSortIcons() {
+        const setIcon = (id, column) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.textContent = analyticsSortColumn === column
+                ? (analyticsSortDirection === 'asc' ? '▲' : '▼')
+                : '';
+        };
+
+        [
+            'regular-sort-name-icon',
+            'endpoint-sort-name-icon',
+        ].forEach(id => setIcon(id, 'name'));
+        ['regular-sort-inf-hours-icon', 'endpoint-sort-inf-hours-icon'].forEach(id => setIcon(id, 'inf_hours'));
+        ['regular-sort-sby-hours-icon'].forEach(id => setIcon(id, 'sby_hours'));
+        ['regular-sort-inf-cost-icon', 'endpoint-sort-inf-cost-icon'].forEach(id => setIcon(id, 'inf_cost'));
+        ['regular-sort-sby-cost-icon'].forEach(id => setIcon(id, 'sby_cost'));
+        ['regular-sort-total-cost-icon', 'endpoint-sort-total-cost-icon'].forEach(id => setIcon(id, 'total_cost'));
+        ['regular-sort-percent-icon', 'endpoint-sort-percent-icon'].forEach(id => setIcon(id, 'percent'));
+    }
+
+    function renderAnalyticsModelSplitTableSection(tableId, items, totalCents, kind) {
+        const table = document.getElementById(tableId);
+        if (!table) return null;
+        const tbody = table.querySelector('tbody');
+        if (!tbody) return null;
+
+        tbody.innerHTML = '';
+        let selectedItem = null;
+        let sectionInfMs = 0;
+        let sectionSbyMs = 0;
+        let sectionInfCents = 0;
+        let sectionSbyCents = 0;
+        let sectionTotalCents = 0;
+
+        items.forEach(item => {
+            const row = document.createElement('tr');
+            row.style.borderBottom = '1px solid #eee';
+            row.style.cursor = 'pointer';
+
+            const infMs = item.inference_ms || 0;
+            const sbyMs = item.standby_ms || 0;
+            const infCents = item.inference_cents || 0;
+            const sbyCents = item.standby_cents || 0;
+            const chargeCents = (typeof item.charge_cents === 'number') ? item.charge_cents : (infCents + sbyCents);
+            const infHours = (infMs / 3600000).toFixed(2);
+            const sbyHours = (sbyMs / 3600000).toFixed(2);
+            const percent = totalCents > 0 ? ((chargeCents / totalCents) * 100).toFixed(1) : '0.0';
+            const rowKey = getAnalyticsGroupKey('model', item);
+
+            sectionInfMs += infMs;
+            sectionSbyMs += sbyMs;
+            sectionInfCents += infCents;
+            sectionSbyCents += sbyCents;
+            sectionTotalCents += chargeCents;
+
+            if (rowKey === analyticsSelectedGroupKey) {
+                row.style.background = '#f0f7ff';
+                selectedItem = item;
+            }
+
+            row.onclick = () => {
+                analyticsSelectedGroupKey = rowKey;
+                renderGroupedTable(analyticsData, 'model');
+            };
+
+            const groupLabel = kind === 'endpoint'
+                ? `${item.funcname}`
+                : `${item.funcname} (${item.namespace})`;
+            const safeGroupLabel = escapeAnalyticsHtml(truncateText(groupLabel, 40));
+            const safeGroupTitle = escapeAnalyticsHtml(groupLabel);
+            const modelHref = analyticsModelHref(item);
+            const groupCellHtml = modelHref !== ''
+                ? `<a href="${modelHref}" onclick="event.stopPropagation();">${safeGroupLabel}</a>`
+                : safeGroupLabel;
+            const barWidth = Math.min(Number(percent), 100);
+            const bar = `<div style="background: #4CAF50; width: ${barWidth}%; height: 12px; display: inline-block; margin-right: 5px;"></div>`;
+
+            row.innerHTML = kind === 'endpoint'
+                ? `
+                    <td style="padding: 8px;" title="${safeGroupTitle}">${groupCellHtml}</td>
+                    <td style="text-align: right; padding: 8px;">${infHours}</td>
+                    <td style="text-align: right; padding: 8px;">${formatUsd(infCents)}</td>
+                    <td style="text-align: right; padding: 8px;">${formatUsd(chargeCents)}</td>
+                    <td style="text-align: right; padding: 8px;">${bar}${percent}%</td>
+                `
+                : `
+                    <td style="padding: 8px;" title="${safeGroupTitle}">${groupCellHtml}</td>
+                    <td style="text-align: right; padding: 8px;">${infHours}</td>
+                    <td style="text-align: right; padding: 8px;">${sbyHours}</td>
+                    <td style="text-align: right; padding: 8px;">${formatUsd(infCents)}</td>
+                    <td style="text-align: right; padding: 8px;">${formatUsd(sbyCents)}</td>
+                    <td style="text-align: right; padding: 8px;">${formatUsd(chargeCents)}</td>
+                    <td style="text-align: right; padding: 8px;">${bar}${percent}%</td>
+                `;
+
+            tbody.appendChild(row);
+        });
+
+        return {
+            selectedItem,
+            infMs: sectionInfMs,
+            sbyMs: sectionSbyMs,
+            infCents: sectionInfCents,
+            sbyCents: sectionSbyCents,
+            totalCents: sectionTotalCents,
+        };
+    }
+
+    function renderAnalyticsModelSplitTables(data) {
+        const splitEl = document.getElementById('analytics-model-split-area');
+        const baseTableEl = document.getElementById('analytics-table');
+        const regularSectionEl = document.getElementById('analytics-regular-model-section');
+        const endpointSectionEl = document.getElementById('analytics-endpoint-model-section');
+        if (!splitEl || !baseTableEl || !regularSectionEl || !endpointSectionEl) return;
+
+        const totalCents = (typeof data.total_cents === 'number')
+            ? data.total_cents
+            : data.usage.reduce((sum, u) => sum + ((typeof u.charge_cents === 'number') ? u.charge_cents : ((u.inference_cents || 0) + (u.standby_cents || 0))), 0);
+        const sortedItems = [...data.usage].sort((a, b) => compareAnalyticsItems(a, b, 'model', totalCents));
+        const regularItems = sortedItems.filter(item => !isEndpointAnalyticsItem(item));
+        const endpointItems = sortedItems.filter(isEndpointAnalyticsItem);
+        const showRegular = regularItems.length > 0;
+        const showEndpoint = endpointItems.length > 0;
+
+        baseTableEl.style.display = 'none';
+        splitEl.style.display = 'block';
+        regularSectionEl.style.display = showRegular ? 'block' : 'none';
+        endpointSectionEl.style.display = showEndpoint ? 'block' : 'none';
+        document.getElementById('analytics-regular-model-title').textContent = 'Deployed Model Usage';
+        document.getElementById('analytics-endpoint-model-title').textContent = 'Endpoint Usage';
+
+        let selectedItem = null;
+
+        if (showRegular) {
+            const regularSummary = renderAnalyticsModelSplitTableSection('analytics-regular-model-table', regularItems, totalCents, 'regular');
+            if (regularSummary) {
+                document.getElementById('analytics-regular-total-inf-hours').textContent = (regularSummary.infMs / 3600000).toFixed(2);
+                document.getElementById('analytics-regular-total-sby-hours').textContent = (regularSummary.sbyMs / 3600000).toFixed(2);
+                document.getElementById('analytics-regular-total-inf-cost').textContent = formatUsd(regularSummary.infCents);
+                document.getElementById('analytics-regular-total-sby-cost').textContent = formatUsd(regularSummary.sbyCents);
+                document.getElementById('analytics-regular-total-cost').textContent = formatUsd(regularSummary.totalCents);
+                document.getElementById('analytics-regular-total-percent').textContent =
+                    totalCents > 0 ? `${((regularSummary.totalCents / totalCents) * 100).toFixed(1)}%` : '0.0%';
+                if (regularSummary.selectedItem) selectedItem = regularSummary.selectedItem;
+            }
+        }
+
+        if (showEndpoint) {
+            const endpointSummary = renderAnalyticsModelSplitTableSection('analytics-endpoint-model-table', endpointItems, totalCents, 'endpoint');
+            if (endpointSummary) {
+                document.getElementById('analytics-endpoint-total-inf-hours').textContent = (endpointSummary.infMs / 3600000).toFixed(2);
+                document.getElementById('analytics-endpoint-total-inf-cost').textContent = formatUsd(endpointSummary.infCents);
+                document.getElementById('analytics-endpoint-total-cost').textContent = formatUsd(endpointSummary.totalCents);
+                document.getElementById('analytics-endpoint-total-percent').textContent =
+                    totalCents > 0 ? `${((endpointSummary.totalCents / totalCents) * 100).toFixed(1)}%` : '0.0%';
+                if (!selectedItem && endpointSummary.selectedItem) selectedItem = endpointSummary.selectedItem;
+            }
+        }
+
+        updateAnalyticsSplitSortIcons();
+        document.getElementById('analytics-table-area').style.display = 'block';
+        document.getElementById('analytics-chart-area').style.display = 'none';
+        document.getElementById('analytics-empty').style.display = 'none';
+
+        if (selectedItem) {
+            loadAnalyticsGroupDetail('model', selectedItem);
+        } else {
+            showAnalyticsGroupDetailPrompt('Select a model or endpoint row above to view hourly drill-down.');
+        }
     }
 
     function renderGroupedTable(data, viewMode) {
@@ -4175,9 +4571,18 @@
         if (hourlyControlsEl) hourlyControlsEl.style.display = 'none';
         document.getElementById('analytics-hourly-table-area').style.display = 'none';
         analyticsHourlyTableReady = false;
+        const splitEl = document.getElementById('analytics-model-split-area');
+        const baseTableEl = document.getElementById('analytics-table');
+        if (splitEl) splitEl.style.display = 'none';
+        if (baseTableEl) baseTableEl.style.display = 'table';
 
         if (!data.usage || data.usage.length === 0) {
             showAnalyticsEmpty();
+            return;
+        }
+
+        if (viewMode === 'model') {
+            renderAnalyticsModelSplitTables(data);
             return;
         }
 
@@ -4217,64 +4622,11 @@
                 (data.other?.standby_cents || 0)
             );
         const totalCents = (typeof data.total_cents === 'number') ? data.total_cents : (totalInfCents + totalSbyCents);
+        setAnalyticsSummaryStandbyVisibility(totalSbyCents > 0 || rowsHaveStandbyUsage(data.usage) || rowHasStandbyUsage(data.other));
 
         // Sort data
         let sortedData = [...data.usage];
-        sortedData.sort((a, b) => {
-            let aVal;
-            let bVal;
-            const aInfMs = a.inference_ms || 0;
-            const aSbyMs = a.standby_ms || 0;
-            const aInfCents = a.inference_cents || 0;
-            const aSbyCents = a.standby_cents || 0;
-            const aTotalCents = (typeof a.charge_cents === 'number') ? a.charge_cents : (aInfCents + aSbyCents);
-            const bInfMs = b.inference_ms || 0;
-            const bSbyMs = b.standby_ms || 0;
-            const bInfCents = b.inference_cents || 0;
-            const bSbyCents = b.standby_cents || 0;
-            const bTotalCents = (typeof b.charge_cents === 'number') ? b.charge_cents : (bInfCents + bSbyCents);
-
-            if (analyticsSortColumn === 'name') {
-                aVal = viewMode === 'model'
-                    ? a.funcname
-                    : (viewMode === 'namespace' ? a.namespace : billingAnalyticsTenantLabel(a.tenant));
-                bVal = viewMode === 'model'
-                    ? b.funcname
-                    : (viewMode === 'namespace' ? b.namespace : billingAnalyticsTenantLabel(b.tenant));
-                return analyticsSortDirection === 'asc'
-                    ? aVal.localeCompare(bVal)
-                    : bVal.localeCompare(aVal);
-            }
-
-            switch (analyticsSortColumn) {
-                case 'inf_hours':
-                    aVal = aInfMs;
-                    bVal = bInfMs;
-                    break;
-                case 'sby_hours':
-                    aVal = aSbyMs;
-                    bVal = bSbyMs;
-                    break;
-                case 'inf_cost':
-                    aVal = aInfCents;
-                    bVal = bInfCents;
-                    break;
-                case 'sby_cost':
-                    aVal = aSbyCents;
-                    bVal = bSbyCents;
-                    break;
-                case 'percent':
-                    aVal = totalCents > 0 ? (aTotalCents / totalCents) : 0;
-                    bVal = totalCents > 0 ? (bTotalCents / totalCents) : 0;
-                    break;
-                case 'total_cost':
-                default:
-                    aVal = aTotalCents;
-                    bVal = bTotalCents;
-                    break;
-            }
-            return analyticsSortDirection === 'asc' ? (aVal - bVal) : (bVal - aVal);
-        });
+        sortedData.sort((a, b) => compareAnalyticsItems(a, b, viewMode, totalCents));
 
         let selectedItem = null;
         sortedData.forEach(item => {
@@ -4318,9 +4670,9 @@
             row.innerHTML = `
                 <td style="padding: 8px;" title="${safeGroupTitle}">${groupCellHtml}</td>
                 <td style="text-align: right; padding: 8px;">${infHours}</td>
-                <td style="text-align: right; padding: 8px;">${sbyHours}</td>
+                <td class="analytics-summary-standby-col" style="text-align: right; padding: 8px;">${sbyHours}</td>
                 <td style="text-align: right; padding: 8px;">${formatUsd(infCents)}</td>
-                <td style="text-align: right; padding: 8px;">${formatUsd(sbyCents)}</td>
+                <td class="analytics-summary-standby-col" style="text-align: right; padding: 8px;">${formatUsd(sbyCents)}</td>
                 <td style="text-align: right; padding: 8px;">${formatUsd(chargeCents)}</td>
                 <td style="text-align: right; padding: 8px;">${bar}${percent}%</td>
             `;
@@ -4347,9 +4699,9 @@
             row.innerHTML = `
                 <td style="padding: 8px;">Other (${data.other.count} ${viewMode === 'model' ? 'models' : 'namespaces'})</td>
                 <td style="text-align: right; padding: 8px;">${(otherInfMs / 3600000).toFixed(2)}</td>
-                <td style="text-align: right; padding: 8px;">${(otherSbyMs / 3600000).toFixed(2)}</td>
+                <td class="analytics-summary-standby-col" style="text-align: right; padding: 8px;">${(otherSbyMs / 3600000).toFixed(2)}</td>
                 <td style="text-align: right; padding: 8px;">${formatUsd(otherInfCents)}</td>
-                <td style="text-align: right; padding: 8px;">${formatUsd(otherSbyCents)}</td>
+                <td class="analytics-summary-standby-col" style="text-align: right; padding: 8px;">${formatUsd(otherSbyCents)}</td>
                 <td style="text-align: right; padding: 8px;">${formatUsd(otherCents)}</td>
                 <td style="text-align: right; padding: 8px;">${bar}${percent}%</td>
             `;

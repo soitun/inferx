@@ -794,7 +794,92 @@ impl HttpGateway {
             Err(Error::NewKeyExistsErr(_)) | Err(Error::Exist(_)) => {}
             Err(e) => return Err(e),
         }
+        self.ReconcileInferxTenantPolicy().await?;
         return Ok(());
+    }
+
+    async fn ReconcileInferxTenantPolicy(&self) -> Result<()> {
+        let policy = &GATEWAY_CONFIG.inferxTenantPolicy;
+        if policy.quota_exempt.is_none()
+            && policy.allowMemStandby.is_none()
+            && policy.maxFuncCnt.is_none()
+            && policy.maxReplica.is_none()
+            && policy.maxStandby.is_none()
+            && policy.maxQueueLen.is_none()
+        {
+            return Ok(());
+        }
+
+        let mut attempts = 0;
+        loop {
+            attempts += 1;
+            let tenant_obj = self
+                .client
+                .Get(Tenant::KEY, SYSTEM_TENANT, SYSTEM_NAMESPACE, PLATFORM_TENANT, 0)
+                .await?;
+            let tenant_obj = match tenant_obj {
+                Some(obj) => obj,
+                None => {
+                    return Err(Error::NotExist(format!(
+                        "platform tenant {} does not exist during reconcile",
+                        PLATFORM_TENANT
+                    )));
+                }
+            };
+            let mut tenant_obj = Tenant::FromDataObject(tenant_obj)?;
+            let mut changed = false;
+
+            if let Some(v) = policy.quota_exempt {
+                if tenant_obj.object.spec.quota_exempt != v {
+                    tenant_obj.object.spec.quota_exempt = v;
+                    changed = true;
+                }
+            }
+            if let Some(v) = policy.allowMemStandby {
+                if tenant_obj.object.spec.resourceLimit.allocMemStandby != v {
+                    tenant_obj.object.spec.resourceLimit.allocMemStandby = v;
+                    changed = true;
+                }
+            }
+            if let Some(v) = policy.maxFuncCnt {
+                if tenant_obj.object.spec.resourceLimit.maxFuncCnt != v {
+                    tenant_obj.object.spec.resourceLimit.maxFuncCnt = v;
+                    changed = true;
+                }
+            }
+            if let Some(v) = policy.maxReplica {
+                if tenant_obj.object.spec.resourceLimit.maxReplica != v {
+                    tenant_obj.object.spec.resourceLimit.maxReplica = v;
+                    changed = true;
+                }
+            }
+            if let Some(v) = policy.maxStandby {
+                if tenant_obj.object.spec.resourceLimit.maxStandby != v {
+                    tenant_obj.object.spec.resourceLimit.maxStandby = v;
+                    changed = true;
+                }
+            }
+            if let Some(v) = policy.maxQueueLen {
+                if tenant_obj.object.spec.resourceLimit.maxQueueLen != v {
+                    tenant_obj.object.spec.resourceLimit.maxQueueLen = v;
+                    changed = true;
+                }
+            }
+
+            if !changed {
+                return Ok(());
+            }
+
+            match self
+                .client
+                .Update(&tenant_obj.DataObject(), tenant_obj.revision)
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(e) if attempts < 3 && IsCasConflictError(&e) => continue,
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     async fn EnsureRole(&self, token: &Arc<AccessToken>, username: &str, role: &str) -> Result<()> {

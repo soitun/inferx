@@ -42,6 +42,22 @@ fn default_inferx_endpoint_func_default_policy() -> FuncPolicySchedulerDefaults 
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct InferxTenantPolicy {
+    #[serde(default)]
+    pub quota_exempt: Option<bool>,
+    #[serde(default, rename = "allow_mem_standby")]
+    pub allowMemStandby: Option<bool>,
+    #[serde(default, rename = "max_funccount")]
+    pub maxFuncCnt: Option<u64>,
+    #[serde(default, rename = "max_replica")]
+    pub maxReplica: Option<u64>,
+    #[serde(default, rename = "max_standby")]
+    pub maxStandby: Option<u64>,
+    #[serde(default, rename = "max_queue_len")]
+    pub maxQueueLen: Option<usize>,
+}
+
 fn merge_json_value(base: &mut serde_json::Value, overlay: serde_json::Value) {
     match (base, overlay) {
         (serde_json::Value::Object(base_map), serde_json::Value::Object(overlay_map)) => {
@@ -91,6 +107,22 @@ fn resolve_inferx_endpoint_func_default_policy(
             )
         }
         Err(_) => config.inferx_endpoint_func_default_policy.clone(),
+    }
+}
+
+fn resolve_inferx_tenant_policy(config: &NodeConfig) -> InferxTenantPolicy {
+    match std::env::var("INFERX_TENANT_POLICY") {
+        Ok(raw) => {
+            let mut base = serde_json::to_value(&config.inferx_tenant_policy)
+                .expect("inferx_tenant_policy should serialize");
+            let overlay = serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_else(|e| {
+                panic!("invalid INFERX_TENANT_POLICY JSON '{}': {:?}", raw, e)
+            });
+            merge_json_value(&mut base, overlay);
+            serde_json::from_value(base)
+                .expect("INFERX_TENANT_POLICY merge produced invalid InferxTenantPolicy")
+        }
+        Err(_) => config.inferx_tenant_policy.clone(),
     }
 }
 
@@ -236,6 +268,7 @@ pub struct GatewayConfig {
     pub onboardInitialCreditCents: i64,
     pub gatewayPort: u16,
     pub endpointsDefaultPolicy: EndpointGatewayPolicySpec,
+    pub inferxTenantPolicy: InferxTenantPolicy,
 }
 
 impl GatewayConfig {
@@ -365,6 +398,7 @@ impl GatewayConfig {
         };
 
         let endpointsDefaultPolicy = resolve_endpoints_default_policy(config);
+        let inferxTenantPolicy = resolve_inferx_tenant_policy(config);
 
         let ret = Self {
             nodeName: nodeName,
@@ -384,6 +418,7 @@ impl GatewayConfig {
             onboardInitialCreditCents: onboardInitialCreditCents,
             gatewayPort: gatewayPort,
             endpointsDefaultPolicy,
+            inferxTenantPolicy,
         };
 
         info!("GatewayConfig is {:#?}", &ret);
@@ -1025,6 +1060,9 @@ pub struct NodeConfig {
 
     #[serde(default = "default_inferx_endpoint_func_default_policy")]
     pub inferx_endpoint_func_default_policy: FuncPolicySchedulerDefaults,
+
+    #[serde(default)]
+    pub inferx_tenant_policy: InferxTenantPolicy,
 }
 
 impl NodeConfig {
@@ -1078,6 +1116,7 @@ mod tests {
             peerLoad: false,
             endpoints_default_policy: default_endpoints_policy(),
             inferx_endpoint_func_default_policy: default_inferx_endpoint_func_default_policy(),
+            inferx_tenant_policy: InferxTenantPolicy::default(),
         }
     }
 
@@ -1118,6 +1157,26 @@ mod tests {
         assert_eq!(resolved.maxReplica, 2);
         assert_eq!(resolved.queueTimeout, 9.5);
         assert_eq!(resolved.queueLen, 77);
+    }
+
+    #[test]
+    fn resolve_inferx_tenant_policy_merges_env_json() {
+        std::env::set_var(
+            "INFERX_TENANT_POLICY",
+            r#"{"quota_exempt":true,"max_replica":8,"max_queue_len":1000}"#,
+        );
+        let mut config = test_node_config();
+        config.inferx_tenant_policy.allowMemStandby = Some(false);
+        config.inferx_tenant_policy.maxStandby = Some(2);
+
+        let resolved = resolve_inferx_tenant_policy(&config);
+        std::env::remove_var("INFERX_TENANT_POLICY");
+
+        assert_eq!(resolved.quota_exempt, Some(true));
+        assert_eq!(resolved.allowMemStandby, Some(false));
+        assert_eq!(resolved.maxReplica, Some(8));
+        assert_eq!(resolved.maxStandby, Some(2));
+        assert_eq!(resolved.maxQueueLen, Some(1000));
     }
 
     #[test]
