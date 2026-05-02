@@ -6149,7 +6149,7 @@ def text2audio():
     # excluded_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
     excluded_headers = []
     headers = [(name, value) for (name, value) in resp.raw.headers.items() if name.lower() not in excluded_headers]
-    return Response(resp.iter_content(1024000), resp.status_code, headers)
+    return Response(resp.iter_content(1024), resp.status_code, headers)
 
 
 @prefix_bp.route('/generate_tenants', methods=['GET'])
