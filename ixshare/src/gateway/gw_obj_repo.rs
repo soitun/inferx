@@ -58,6 +58,10 @@ lazy_static::lazy_static! {
     pub static ref SCHEDULER_URL : Mutex<Option<String>> = Mutex::new(None);
 }
 
+const VIRTUAL_ENDPOINTS_NAMESPACE: &str = "endpoints";
+const PLATFORM_TENANT: &str = "inferx";
+const PLATFORM_SHARED_NAMESPACE: &str = "endpoint";
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct GatewayInfo {
     pub name: String,
@@ -781,6 +785,28 @@ impl GwObjRepo {
 }
 
 impl GwObjRepo {
+    pub fn EndpointRoutePolicy(&self, tenant: &str, slug: &str) -> FuncPolicySpec {
+        match self
+            .funcpolicyMgr
+            .Get(tenant, VIRTUAL_ENDPOINTS_NAMESPACE, slug)
+        {
+            Ok(policy) => policy.object,
+            Err(_) => {
+                let mut policy = GATEWAY_CONFIG.endpointsDefaultPolicy.AsFuncPolicySpec();
+                if let Ok(func) = self.GetFunc(PLATFORM_TENANT, PLATFORM_SHARED_NAMESPACE, slug) {
+                    let backing_policy = self.FuncPolicy(&func);
+                    policy.parallel = backing_policy.parallel;
+                    policy.queueLen = backing_policy.queueLen;
+                    policy.queueTimeout = backing_policy.queueTimeout;
+                    policy.scaleoutPolicy = backing_policy.scaleoutPolicy;
+                    policy.scaleinTimeout = backing_policy.scaleinTimeout;
+                }
+
+                policy
+            }
+        }
+    }
+
     pub fn ListFunc(&self, tenant: &str, namespace: &str) -> Result<Vec<FuncBrief>> {
         let funcs = self.GetFuncs(tenant, namespace)?;
         let mut funcbriefs = Vec::new();

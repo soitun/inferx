@@ -209,7 +209,8 @@
                 <tr>
                     <th style="text-align: left;">Name</th>
                     <th style="text-align: left;">Brief Intro</th>
-                    <th style="text-align: left;">Max Token Length</th>
+                    <th style="text-align: left;">GPU Count</th>
+                    <th style="text-align: left;">Context Length</th>
                     <th style="text-align: left;">Concurrency</th>
                     {% if not is_admin_view %}
                     <th style="text-align: left;">Integration</th>
@@ -227,7 +228,7 @@
                 {% set detail_href = url_for('prefix.EndpointAdminDetail', slug=slug) if is_admin_view else url_for('prefix.EndpointDetail', slug=slug, tenant=selected_tenant) %}
                 {% set client_preview = entry.get('client_setup_preview', {}) %}
                 <tr
-                    data-search="{{ (slug ~ ' ' ~ entry.get('provider', '') ~ ' ' ~ entry.get('brief_intro', '') ~ ' ' ~ entry.get('detailed_intro', '') ~ ' ' ~ ' '.join(entry.get('tags', [])) ~ ' ' ~ ' '.join(entry.get('recommended_use_cases', [])))|lower }}"
+                    data-search="{{ (slug ~ ' ' ~ entry.get('provider', '') ~ ' ' ~ entry.get('brief_intro', '') ~ ' ' ~ entry.get('detailed_intro', '') ~ ' ' ~ entry.get('cs_ttft', '') ~ ' ' ~ ' '.join(entry.get('tags', [])) ~ ' ' ~ ' '.join(entry.get('recommended_use_cases', [])))|lower }}"
                     data-tags="{{ (entry.get('tags', [])|join('||'))|lower }}"
                     data-use-cases="{{ (entry.get('recommended_use_cases', [])|join('||'))|lower }}"
                     data-provider="{{ entry.get('provider', '')|lower }}"
@@ -236,7 +237,8 @@
                         <a class="endpoint-slug-link" href="{{ detail_href }}">{{ slug }}</a>
                     </td>
                     <td style="text-align: left;">{{ entry.get('brief_intro', '') or 'No summary yet.' }}</td>
-                    <td style="text-align: left;">{{ entry.get('max_token_length', '') or '—' }}</td>
+                    <td style="text-align: left;">{% if entry.get('gpu_count') is not none %}{{ entry.get('gpu_count') }}{% else %}—{% endif %}</td>
+                    <td style="text-align: left;">{{ entry.get('context_length', '') or '—' }}</td>
                     <td style="text-align: left;">{% if entry.get('concurrency') is not none %}{{ '%.2fx'|format(entry.get('concurrency')) }}{% else %}—{% endif %}</td>
                     {% if not is_admin_view %}
                     <td style="text-align: left;">
@@ -281,7 +283,7 @@
                 </tr>
                 {% else %}
                 <tr>
-                    <td colspan="{% if is_admin_view %}7{% else %}5{% endif %}" class="endpoint-empty">
+                    <td colspan="{% if is_admin_view %}8{% else %}6{% endif %}" class="endpoint-empty">
                         No endpoints are available right now.
                     </td>
                 </tr>

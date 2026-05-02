@@ -479,6 +479,7 @@ impl StateSvc {
 #[cfg(test)]
 mod tests {
     use super::StateSvc;
+    use inferxlib::obj_mgr::funcpolicy_mgr::FuncPolicySpec;
 
     #[test]
     fn default_function_published_for_platform_shared_is_false() {

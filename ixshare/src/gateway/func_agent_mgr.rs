@@ -536,7 +536,10 @@ impl FuncAgent {
                 &self.funcName,
             ) {
                 Ok(p) => p.object,
-                Err(_) => GATEWAY_CONFIG.endpointsDefaultPolicy.clone(),
+                Err(_) => GW_OBJREPO
+                    .get()
+                    .unwrap()
+                    .EndpointRoutePolicy(&self.tenant, &self.funcName),
             }
         } else {
             GW_OBJREPO.get().unwrap().FuncPolicy(&self.func)
@@ -546,6 +549,9 @@ impl FuncAgent {
         self.scaleinTimeout
             .store((policy.scaleinTimeout * 1000.0) as u64, Ordering::Relaxed);
         self.parallelLeve.store(policy.parallel, Ordering::Relaxed);
+        self.reqQueue
+            .queueLen
+            .store(policy.queueLen, Ordering::Relaxed);
     }
 
     pub fn EnqReq(

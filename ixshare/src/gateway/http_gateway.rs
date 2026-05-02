@@ -270,14 +270,7 @@ fn quota_lookup_failed_response(tenant: &str) -> Response<Body> {
 }
 
 fn endpoint_policy_for_request(gw: &HttpGateway, tenant: &str, slug: &str) -> FuncPolicySpec {
-    match gw
-        .objRepo
-        .funcpolicyMgr
-        .Get(tenant, VIRTUAL_ENDPOINTS_NAMESPACE, slug)
-    {
-        Ok(policy) => policy.object,
-        Err(_) => GATEWAY_CONFIG.endpointsDefaultPolicy.clone(),
-    }
+    gw.objRepo.EndpointRoutePolicy(tenant, slug)
 }
 
 fn resolve_funccall_target(

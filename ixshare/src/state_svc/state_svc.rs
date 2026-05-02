@@ -15,7 +15,7 @@
 use std::result::Result as SResult;
 use std::sync::Arc;
 
-use inferxlib::obj_mgr::funcpolicy_mgr::FuncPolicy;
+use inferxlib::obj_mgr::funcpolicy_mgr::{FuncPolicy, NormalizeFuncPolicyDataObject};
 use inferxlib::obj_mgr::funcstatus_mgr::FunctionStatus;
 use inferxlib::selector::Selector;
 use serde_json::Value;
@@ -316,6 +316,18 @@ impl ixmeta::ix_meta_service_server::IxMetaService for StateSvc {
             }
             Some(o) => o.into(),
         };
+        let dataobj = match dataobj.objType.as_str() {
+            FuncPolicy::KEY => match NormalizeFuncPolicyDataObject(&dataobj) {
+                Ok(obj) => obj,
+                Err(e) => {
+                    return Ok(Response::new(ixmeta::CreateResponseMessage {
+                        error: format!("create error: {:?}", e),
+                        revision: 0,
+                    }))
+                }
+            },
+            _ => dataobj,
+        };
 
         match self.CreateObjCheck(&dataobj) {
             Err(e) => {
@@ -366,6 +378,18 @@ impl ixmeta::ix_meta_service_server::IxMetaService for StateSvc {
                 }))
             }
             Some(o) => o.into(),
+        };
+        let dataobj = match dataobj.objType.as_str() {
+            FuncPolicy::KEY => match NormalizeFuncPolicyDataObject(&dataobj) {
+                Ok(obj) => obj,
+                Err(e) => {
+                    return Ok(Response::new(ixmeta::UpdateResponseMessage {
+                        error: format!("update error: {:?}", e),
+                        revision: 0,
+                    }))
+                }
+            },
+            _ => dataobj,
         };
 
         match self.UpdateObjCheck(&dataobj) {

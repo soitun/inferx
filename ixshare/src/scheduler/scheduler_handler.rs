@@ -102,6 +102,9 @@ static GLOBAL_RPC_SEMAPHORE: Lazy<Arc<Semaphore>> = Lazy::new(|| {
     Arc::new(Semaphore::new(16)) // Max 16 concurrent RPCs
 });
 
+const PLATFORM_TENANT: &str = "inferx";
+const PLATFORM_SHARED_NAMESPACE: &str = "endpoint";
+
 /// Billing session for tracking snapshot loading usage
 /// Tracks start time and metadata for generating billing ticks
 #[derive(Debug, Clone)]
@@ -794,6 +797,30 @@ impl SchedulerHandler {
         let mut handler = Self::default();
         handler.msgTx = msgTx;
         handler
+    }
+
+    fn IsPlatformSharedFunc(tenant: &str, namespace: &str) -> bool {
+        tenant == PLATFORM_TENANT && namespace == PLATFORM_SHARED_NAMESPACE
+    }
+
+    fn ResolveReferencedFuncPolicy(
+        &self,
+        tenant: &str,
+        p: &ObjRef<FuncPolicySpec>,
+    ) -> FuncPolicySpec {
+        match p {
+            ObjRef::Obj(p) => p.clone(),
+            ObjRef::Link(l) => {
+                if l.objType != FuncPolicy::KEY {
+                    return FuncPolicySpec::default();
+                }
+
+                match self.funcpolicy.get(&l.Key(tenant)) {
+                    None => FuncPolicySpec::default(),
+                    Some(p) => p.clone(),
+                }
+            }
+        }
     }
 
     #[inline]
@@ -4088,26 +4115,14 @@ impl SchedulerHandler {
             Some(p) => return p.clone(),
         }
 
-        match p {
-            ObjRef::Obj(p) => return p.clone(),
-            ObjRef::Link(l) => {
-                if l.objType != FuncPolicy::KEY {
-                    return FuncPolicySpec::default();
-                    // return Err(Error::CommonError(format!(
-                    //     "FuncStatus::FuncPolicy for policy {} fail invalic link type {}",
-                    //     l.Key(),
-                    //     l.objType
-                    // )));
-                }
-
-                match self.funcpolicy.get(&l.Key(tenant)) {
-                    None => {
-                        return FuncPolicySpec::default();
-                    }
-                    Some(p) => return p.clone(),
-                }
-            }
+        let mut policy = self.ResolveReferencedFuncPolicy(tenant, p);
+        if Self::IsPlatformSharedFunc(tenant, namespace) {
+            SCHEDULER_CONFIG
+                .inferxEndpointFuncDefaultPolicy
+                .ApplyTo(&mut policy);
         }
+
+        policy
     }
 
     /// Adjust standby pods on a node following the async pattern from ResumePod

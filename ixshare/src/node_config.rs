@@ -20,7 +20,9 @@ use std::sync::Mutex;
 use crate::common::*;
 use crate::consts::*;
 use crate::gateway::auth_layer::KeycloadConfig;
-use inferxlib::obj_mgr::funcpolicy_mgr::FuncPolicySpec;
+use inferxlib::obj_mgr::funcpolicy_mgr::{
+    EndpointGatewayPolicySpec, FuncPolicySchedulerDefaults, DEFAULT_PLATFORM_ENDPOINT_MAX_REPLICA,
+};
 use inferxlib::resource::{GPUSet, ResourceConfig};
 
 use std::collections::BTreeSet;
@@ -28,10 +30,15 @@ use std::num::ParseIntError;
 
 pub const SNAPSHOT_DIR: &str = "/opt/inferx/snapshot";
 
-fn default_endpoints_policy() -> FuncPolicySpec {
-    FuncPolicySpec {
-        standbyPerNode: 0,
-        ..Default::default()
+fn default_endpoints_policy() -> EndpointGatewayPolicySpec {
+    EndpointGatewayPolicySpec::default()
+}
+
+fn default_inferx_endpoint_func_default_policy() -> FuncPolicySchedulerDefaults {
+    FuncPolicySchedulerDefaults {
+        minReplica: Some(0),
+        maxReplica: Some(DEFAULT_PLATFORM_ENDPOINT_MAX_REPLICA),
+        standbyPerNode: Some(0),
     }
 }
 
@@ -49,7 +56,7 @@ fn merge_json_value(base: &mut serde_json::Value, overlay: serde_json::Value) {
     }
 }
 
-fn resolve_endpoints_default_policy(config: &NodeConfig) -> FuncPolicySpec {
+fn resolve_endpoints_default_policy(config: &NodeConfig) -> EndpointGatewayPolicySpec {
     match std::env::var("ENDPOINTS_DEFAULT_POLICY") {
         Ok(raw) => {
             let mut base = serde_json::to_value(&config.endpoints_default_policy)
@@ -59,28 +66,31 @@ fn resolve_endpoints_default_policy(config: &NodeConfig) -> FuncPolicySpec {
             });
             merge_json_value(&mut base, overlay);
             serde_json::from_value(base)
-                .expect("ENDPOINTS_DEFAULT_POLICY merge produced invalid FuncPolicySpec")
+                .expect("ENDPOINTS_DEFAULT_POLICY merge produced invalid EndpointGatewayPolicySpec")
         }
         Err(_) => config.endpoints_default_policy.clone(),
     }
 }
 
-fn endpoints_policy_unsupported_warning(policy: &FuncPolicySpec) -> Option<String> {
-    let mut unsupported = Vec::new();
-    if policy.minReplica > 0 {
-        unsupported.push(format!("min_replica={}", policy.minReplica));
-    }
-    if policy.standbyPerNode > 0 {
-        unsupported.push(format!("standby_per_node={}", policy.standbyPerNode));
-    }
-
-    if unsupported.is_empty() {
-        None
-    } else {
-        Some(format!(
-            "endpoints_default_policy ignores {} for endpoints routing; standby is controlled by the platform function",
-            unsupported.join(", ")
-        ))
+fn resolve_inferx_endpoint_func_default_policy(
+    config: &NodeConfig,
+) -> FuncPolicySchedulerDefaults {
+    match std::env::var("INFERX_ENDPOINT_FUNC_DEFAULT_POLICY") {
+        Ok(raw) => {
+            let mut base = serde_json::to_value(&config.inferx_endpoint_func_default_policy)
+                .expect("inferx_endpoint_func_default_policy should serialize");
+            let overlay = serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_else(|e| {
+                panic!(
+                    "invalid INFERX_ENDPOINT_FUNC_DEFAULT_POLICY JSON '{}': {:?}",
+                    raw, e
+                )
+            });
+            merge_json_value(&mut base, overlay);
+            serde_json::from_value(base).expect(
+                "INFERX_ENDPOINT_FUNC_DEFAULT_POLICY merge produced invalid FuncPolicySchedulerDefaults",
+            )
+        }
+        Err(_) => config.inferx_endpoint_func_default_policy.clone(),
     }
 }
 
@@ -225,7 +235,7 @@ pub struct GatewayConfig {
     pub inferxAdminApikey: String,
     pub onboardInitialCreditCents: i64,
     pub gatewayPort: u16,
-    pub endpointsDefaultPolicy: FuncPolicySpec,
+    pub endpointsDefaultPolicy: EndpointGatewayPolicySpec,
 }
 
 impl GatewayConfig {
@@ -355,9 +365,6 @@ impl GatewayConfig {
         };
 
         let endpointsDefaultPolicy = resolve_endpoints_default_policy(config);
-        if let Some(msg) = endpoints_policy_unsupported_warning(&endpointsDefaultPolicy) {
-            warn!("{}", msg);
-        }
 
         let ret = Self {
             nodeName: nodeName,
@@ -394,6 +401,7 @@ pub struct SchedulerConfig {
     pub auditdbAddr: String,
     pub billingdbAddr: String,
     pub enableSnapshotBilling: bool,
+    pub inferxEndpointFuncDefaultPolicy: FuncPolicySchedulerDefaults,
 }
 
 impl SchedulerConfig {
@@ -455,6 +463,9 @@ impl SchedulerConfig {
             Err(_) => config.enableSnapshotBilling,
         };
 
+        let inferxEndpointFuncDefaultPolicy =
+            resolve_inferx_endpoint_func_default_policy(config);
+
         let ret = Self {
             etcdAddrs: etcdAddrs,
             stateSvcAddrs: stateSvcAddrs,
@@ -463,6 +474,7 @@ impl SchedulerConfig {
             auditdbAddr: auditdbAddr,
             billingdbAddr: billingdbAddr,
             enableSnapshotBilling: enableSnapshotBilling,
+            inferxEndpointFuncDefaultPolicy: inferxEndpointFuncDefaultPolicy,
         };
 
         info!("SchedulerConfig is {:#?}", &ret);
@@ -1009,7 +1021,10 @@ pub struct NodeConfig {
     pub peerLoad: bool,
 
     #[serde(default = "default_endpoints_policy")]
-    pub endpoints_default_policy: FuncPolicySpec,
+    pub endpoints_default_policy: EndpointGatewayPolicySpec,
+
+    #[serde(default = "default_inferx_endpoint_func_default_policy")]
+    pub inferx_endpoint_func_default_policy: FuncPolicySchedulerDefaults,
 }
 
 impl NodeConfig {
@@ -1062,15 +1077,15 @@ mod tests {
             secretStoreAddr: String::new(),
             peerLoad: false,
             endpoints_default_policy: default_endpoints_policy(),
+            inferx_endpoint_func_default_policy: default_inferx_endpoint_func_default_policy(),
         }
     }
 
     #[test]
     fn default_endpoints_policy_disables_standby() {
         let policy = default_endpoints_policy();
-        assert_eq!(policy.minReplica, 0);
         assert_eq!(policy.maxReplica, 1);
-        assert_eq!(policy.standbyPerNode, 0);
+        assert_eq!(policy.queueLen, 100);
     }
 
     #[test]
@@ -1084,7 +1099,6 @@ mod tests {
         let resolved = resolve_endpoints_default_policy(&config);
         assert_eq!(resolved.maxReplica, 3);
         assert_eq!(resolved.queueTimeout, 12.5);
-        assert_eq!(resolved.standbyPerNode, 0);
     }
 
     #[test]
@@ -1107,15 +1121,26 @@ mod tests {
     }
 
     #[test]
-    fn endpoints_policy_warning_only_when_unsupported_fields_present() {
-        let supported = default_endpoints_policy();
-        assert!(endpoints_policy_unsupported_warning(&supported).is_none());
+    fn default_inferx_endpoint_scheduler_policy_uses_platform_baseline() {
+        let policy = default_inferx_endpoint_func_default_policy();
+        assert_eq!(policy.minReplica, Some(0));
+        assert_eq!(policy.maxReplica, Some(DEFAULT_PLATFORM_ENDPOINT_MAX_REPLICA));
+        assert_eq!(policy.standbyPerNode, Some(0));
+    }
 
-        let mut unsupported = default_endpoints_policy();
-        unsupported.minReplica = 1;
-        unsupported.standbyPerNode = 2;
-        let msg = endpoints_policy_unsupported_warning(&unsupported).unwrap();
-        assert!(msg.contains("min_replica=1"));
-        assert!(msg.contains("standby_per_node=2"));
+    #[test]
+    fn resolve_inferx_endpoint_scheduler_policy_merges_env_json() {
+        std::env::set_var(
+            "INFERX_ENDPOINT_FUNC_DEFAULT_POLICY",
+            r#"{"max_replica":6,"standby_per_node":1}"#,
+        );
+
+        let config = test_node_config();
+        let resolved = resolve_inferx_endpoint_func_default_policy(&config);
+        std::env::remove_var("INFERX_ENDPOINT_FUNC_DEFAULT_POLICY");
+
+        assert_eq!(resolved.minReplica, Some(0));
+        assert_eq!(resolved.maxReplica, Some(6));
+        assert_eq!(resolved.standbyPerNode, Some(1));
     }
 }

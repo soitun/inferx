@@ -3384,6 +3384,21 @@ def build_catalog_default_summary(default_func_spec):
     }
 
 
+def extract_gpu_count_from_spec(spec):
+    if not isinstance(spec, dict):
+        return None
+    resources = spec.get("resources")
+    if not isinstance(resources, dict):
+        return None
+    gpu = resources.get("GPU")
+    if not isinstance(gpu, dict):
+        return None
+    gpu_count = gpu.get("Count")
+    if not isinstance(gpu_count, int) or isinstance(gpu_count, bool) or gpu_count <= 0:
+        return None
+    return gpu_count
+
+
 def normalize_catalog_entry_row(row):
     if not isinstance(row, dict):
         raise ValueError("Invalid catalog model row")
@@ -4020,12 +4035,12 @@ ENDPOINT_ENTRY_SELECT_COLUMNS = """
         func_revision,
         brief_intro,
         detailed_intro,
+        cs_ttft,
         recommended_use_cases,
         tags,
         provider,
         parameter_count_b,
         context_length,
-        max_token_length,
         concurrency,
         last_published_at,
         last_published_by
@@ -4182,10 +4197,15 @@ def proxy_gateway_endpoint_admin_action(method: str, slug: str, *, metadata=None
 def endpoint_metadata_payload_from_prefill(data):
     entry = data if isinstance(data, dict) else {}
     context_length_raw = str(entry.get("context_length", "") or "").strip()
-    max_token_length_raw = str(entry.get("max_token_length", "") or "").strip()
+    context_length = None if context_length_raw == "" else int(context_length_raw)
     return {
         "brief_intro": str(entry.get("brief_intro", "") or "").strip(),
         "detailed_intro": str(entry.get("detailed_intro", "") or "").strip(),
+        "cs_ttft": normalize_catalog_string_field(
+            entry.get("cs_ttft"),
+            "cs_ttft",
+            allow_empty=True,
+        ),
         "recommended_use_cases": normalize_catalog_string_list(
             entry.get("recommended_use_cases"),
             "recommended_use_cases",
@@ -4197,8 +4217,7 @@ def endpoint_metadata_payload_from_prefill(data):
             allow_empty=True,
         ),
         "parameter_count_b": normalize_catalog_parameter_count(entry.get("parameter_count_b")),
-        "context_length": None if context_length_raw == "" else int(context_length_raw),
-        "max_token_length": None if max_token_length_raw == "" else int(max_token_length_raw),
+        "context_length": context_length,
         "concurrency": normalize_catalog_parameter_count(entry.get("concurrency")),
     }
 
@@ -4283,12 +4302,12 @@ def fill_missing_endpoint_metadata_from_source(payload, source):
     for key in (
         "brief_intro",
         "detailed_intro",
+        "cs_ttft",
         "recommended_use_cases",
         "tags",
         "provider",
         "parameter_count_b",
         "context_length",
-        "max_token_length",
         "concurrency",
     ):
         current_value = merged.get(key)
@@ -4319,12 +4338,12 @@ def build_endpoint_editor_prefill(slug: str, existing_entry, platform_func):
         "slug": slug,
         "brief_intro": "",
         "detailed_intro": "",
+        "cs_ttft": "",
         "recommended_use_cases": [],
         "tags": [],
         "provider": "",
         "parameter_count_b": "",
         "context_length": "",
-        "max_token_length": "",
         "concurrency": "",
     }
 
@@ -4339,12 +4358,12 @@ def build_endpoint_editor_prefill(slug: str, existing_entry, platform_func):
         for key in (
             "brief_intro",
             "detailed_intro",
+            "cs_ttft",
             "recommended_use_cases",
             "tags",
             "provider",
             "parameter_count_b",
             "context_length",
-            "max_token_length",
             "concurrency",
         ):
             value = source.get(key)
@@ -4504,6 +4523,7 @@ def load_live_endpoint_detail(
         platform_sample_query = platform_spec.get("sample_query")
         if isinstance(platform_sample_query, dict):
             entry["sample_query"] = clone_json_value(platform_sample_query)
+    entry["gpu_count"] = extract_gpu_count_from_spec(entry.get("spec"))
 
     entry["model_name"] = resolve_endpoint_model_name(
         entry.get("sample_query"),
@@ -4565,6 +4585,7 @@ def load_tenant_endpoint_detail(slug: str, tenant: str):
         platform_sample_query = platform_spec.get("sample_query")
         if isinstance(platform_sample_query, dict):
             entry["sample_query"] = clone_json_value(platform_sample_query)
+    entry["gpu_count"] = extract_gpu_count_from_spec(entry.get("spec"))
 
     entry["model_name"] = resolve_endpoint_model_name(
         entry.get("sample_query"),
@@ -4625,6 +4646,7 @@ def build_endpoint_list_entries(*, include_unpublished: bool, tenant: str = ""):
                 platform_sample_query = platform_spec.get("sample_query")
                 if isinstance(platform_sample_query, dict):
                     entry["sample_query"] = clone_json_value(platform_sample_query)
+        entry["gpu_count"] = extract_gpu_count_from_spec(entry.get("spec"))
 
         entry["model_name"] = resolve_endpoint_model_name(
             entry.get("sample_query"),
@@ -4657,6 +4679,10 @@ def build_admin_endpoint_list_entries():
         entry = enrich_endpoint_catalog_fallback(metadata_entry if metadata_entry is not None else {"slug": slug})
         entry["platform_detail"] = platform_detail
         entry["published"] = published
+        platform_spec = (((platform_detail or {}).get("func") or {}).get("object") or {}).get("spec")
+        if isinstance(platform_spec, dict):
+            entry["spec"] = clone_json_value(platform_spec)
+        entry["gpu_count"] = extract_gpu_count_from_spec(entry.get("spec"))
         entry["state"] = endpoint_state_from_sources(
             published=published,
             metadata_entry=metadata_entry,

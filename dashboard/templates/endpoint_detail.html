@@ -223,9 +223,10 @@
             <strong>Name</strong><div>{{ endpoint_entry.get('slug', '') }}</div>
             <strong>Provider</strong><div>{{ endpoint_entry.get('provider', '') or '—' }}</div>
             <strong>Parameter Size</strong><div>{% if endpoint_entry.get('parameter_count_b') is not none %}{{ '%.2fB'|format(endpoint_entry.get('parameter_count_b')) }}{% else %}—{% endif %}</div>
+            <strong>GPU Count</strong><div>{% if endpoint_entry.get('gpu_count') is not none %}{{ endpoint_entry.get('gpu_count') }}{% else %}—{% endif %}</div>
             <strong>Context Length</strong><div>{{ endpoint_entry.get('context_length', '') or '—' }}</div>
-            <strong>Max Token Length</strong><div>{{ endpoint_entry.get('max_token_length', '') or '—' }}</div>
             <strong>Concurrency</strong><div>{% if endpoint_entry.get('concurrency') is not none %}{{ '%.2fx'|format(endpoint_entry.get('concurrency')) }}{% else %}—{% endif %}</div>
+            <strong>Cold Start TTFT</strong><div>{{ endpoint_entry.get('cs_ttft', '') or '—' }}</div>
             <strong>Recommended Use Cases</strong>
             <div>{% if endpoint_entry.get('recommended_use_cases') %}{{ endpoint_entry.get('recommended_use_cases', [])|join(', ') }}{% else %}—{% endif %}</div>
             <strong>Detailed Intro</strong><div style="white-space: pre-wrap;">{{ endpoint_entry.get('detailed_intro', '') or '—' }}</div>

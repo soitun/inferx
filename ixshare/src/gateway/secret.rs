@@ -61,6 +61,7 @@ pub struct TenantProfile {
 pub struct EndpointMetadata {
     pub brief_intro: Option<String>,
     pub detailed_intro: Option<String>,
+    pub cs_ttft: Option<String>,
     #[serde(default)]
     pub recommended_use_cases: Vec<String>,
     #[serde(default)]
@@ -68,7 +69,6 @@ pub struct EndpointMetadata {
     pub provider: Option<String>,
     pub parameter_count_b: Option<f64>,
     pub context_length: Option<i64>,
-    pub max_token_length: Option<i64>,
     pub concurrency: Option<f64>,
 }
 
@@ -521,26 +521,26 @@ impl SqlSecret {
                 func_revision,
                 brief_intro,
                 detailed_intro,
+                cs_ttft,
                 recommended_use_cases,
                 tags,
                 provider,
                 parameter_count_b,
                 context_length,
-                max_token_length,
                 concurrency
             ) VALUES (
-                $1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11
+                $1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11
             )
             ON CONFLICT (slug)
             DO UPDATE SET
                 brief_intro = EXCLUDED.brief_intro,
                 detailed_intro = EXCLUDED.detailed_intro,
+                cs_ttft = EXCLUDED.cs_ttft,
                 recommended_use_cases = EXCLUDED.recommended_use_cases,
                 tags = EXCLUDED.tags,
                 provider = EXCLUDED.provider,
                 parameter_count_b = EXCLUDED.parameter_count_b,
                 context_length = EXCLUDED.context_length,
-                max_token_length = EXCLUDED.max_token_length,
                 concurrency = EXCLUDED.concurrency
         "#;
 
@@ -549,12 +549,12 @@ impl SqlSecret {
             .bind(func_revision)
             .bind(&metadata.brief_intro)
             .bind(&metadata.detailed_intro)
+            .bind(&metadata.cs_ttft)
             .bind(serde_json::to_value(&metadata.recommended_use_cases)?)
             .bind(serde_json::to_value(&metadata.tags)?)
             .bind(&metadata.provider)
             .bind(metadata.parameter_count_b)
             .bind(metadata.context_length)
-            .bind(metadata.max_token_length)
             .bind(metadata.concurrency)
             .execute(&self.pool)
             .await?;
@@ -575,29 +575,29 @@ impl SqlSecret {
                 func_revision,
                 brief_intro,
                 detailed_intro,
+                cs_ttft,
                 recommended_use_cases,
                 tags,
                 provider,
                 parameter_count_b,
                 context_length,
-                max_token_length,
                 concurrency,
                 last_published_at,
                 last_published_by
             ) VALUES (
-                $1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, NOW(), $12
+                $1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11, NOW(), $12
             )
             ON CONFLICT (slug)
             DO UPDATE SET
                 func_revision = EXCLUDED.func_revision,
                 brief_intro = EXCLUDED.brief_intro,
                 detailed_intro = EXCLUDED.detailed_intro,
+                cs_ttft = EXCLUDED.cs_ttft,
                 recommended_use_cases = EXCLUDED.recommended_use_cases,
                 tags = EXCLUDED.tags,
                 provider = EXCLUDED.provider,
                 parameter_count_b = EXCLUDED.parameter_count_b,
                 context_length = EXCLUDED.context_length,
-                max_token_length = EXCLUDED.max_token_length,
                 concurrency = EXCLUDED.concurrency,
                 last_published_at = NOW(),
                 last_published_by = EXCLUDED.last_published_by
@@ -608,12 +608,12 @@ impl SqlSecret {
             .bind(func_revision)
             .bind(&metadata.brief_intro)
             .bind(&metadata.detailed_intro)
+            .bind(&metadata.cs_ttft)
             .bind(serde_json::to_value(&metadata.recommended_use_cases)?)
             .bind(serde_json::to_value(&metadata.tags)?)
             .bind(&metadata.provider)
             .bind(metadata.parameter_count_b)
             .bind(metadata.context_length)
-            .bind(metadata.max_token_length)
             .bind(metadata.concurrency)
             .bind(last_published_by)
             .execute(&self.pool)

@@ -101,6 +101,12 @@
                     <textarea id="detailed_intro">{{ endpoint_prefill.get('detailed_intro', '') }}</textarea>
                 </div>
 
+                <label for="cs_ttft">Cold Start TTFT</label>
+                <div>
+                    <input id="cs_ttft" type="text" value="{{ endpoint_prefill.get('cs_ttft', '') }}">
+                    <div class="endpoint-hint">Free-form summary such as `&gt;95% of all cold starts &lt; 2 sec`.</div>
+                </div>
+
                 {{ render_tag_picker('endpoint-editor', endpoint_prefill.get('tags', []), catalog_tag_groups) }}
                 {{ render_use_case_picker('endpoint-editor', endpoint_prefill.get('recommended_use_cases', []), catalog_use_case_groups) }}
 
@@ -118,11 +124,6 @@
                 <div>
                     <input id="context_length" type="number" step="1" value="{{ endpoint_prefill.get('context_length', '') }}">
                     <div class="endpoint-hint">Prefill order: existing endpoint row, catalog metadata, then `--max-model-len` from the platform function.</div>
-                </div>
-
-                <label for="max_token_length">Max Token Length</label>
-                <div>
-                    <input id="max_token_length" type="number" step="1" value="{{ endpoint_prefill.get('max_token_length', '') }}">
                 </div>
 
                 <label for="concurrency">Concurrency</label>
@@ -177,12 +178,12 @@
         return {
             brief_intro: (document.getElementById('brief_intro')?.value || '').trim(),
             detailed_intro: (document.getElementById('detailed_intro')?.value || '').trim(),
+            cs_ttft: (document.getElementById('cs_ttft')?.value || '').trim(),
             recommended_use_cases: endpointUseCasePicker.getValues(),
             tags: endpointTagPicker.getValues(),
             provider: (document.getElementById('provider')?.value || '').trim(),
             parameter_count_b: (document.getElementById('parameter_count_b')?.value || '').trim(),
             context_length: (document.getElementById('context_length')?.value || '').trim(),
-            max_token_length: (document.getElementById('max_token_length')?.value || '').trim(),
             concurrency: (document.getElementById('concurrency')?.value || '').trim(),
         };
     }

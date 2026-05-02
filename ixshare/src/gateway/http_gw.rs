@@ -1097,11 +1097,8 @@ impl HttpGateway {
         obj: DataObject<Value>,
     ) -> Result<i64> {
         let dataobj = obj;
-
-        let funcpolicy = FuncPolicy::FromDataObject(dataobj.clone())?;
-
-        let tenant = funcpolicy.tenant.clone();
-        let namespace = funcpolicy.namespace.clone();
+        let tenant = dataobj.tenant.clone();
+        let namespace = dataobj.namespace.clone();
 
         if !token.IsNamespaceAdmin(&tenant, &namespace) {
             return Err(Error::NoPermission);
@@ -1135,11 +1132,8 @@ impl HttpGateway {
         obj: DataObject<Value>,
     ) -> Result<i64> {
         let dataobj = obj;
-
-        let funcpolicy = FuncPolicy::FromDataObject(dataobj.clone())?;
-
-        let tenant = funcpolicy.tenant.clone();
-        let namespace = funcpolicy.namespace.clone();
+        let tenant = dataobj.tenant.clone();
+        let namespace = dataobj.namespace.clone();
 
         if !token.IsNamespaceAdmin(&tenant, &namespace) {
             return Err(Error::NoPermission);
