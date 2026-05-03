@@ -82,8 +82,8 @@ use super::func_agent_mgr::GW_OBJREPO;
 use super::func_agent_mgr::{FuncAgentMgr, FuncIdentity, FuncRouteTarget};
 use super::func_worker::QHttpCallClient;
 use super::func_worker::RETRYABLE_HTTP_STATUS;
-use super::gw_obj_repo::{GwObjRepo, NamespaceStore};
 use super::gw_obj_repo::FuncDetail;
+use super::gw_obj_repo::{GwObjRepo, NamespaceStore};
 use super::metrics::FunccallLabels;
 use super::metrics::Status;
 use super::metrics::GATEWAY_METRICS;
@@ -161,9 +161,34 @@ fn redact_inline_media_in_json(value: &Value) -> Value {
     }
 }
 
+fn funccall_route_error_response(namespace: &str, err: &Error) -> (StatusCode, &'static str) {
+    if namespace == VIRTUAL_ENDPOINTS_NAMESPACE {
+        return match err {
+            Error::NotExist(_) => (StatusCode::NOT_FOUND, "service failure: endpoint not found"),
+            Error::CommonError(msg) if msg.contains("is unpublished") => {
+                (StatusCode::NOT_FOUND, "service failure: endpoint not found")
+            }
+            _ => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "service failure: endpoint unavailable",
+            ),
+        };
+    }
+
+    match err {
+        Error::NotExist(_) => (StatusCode::NOT_FOUND, "service failure: not found"),
+        _ => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "service failure: internal error",
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::summarize_funccall_body_for_log;
+    use super::{funccall_route_error_response, summarize_funccall_body_for_log};
+    use crate::common::Error;
+    use axum::http::StatusCode;
     use hyper::body::Bytes;
     use serde_json::Value;
 
@@ -191,6 +216,14 @@ mod tests {
             summary,
             Value::String("[non-json request body; 8 bytes]".to_owned())
         );
+    }
+
+    #[test]
+    fn funccall_route_error_maps_missing_regular_func_to_not_found() {
+        let (status, message) =
+            funccall_route_error_response("Qwen", &Error::NotExist("missing func".to_owned()));
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(message, "service failure: function not found");
     }
 }
 
@@ -1349,18 +1382,9 @@ async fn FuncCall(
     let route = match resolve_funccall_target(&gw, &tenant, &namespace, &funcname) {
         Ok(route) => route,
         Err(e) => {
-            let errcode = if namespace == VIRTUAL_ENDPOINTS_NAMESPACE {
-                match &e {
-                    Error::NotExist(_) => StatusCode::NOT_FOUND,
-                    Error::CommonError(msg) if msg.contains("is unpublished") => {
-                        StatusCode::NOT_FOUND
-                    }
-                    _ => StatusCode::SERVICE_UNAVAILABLE,
-                }
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-            let body = Body::from(format!("service failure {:?}", &e));
+            let (errcode, message) = funccall_route_error_response(&namespace, &e);
+            trace!("FuncCall route resolution failed for {tenant}/{namespace}/{funcname}: {e:?}");
+            let body = Body::from(message);
             let resp = Response::builder().status(errcode).body(body).unwrap();
             return Ok(resp);
         }

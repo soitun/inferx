@@ -312,7 +312,21 @@ impl NodeStatus {
         //   }
         // This would catch bugs while still allowing legitimate temporary negatives.
 
-        let res = self.available.Alloc(req, createSnapshot)?;
+        let res = match self.available.Alloc(req, createSnapshot) {
+            Ok(res) => res,
+            Err(e) => {
+                error!(
+                    "AllocResource failed node={} action={} owner={} req={} available_before={} err={:?}",
+                    self.available.nodename,
+                    action,
+                    owner,
+                    serde_json::to_string(req).unwrap_or_default(),
+                    serde_json::to_string(&self.available).unwrap_or_default(),
+                    e
+                );
+                return Err(e);
+            }
+        };
         trace!(
             "AllocResource node={} action={} owner={} allocated={} available_after={}",
             self.available.nodename,
@@ -1794,6 +1808,10 @@ impl SchedulerHandler {
             Err(e) => {
                 // ResumePod failed before spawning RPC (no standby, alloc failure, etc.)
                 // Send error response to caller
+                error!(
+                    "ProcessLeaseWorkerReq failed to resume pod for {}: {:?}",
+                    funcname, e
+                );
                 let resp = na::LeaseWorkerResp {
                     error: format!("Failed to resume pod: {:?}", e),
                     ..Default::default()
