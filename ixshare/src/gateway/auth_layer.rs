@@ -58,6 +58,15 @@ pub async fn GetTokenCache() -> &'static TokenCache {
         .await
 }
 
+fn is_public_funccall_path(path: &str) -> bool {
+    let parts: Vec<&str> = path.split('/').collect();
+    if parts.len() < 4 {
+        return false;
+    }
+
+    matches!(parts[1], "funccall" | "directfunccall" | "sampleccall") && parts[2] == "public"
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct Permision {
     pub admin: bool,
@@ -460,6 +469,10 @@ impl AccessToken {
     pub fn IsNamespaceInferenceUser(&self, tenant: &str, namespace: &str) -> bool {
         if !self.CheckScope("inference") {
             return false;
+        }
+
+        if tenant == "public" {
+            return true;
         }
 
         if !self.AllowNamespace(tenant, namespace) {
@@ -1255,11 +1268,17 @@ pub async fn auth_transform_keycloaktoken(
             KeycloakAuthStatus::Failure(_) => match req.headers().get("Authorization") {
                 None => GetTokenCache().await.anonymous.clone(),
                 Some(h) => {
+                    let allow_public_fallback = is_public_funccall_path(req.uri().path());
                     // let v = h.to_str().ok().unwrap();
 
                     let v = match h.to_str() {
                         Ok(val) => val,
                         Err(_) => {
+                            if allow_public_fallback {
+                                let anonymous = GetTokenCache().await.anonymous.clone();
+                                req.extensions_mut().insert(anonymous);
+                                return Ok(next.run(req).await);
+                            }
                             let body = Body::from(format!("invalid auth token"));
                             let resp = Response::builder()
                                 .status(StatusCode::UNAUTHORIZED)
@@ -1273,6 +1292,11 @@ pub async fn auth_transform_keycloaktoken(
                     let apikey = match v.strip_prefix("Bearer ") {
                         Some(key) => key.to_owned(),
                         None => {
+                            if allow_public_fallback {
+                                let anonymous = GetTokenCache().await.anonymous.clone();
+                                req.extensions_mut().insert(anonymous);
+                                return Ok(next.run(req).await);
+                            }
                             let body = Body::from(format!("invalid auth token"));
                             let resp = Response::builder()
                                 .status(StatusCode::UNAUTHORIZED)
@@ -1283,6 +1307,11 @@ pub async fn auth_transform_keycloaktoken(
                     };
                     match GetTokenCache().await.GetTokenByApikey(&apikey).await {
                         Err(_) => {
+                            if allow_public_fallback {
+                                let anonymous = GetTokenCache().await.anonymous.clone();
+                                req.extensions_mut().insert(anonymous);
+                                return Ok(next.run(req).await);
+                            }
                             let body = Body::from(format!("invalid auth token"));
                             let resp = Response::builder()
                                 .status(StatusCode::UNAUTHORIZED)
@@ -1371,5 +1400,50 @@ impl KeycloakProvider {
         }
 
         return Ok(groups);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_public_funccall_path, AccessToken};
+    use std::collections::BTreeSet;
+    use std::time::SystemTime;
+
+    fn restricted_inference_apikey(tenant: &str, namespace: Option<&str>) -> AccessToken {
+        AccessToken {
+            subject: String::new(),
+            username: "user".to_owned(),
+            display_name: None,
+            email: String::new(),
+            email_verified: false,
+            roles: BTreeSet::new(),
+            apiKeys: Vec::new(),
+            scope: "inference".to_owned(),
+            sourceIsApikey: true,
+            restrictTenant: Some(tenant.to_owned()),
+            restrictNamespace: namespace.map(str::to_owned),
+            updatetime: SystemTime::now(),
+        }
+    }
+
+    #[test]
+    fn restricted_apikey_can_infer_public_namespace() {
+        let token = restricted_inference_apikey("tenant-a", Some("ns-a"));
+        assert!(token.IsNamespaceInferenceUser("public", "models"));
+    }
+
+    #[test]
+    fn restricted_apikey_still_cannot_infer_other_private_namespace() {
+        let token = restricted_inference_apikey("tenant-a", Some("ns-a"));
+        assert!(!token.IsNamespaceInferenceUser("tenant-b", "models"));
+    }
+
+    #[test]
+    fn detects_public_funccall_paths() {
+        assert!(is_public_funccall_path("/funccall/public/Qwen/model/v1/chat/completions"));
+        assert!(is_public_funccall_path("/directfunccall/public/Qwen/model/v1/chat/completions"));
+        assert!(is_public_funccall_path("/sampleccall/public/Qwen/model/"));
+        assert!(!is_public_funccall_path("/funccall/tenant-a/Qwen/model/v1/chat/completions"));
+        assert!(!is_public_funccall_path("/object/tenant/public/default/name/"));
     }
 }
