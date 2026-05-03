@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% from '_metadata_picker_macros.html' import render_tag_picker, render_use_case_picker %}
 
 {% block content %}
 <style>
@@ -469,90 +470,8 @@
                         <textarea id="admin-catalog-detailed-intro" rows="4" placeholder="Longer description shown on the detail page."></textarea>
                     </div>
                 </div>
-                <div class="catalog-editor-field full">
-                    <label for="admin-catalog-tags">Tags</label>
-                    <div class="catalog-editor-control">
-                        <div id="admin-catalog-selected-tags" class="catalog-selected-tags is-empty" aria-live="polite"></div>
-                        <div class="catalog-tag-custom-row">
-                            <div class="catalog-tag-input-wrap">
-                                <input
-                                    id="admin-catalog-tags"
-                                    type="text"
-                                    autocomplete="off"
-                                    placeholder="Type to search or add a custom tag"
-                                >
-                                <div id="admin-catalog-tag-suggestions" class="catalog-tag-suggestions" hidden></div>
-                            </div>
-                            <button id="admin-catalog-tag-add-btn" class="ix-btn secondary" type="button">Add</button>
-                        </div>
-                        <div class="catalog-editor-hint">Choose from the curated list below. You may also add a custom tag when needed. Stored as a JSON string array.</div>
-                        <details class="catalog-tag-library">
-                            <summary class="catalog-tag-library-toggle">Curated tag library</summary>
-                            <div class="catalog-tag-library-content">
-                                <div class="catalog-tag-groups">
-                                    {% for group in catalog_tag_groups %}
-                                    <div class="catalog-tag-group">
-                                        <div class="catalog-tag-group-title">{{ group["label"] }}</div>
-                                        <div class="catalog-tag-options">
-                                            {% for tag in group["items"] %}
-                                            <button
-                                                type="button"
-                                                class="catalog-tag-option"
-                                                data-tag="{{ tag }}"
-                                            >
-                                                {{ tag }}
-                                            </button>
-                                            {% endfor %}
-                                        </div>
-                                    </div>
-                                    {% endfor %}
-                                </div>
-                            </div>
-                        </details>
-                    </div>
-                </div>
-                <div class="catalog-editor-field full">
-                    <label for="admin-catalog-use-cases">Recommended Use Cases</label>
-                    <div class="catalog-editor-control">
-                        <div id="admin-catalog-selected-use-cases" class="catalog-selected-use-cases is-empty" aria-live="polite"></div>
-                        <div class="catalog-use-case-custom-row">
-                            <div class="catalog-use-case-input-wrap">
-                                <input
-                                    id="admin-catalog-use-cases"
-                                    type="text"
-                                    autocomplete="off"
-                                    placeholder="Type to search or add a custom use case"
-                                >
-                                <div id="admin-catalog-use-case-suggestions" class="catalog-use-case-suggestions" hidden></div>
-                            </div>
-                            <button id="admin-catalog-use-case-add-btn" class="ix-btn secondary" type="button">Add</button>
-                        </div>
-                        <div class="catalog-editor-hint">Choose from the curated list below. You may also add a custom label when needed. Stored as a JSON string array.</div>
-                        <details class="catalog-use-case-library">
-                            <summary class="catalog-use-case-library-toggle">Curated use-case library</summary>
-                            <div class="catalog-use-case-library-content">
-                                <div class="catalog-use-case-groups">
-                                    {% for group in catalog_use_case_groups %}
-                                    <div class="catalog-use-case-group">
-                                        <div class="catalog-use-case-group-title">{{ group["label"] }}</div>
-                                        <div class="catalog-use-case-options">
-                                            {% for use_case in group["items"] %}
-                                            <button
-                                                type="button"
-                                                class="catalog-use-case-option"
-                                                data-use-case="{{ use_case }}"
-                                            >
-                                                {{ use_case }}
-                                            </button>
-                                            {% endfor %}
-                                        </div>
-                                    </div>
-                                    {% endfor %}
-                                </div>
-                            </div>
-                        </details>
-                    </div>
-                </div>
+                {{ render_tag_picker('admin-catalog', [], catalog_tag_groups) }}
+                {{ render_use_case_picker('admin-catalog', [], catalog_use_case_groups) }}
                 <div class="catalog-editor-field full">
                     <label for="admin-catalog-default-spec">Default Func Spec JSON <span class="catalog-required-mark">*</span></label>
                     <div class="catalog-editor-control">

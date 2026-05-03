@@ -22,7 +22,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
 
-use inferxlib::obj_mgr::funcpolicy_mgr::FuncPolicy;
+use inferxlib::obj_mgr::funcpolicy_mgr::{FuncPolicy, FuncPolicySpec};
 use opentelemetry::global::ObjectSafeSpan;
 use opentelemetry::trace::TraceContextExt;
 use opentelemetry::trace::Tracer;
@@ -38,6 +38,7 @@ use axum::{
     routing::put, Extension, Router,
 };
 
+use chrono::{DateTime, Timelike, Utc};
 use hyper::header::CONTENT_TYPE;
 use inferxlib::obj_mgr::namespace_mgr::Namespace;
 use inferxlib::obj_mgr::tenant_mgr::{Tenant, SYSTEM_NAMESPACE, SYSTEM_TENANT};
@@ -46,7 +47,6 @@ use prometheus_client::encoding::text::encode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_http::cors::{Any, CorsLayer};
-use chrono::{DateTime, Timelike, Utc};
 
 use axum_server::tls_rustls::RustlsConfig;
 use http_body_util::BodyExt;
@@ -77,19 +77,24 @@ use super::auth_layer::Grant;
 use super::auth_layer::ObjectType;
 use super::auth_layer::PermissionType;
 use super::auth_layer::{AccessToken, ApikeyCreateRequest, ApikeyDeleteRequest, GetTokenCache};
-use super::func_agent_mgr::FuncAgentMgr;
 use super::func_agent_mgr::IxTimestamp;
 use super::func_agent_mgr::GW_OBJREPO;
+use super::func_agent_mgr::{FuncAgentMgr, FuncIdentity, FuncRouteTarget};
 use super::func_worker::QHttpCallClient;
 use super::func_worker::RETRYABLE_HTTP_STATUS;
 use super::gw_obj_repo::{GwObjRepo, NamespaceStore};
+use super::gw_obj_repo::FuncDetail;
 use super::metrics::FunccallLabels;
 use super::metrics::Status;
 use super::metrics::GATEWAY_METRICS;
 use super::metrics::METRICS_REGISTRY;
 use super::scheduler_client::SCHEDULER_CLIENT;
+use super::secret::{EndpointMetadata, SqlSecret};
 pub static GATEWAY_ID: AtomicI64 = AtomicI64::new(-1);
 const FUNCCALL_MAX_BODY_BYTES: usize = 20 * 1024 * 1024;
+const VIRTUAL_ENDPOINTS_NAMESPACE: &str = "endpoints";
+const PLATFORM_TENANT: &str = "inferx";
+const PLATFORM_SHARED_NAMESPACE: &str = "endpoint";
 
 lazy_static::lazy_static! {
     #[derive(Debug)]
@@ -230,9 +235,9 @@ fn tenant_from_path(path: &str) -> Option<&str> {
     }
 }
 
-fn tenant_quota_exceeded(gw: &HttpGateway, tenant: &str) -> Result<bool> {
+fn tenant_quota_state(gw: &HttpGateway, tenant: &str) -> Result<(bool, bool)> {
     if tenant.is_empty() {
-        return Ok(false);
+        return Ok((false, false));
     }
 
     match gw
@@ -240,16 +245,13 @@ fn tenant_quota_exceeded(gw: &HttpGateway, tenant: &str) -> Result<bool> {
         .tenantMgr
         .Get(SYSTEM_TENANT, SYSTEM_NAMESPACE, tenant)
     {
-        Ok(t) => Ok(t.object.status.quota_exceeded),
+        Ok(t) => Ok((t.object.spec.quota_exempt, t.object.status.quota_exceeded)),
         Err(e) => Err(e.into()),
     }
 }
 
 fn quota_exceeded_response(tenant: &str) -> Response<Body> {
-    let body = Body::from(format!(
-        "service failure: tenant {} quota exceeded",
-        tenant
-    ));
+    let body = Body::from(format!("service failure: tenant {} quota exceeded", tenant));
     Response::builder()
         .status(StatusCode::TOO_MANY_REQUESTS)
         .body(body)
@@ -267,6 +269,82 @@ fn quota_lookup_failed_response(tenant: &str) -> Response<Body> {
         .unwrap()
 }
 
+fn endpoint_policy_for_request(gw: &HttpGateway, tenant: &str, slug: &str) -> FuncPolicySpec {
+    gw.objRepo.EndpointRoutePolicy(tenant, slug)
+}
+
+fn resolve_funccall_target(
+    gw: &HttpGateway,
+    tenant: &str,
+    namespace: &str,
+    funcname: &str,
+) -> Result<FuncRouteTarget> {
+    if namespace != VIRTUAL_ENDPOINTS_NAMESPACE {
+        let func = gw.objRepo.GetFunc(tenant, namespace, funcname)?;
+        let version = func.Version();
+        let identity = FuncIdentity {
+            tenant: tenant.to_owned(),
+            namespace: namespace.to_owned(),
+            funcname: funcname.to_owned(),
+            version,
+        };
+
+        return Ok(FuncRouteTarget {
+            logical: identity.clone(),
+            physical: identity,
+            policy: GW_OBJREPO.get().unwrap().FuncPolicy(&func),
+            func,
+        });
+    }
+
+    let func = gw
+        .objRepo
+        .GetFunc(PLATFORM_TENANT, PLATFORM_SHARED_NAMESPACE, funcname)?;
+    let funcstatus = gw
+        .objRepo
+        .funcstatusMgr
+        .Get(PLATFORM_TENANT, PLATFORM_SHARED_NAMESPACE, funcname)
+        .map_err(|_| {
+            Error::NotExist(format!(
+                "endpoint funcstatus {}/{}/{} does not exist",
+                PLATFORM_TENANT, PLATFORM_SHARED_NAMESPACE, funcname
+            ))
+        })?;
+
+    if !funcstatus.object.published {
+        return Err(Error::CommonError(format!(
+            "endpoint {}/{} is unpublished",
+            namespace, funcname
+        )));
+    }
+
+    if funcstatus.object.version != func.Version() {
+        return Err(Error::CommonError(format!(
+            "endpoint funcstatus version {} does not match function version {} for endpoint {}",
+            funcstatus.object.version,
+            func.Version(),
+            funcname
+        )));
+    }
+
+    Ok(FuncRouteTarget {
+        logical: FuncIdentity {
+            tenant: tenant.to_owned(),
+            namespace: namespace.to_owned(),
+            funcname: funcname.to_owned(),
+            version: func.Version(),
+        },
+        physical: FuncIdentity {
+            tenant: PLATFORM_TENANT.to_owned(),
+            namespace: PLATFORM_SHARED_NAMESPACE.to_owned(),
+            funcname: funcname.to_owned(),
+            version: func.Version(),
+        },
+        policy: endpoint_policy_for_request(gw, tenant, funcname),
+        func,
+    })
+}
+
 fn enforce_tenant_quota_for_write(
     token: &Arc<AccessToken>,
     gw: &HttpGateway,
@@ -276,9 +354,10 @@ fn enforce_tenant_quota_for_write(
         return None;
     }
 
-    match tenant_quota_exceeded(gw, tenant) {
-        Ok(true) => return Some(quota_exceeded_response(tenant)),
-        Ok(false) => {}
+    match tenant_quota_state(gw, tenant) {
+        Ok((true, _)) => return None,
+        Ok((false, true)) => return Some(quota_exceeded_response(tenant)),
+        Ok((false, false)) => {}
         Err(e) => {
             error!("tenant quota lookup failed for {}: {:?}", tenant, e);
             return Some(quota_lookup_failed_response(tenant));
@@ -305,8 +384,9 @@ fn enforce_tenant_quota_for_request(
         return None;
     }
 
-    match tenant_quota_exceeded(gw, tenant) {
-        Ok(true) => {
+    match tenant_quota_state(gw, tenant) {
+        Ok((true, _)) => return None,
+        Ok((false, true)) => {
             if is_funccall_path(path) {
                 return Some(quota_exceeded_response(tenant));
             }
@@ -320,7 +400,7 @@ fn enforce_tenant_quota_for_request(
 
             return Some(quota_exceeded_response(tenant));
         }
-        Ok(false) => {}
+        Ok((false, false)) => {}
         Err(e) => {
             error!("tenant quota lookup failed for {}: {:?}", tenant, e);
             return Some(quota_lookup_failed_response(tenant));
@@ -371,13 +451,9 @@ async fn TenantQuotaGuard(
         return Ok(next.run(req).await);
     }
 
-    if let Some(resp) = enforce_tenant_quota_for_request(
-        token,
-        &gw,
-        tenant,
-        req.method(),
-        req.uri().path(),
-    ) {
+    if let Some(resp) =
+        enforce_tenant_quota_for_request(token, &gw, tenant, req.method(), req.uri().path())
+    {
         trace!(
             "TenantQuotaGuard block: tenant {} path {}",
             tenant,
@@ -401,6 +477,7 @@ pub struct HttpGateway {
     pub namespaceStore: NamespaceStore,
     pub sqlAudit: SqlAudit,
     pub sqlBilling: SqlAudit,
+    pub sqlSecret: SqlSecret,
     pub client: CacherClient,
 }
 
@@ -437,6 +514,9 @@ impl HttpGateway {
             .route("/apikey/", delete(DeleteApikey))
             .route("/onboard", post(Onboard))
             .route("/admin/tenants", get(GetAdminTenants))
+            .route("/admin/endpoints/:slug/metadata", put(SaveEndpointMetadata))
+            .route("/admin/endpoints/:slug/publish", post(PublishEndpoint))
+            .route("/admin/endpoints/:slug/unpublish", post(UnpublishEndpoint))
             .route("/object/", put(CreateObj))
             .route("/object/:type/:tenant/:namespace/:name/", delete(DeleteObj))
             .route(
@@ -493,6 +573,10 @@ impl HttpGateway {
                 get(GetFuncDetail),
             )
             .route(
+                "/published-endpoint/:tenant/:slug/",
+                get(GetPublishedEndpointDetail),
+            )
+            .route(
                 "/snapshot/:tenant/:namespace/:snapshotname/",
                 get(GetSnapshot),
             )
@@ -506,16 +590,28 @@ impl HttpGateway {
             .route("/billing/rates", get(GetBillingRateHistory))
             .route("/billing/credits/history", get(GetBillingCreditHistory))
             .route("/tenant/:tenant/credits", get(GetTenantCredits))
-            .route("/tenant/:tenant/credits/history", get(GetTenantCreditHistory))
-            .route("/tenant/:tenant/billing-summary", get(GetTenantBillingSummary))
+            .route(
+                "/tenant/:tenant/credits/history",
+                get(GetTenantCreditHistory),
+            )
+            .route(
+                "/tenant/:tenant/billing-summary",
+                get(GetTenantBillingSummary),
+            )
             .route("/tenant/:tenant/usage/hourly", get(GetTenantHourlyUsage))
-            .route("/tenant/:tenant/usage/hourly-by-model", get(GetTenantHourlyUsageByModel))
+            .route(
+                "/tenant/:tenant/usage/hourly-by-model",
+                get(GetTenantHourlyUsageByModel),
+            )
             .route(
                 "/tenant/:tenant/usage/hourly-by-namespace",
                 get(GetTenantHourlyUsageByNamespace),
             )
             .route("/tenant/:tenant/usage/by-model", get(GetTenantUsageByModel))
-            .route("/tenant/:tenant/usage/by-namespace", get(GetTenantUsageByNamespace))
+            .route(
+                "/tenant/:tenant/usage/by-namespace",
+                get(GetTenantUsageByNamespace),
+            )
             .route("/tenant/:tenant/usage/summary", get(GetTenantUsageSummary))
             .route("/metrics", get(GetMetrics))
             .route("/debug/trace_logging/:state", post(SetTraceLogging))
@@ -1047,29 +1143,22 @@ async fn DirectFuncCall(
 
 async fn RetryGetClient(
     gw: &HttpGateway,
-    tenant: &str,
-    namespace: &str,
-    funcname: &str,
-    func: &Function,
+    route: &FuncRouteTarget,
     timeout: u64,
     timestamp: IxTimestamp,
 ) -> Result<(QHttpCallClient, bool)> {
     let mut _retry = 0;
     loop {
-        match gw
-            .funcAgentMgr
-            .GetClient(&tenant, &namespace, &funcname, &func, timeout, timestamp)
-            .await
-        {
+        match gw.funcAgentMgr.GetClient(route, timeout, timestamp).await {
             Err(e) => {
                 _retry += 1;
                 if timestamp.Elapsed() < timeout {
                     // trace!(
                     //     "RetryGetClient retry {} {}/{}/{} timeout {}",
                     //     retry,
-                    //     tenant,
-                    //     namespace,
-                    //     funcname,
+                    //     route.logical.tenant,
+                    //     route.logical.namespace,
+                    //     route.logical.funcname,
                     //     timestamp.Elapsed()
                     // );
                     continue;
@@ -1097,6 +1186,10 @@ async fn FailureResponse(e: Error, labels: &mut FunccallLabels, _status: Status)
         }
         Error::QueueFull => {
             error!("Http start fail with QueueFull");
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        Error::ServiceUnavailable => {
+            error!("Http start fail with ServiceUnavailable");
             StatusCode::SERVICE_UNAVAILABLE
         }
         Error::BAD_REQUEST(code) => {
@@ -1132,7 +1225,11 @@ pub struct Disconnect {
 }
 
 impl Disconnect {
-    pub fn New(req: serde_json::Value, headers: Vec<(String, String)>, labels: &FunccallLabels) -> Self {
+    pub fn New(
+        req: serde_json::Value,
+        headers: Vec<(String, String)>,
+        labels: &FunccallLabels,
+    ) -> Self {
         return Self {
             start: std::time::Instant::now(),
             cancel: AtomicBool::new(false),
@@ -1249,21 +1346,26 @@ async fn FuncCall(
     };
 
     let timestamp = IxTimestamp::default();
-    let func = match gw
-        .funcAgentMgr
-        .objRepo
-        .GetFunc(&tenant, &namespace, &funcname)
-    {
-        Ok(f) => f,
+    let route = match resolve_funccall_target(&gw, &tenant, &namespace, &funcname) {
+        Ok(route) => route,
         Err(e) => {
-            let errcode = StatusCode::INTERNAL_SERVER_ERROR;
+            let errcode = if namespace == VIRTUAL_ENDPOINTS_NAMESPACE {
+                match &e {
+                    Error::NotExist(_) => StatusCode::NOT_FOUND,
+                    Error::CommonError(msg) if msg.contains("is unpublished") => {
+                        StatusCode::NOT_FOUND
+                    }
+                    _ => StatusCode::SERVICE_UNAVAILABLE,
+                }
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
             let body = Body::from(format!("service failure {:?}", &e));
             let resp = Response::builder().status(errcode).body(body).unwrap();
             return Ok(resp);
         }
     };
-
-    let policy = GW_OBJREPO.get().unwrap().FuncPolicy(&func);
+    let policy = route.policy.clone();
 
     let timeout_header = req
         .headers()
@@ -1327,10 +1429,7 @@ async fn FuncCall(
 
         // let mut startupSpan = tracer.start_with_context("startup", &ttftCtx);
 
-        let (mut tclient, tkeepalive) = match RetryGetClient(
-            &gw, &tenant, &namespace, &funcname, &func, timeout, timestamp,
-        )
-        .await
+        let (mut tclient, tkeepalive) = match RetryGetClient(&gw, &route, timeout, timestamp).await
         {
             Err(e) => {
                 let resp = FailureResponse(e, &mut labels, Status::ConnectFailure).await;
@@ -1370,7 +1469,7 @@ async fn FuncCall(
                 if retry > 1 {
                     error!(
                         "FuncCall retry success {} with try round {}",
-                        func.Id(),
+                        route.AgentKey(),
                         retry
                     );
                 }
@@ -1673,19 +1772,26 @@ async fn Onboard(
 ) -> SResult<Response, StatusCode> {
     match gw.Onboard(&token).await {
         Ok((tenant_name, created, apikey, apikey_name)) => {
-            let apikey = if apikey.is_empty() { None } else { Some(apikey) };
+            let apikey = if apikey.is_empty() {
+                None
+            } else {
+                Some(apikey)
+            };
             let apikey_name = if apikey_name.is_empty() {
                 None
             } else {
                 Some(apikey_name)
             };
-            let body = Body::from(serde_json::to_string(&OnboardResponse {
-                tenant_name: tenant_name,
-                role: "admin".to_owned(),
-                created: created,
-                apikey,
-                apikey_name,
-            }).unwrap());
+            let body = Body::from(
+                serde_json::to_string(&OnboardResponse {
+                    tenant_name: tenant_name,
+                    role: "admin".to_owned(),
+                    created: created,
+                    apikey,
+                    apikey_name,
+                })
+                .unwrap(),
+            );
             let resp = Response::builder()
                 .status(StatusCode::OK)
                 .header(CONTENT_TYPE, "application/json")
@@ -1748,17 +1854,20 @@ async fn GetAdminTenants(
     match gw.objRepo.funcMgr.GetObjects("", "") {
         Ok(funcs) => {
             for func in funcs {
-                let is_normal = match gw
-                    .objRepo
-                    .funcstatusMgr
-                    .Get(&func.tenant, &func.namespace, &func.name)
-                {
-                    Ok(funcstatus) => matches!(funcstatus.object.state, FuncState::Normal),
-                    Err(_) => matches!(func.object.status.state, FuncState::Normal),
-                };
+                let is_normal =
+                    match gw
+                        .objRepo
+                        .funcstatusMgr
+                        .Get(&func.tenant, &func.namespace, &func.name)
+                    {
+                        Ok(funcstatus) => matches!(funcstatus.object.state, FuncState::Normal),
+                        Err(_) => matches!(func.object.status.state, FuncState::Normal),
+                    };
                 let is_catalog_backed = func.object.spec.catalogSource.is_some();
 
-                let entry = model_counts.entry(func.tenant.clone()).or_insert((0, 0, 0, 0));
+                let entry = model_counts
+                    .entry(func.tenant.clone())
+                    .or_insert((0, 0, 0, 0));
                 entry.3 += 1;
                 if is_normal {
                     entry.0 += 1;
@@ -1886,7 +1995,9 @@ fn is_apikey_duplicate_keyname_error(err: &Error) -> bool {
             }
 
             // Fallback for migrated environments where index names may differ.
-            db_err.message().contains("duplicate key value violates unique constraint")
+            db_err
+                .message()
+                .contains("duplicate key value violates unique constraint")
         }
         _ => false,
     }
@@ -2005,6 +2116,77 @@ async fn CreateObj(
             return Ok(resp);
         }
     }
+}
+
+async fn SaveEndpointMetadata(
+    Extension(token): Extension<Arc<AccessToken>>,
+    State(gw): State<HttpGateway>,
+    Path(slug): Path<String>,
+    Json(metadata): Json<EndpointMetadata>,
+) -> SResult<Response, StatusCode> {
+    match gw.SaveEndpointMetadata(&token, &slug, &metadata).await {
+        Ok(version) => {
+            let body = Body::from(format!("{}", version));
+            let resp = Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "text/plain")
+                .body(body)
+                .unwrap();
+            Ok(resp)
+        }
+        Err(e) => Ok(error_response_for_endpoint_admin_action(e)),
+    }
+}
+
+async fn PublishEndpoint(
+    Extension(token): Extension<Arc<AccessToken>>,
+    State(gw): State<HttpGateway>,
+    Path(slug): Path<String>,
+    Json(metadata): Json<EndpointMetadata>,
+) -> SResult<Response, StatusCode> {
+    match gw.PublishEndpoint(&token, &slug, &metadata).await {
+        Ok(version) => {
+            let body = Body::from(format!("{}", version));
+            let resp = Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "text/plain")
+                .body(body)
+                .unwrap();
+            Ok(resp)
+        }
+        Err(e) => Ok(error_response_for_endpoint_admin_action(e)),
+    }
+}
+
+async fn UnpublishEndpoint(
+    Extension(token): Extension<Arc<AccessToken>>,
+    State(gw): State<HttpGateway>,
+    Path(slug): Path<String>,
+) -> SResult<Response, StatusCode> {
+    match gw.UnpublishEndpoint(&token, &slug).await {
+        Ok(version) => {
+            let body = Body::from(format!("{}", version));
+            let resp = Response::builder()
+                .status(StatusCode::OK)
+                .header(CONTENT_TYPE, "text/plain")
+                .body(body)
+                .unwrap();
+            Ok(resp)
+        }
+        Err(e) => Ok(error_response_for_endpoint_admin_action(e)),
+    }
+}
+
+fn error_response_for_endpoint_admin_action(err: Error) -> Response {
+    let status = match &err {
+        Error::NoPermission => StatusCode::UNAUTHORIZED,
+        _ => StatusCode::BAD_REQUEST,
+    };
+
+    Response::builder()
+        .status(status)
+        .body(Body::from(format!("service failure {:?}", err)))
+        .unwrap()
 }
 
 async fn UpdateObj(
@@ -2328,6 +2510,7 @@ struct BillingSummaryResponse {
     used_cents: i64,
     threshold_cents: i64,
     quota_exceeded: bool,
+    quota_exempt: bool,
     total_credits_cents: i64,
     currency: String,
     period: BillingSummaryPeriod,
@@ -2637,7 +2820,8 @@ async fn SetTenantQuotaExceeded(
     Json(req): Json<SetTenantQuotaExceededRequest>,
 ) -> SResult<Response, StatusCode> {
     if !token.IsInferxAdmin() {
-        let body = Body::from("Permission denied: Only InferxAdmin can update tenant quota_exceeded");
+        let body =
+            Body::from("Permission denied: Only InferxAdmin can update tenant quota_exceeded");
         let resp = Response::builder()
             .status(StatusCode::FORBIDDEN)
             .body(body)
@@ -2918,7 +3102,10 @@ async fn AddTenantCredits(
     // Validate currency (only USD supported for now)
     let currency = req.currency.as_deref().unwrap_or("USD");
     if currency != "USD" {
-        let body = Body::from(format!("Unsupported currency: {}. Only USD is supported.", currency));
+        let body = Body::from(format!(
+            "Unsupported currency: {}. Only USD is supported.",
+            currency
+        ));
         let resp = Response::builder()
             .status(StatusCode::BAD_REQUEST)
             .body(body)
@@ -2941,14 +3128,18 @@ async fn AddTenantCredits(
         "AddTenantCredits: tenant={}, amount_cents={}, currency={}, note={:?}, payment_ref={:?}, added_by={:?}",
         &tenant, req.amount_cents, currency, req.note, req.payment_ref, added_by
     );
-    match gw.sqlBilling.AddTenantCredit(
-        &tenant,
-        req.amount_cents,
-        currency,
-        req.note.as_deref(),
-        req.payment_ref.as_deref(),
-        added_by,
-    ).await {
+    match gw
+        .sqlBilling
+        .AddTenantCredit(
+            &tenant,
+            req.amount_cents,
+            currency,
+            req.note.as_deref(),
+            req.payment_ref.as_deref(),
+            added_by,
+        )
+        .await
+    {
         Ok(id) => {
             error!("AddTenantCredits: credit added with id={}", id);
             let quota_exceeded = match gw.sqlBilling.RecalculateTenantQuota(&tenant).await {
@@ -3009,10 +3200,12 @@ async fn AddTenantCredits(
             );
             if tenant_obj.object.status.quota_exceeded != quota_exceeded {
                 tenant_obj.object.status.quota_exceeded = quota_exceeded;
-                error!("AddTenantCredits: updating tenant quota_exceeded to {}", quota_exceeded);
+                error!(
+                    "AddTenantCredits: updating tenant quota_exceeded to {}",
+                    quota_exceeded
+                );
                 if let Err(e) = gw.client.Update(&tenant_obj.DataObject(), 0).await {
-                    let body =
-                        Body::from(format!("Failed to update tenant quota status: {:?}", e));
+                    let body = Body::from(format!("Failed to update tenant quota status: {:?}", e));
                     let resp = Response::builder()
                         .status(StatusCode::BAD_REQUEST)
                         .body(body)
@@ -3029,8 +3222,15 @@ async fn AddTenantCredits(
                     0
                 }
             };
-            error!("AddTenantCredits: returning id={}, balance_cents={}", id, balance);
-            let resp_body = AddCreditsResponse { success: true, credit_id: id, new_balance_cents: balance };
+            error!(
+                "AddTenantCredits: returning id={}, balance_cents={}",
+                id, balance
+            );
+            let resp_body = AddCreditsResponse {
+                success: true,
+                credit_id: id,
+                new_balance_cents: balance,
+            };
             let data = serde_json::to_string(&resp_body).unwrap();
             let body = Body::from(data);
             let resp = Response::builder()
@@ -3147,8 +3347,24 @@ async fn GetTenantCredits(
     }
 
     match gw.sqlBilling.GetTenantBillingSummary(&tenant).await {
-        Ok((balance_cents, used_cents, _threshold, quota_exceeded, _total_credits, currency, _, _, _, _)) => {
-            let resp_body = CreditResponse { balance_cents, used_cents, currency, quota_exceeded };
+        Ok((
+            balance_cents,
+            used_cents,
+            _threshold,
+            quota_exceeded,
+            _total_credits,
+            currency,
+            _,
+            _,
+            _,
+            _,
+        )) => {
+            let resp_body = CreditResponse {
+                balance_cents,
+                used_cents,
+                currency,
+                quota_exceeded,
+            };
             let data = serde_json::to_string(&resp_body).unwrap();
             let body = Body::from(data);
             let resp = Response::builder()
@@ -3174,7 +3390,8 @@ async fn GetBillingCreditHistory(
     Query(params): Query<BillingCreditHistoryQuery>,
 ) -> SResult<Response, StatusCode> {
     if !token.IsInferxAdmin() {
-        let body = Body::from("Permission denied: Only InferxAdmin can read billing credit history");
+        let body =
+            Body::from("Permission denied: Only InferxAdmin can read billing credit history");
         let resp = Response::builder()
             .status(StatusCode::FORBIDDEN)
             .body(body)
@@ -3306,13 +3523,30 @@ async fn GetTenantBillingSummary(
     }
 
     match gw.sqlBilling.GetTenantBillingSummary(&tenant).await {
-        Ok((balance_cents, used_cents, threshold_cents, quota_exceeded, total_credits_cents, currency,
-            inference_cents, standby_cents, inference_ms, standby_ms)) => {
+        Ok((
+            balance_cents,
+            used_cents,
+            threshold_cents,
+            quota_exceeded,
+            total_credits_cents,
+            currency,
+            inference_cents,
+            standby_cents,
+            inference_ms,
+            standby_ms,
+        )) => {
+            let quota_exempt = gw
+                .objRepo
+                .tenantMgr
+                .Get(SYSTEM_TENANT, SYSTEM_NAMESPACE, &tenant)
+                .map(|t| t.object.spec.quota_exempt)
+                .unwrap_or(false);
             let resp_body = BillingSummaryResponse {
                 balance_cents,
                 used_cents,
                 threshold_cents,
                 quota_exceeded,
+                quota_exempt,
                 total_credits_cents,
                 currency,
                 period: BillingSummaryPeriod {
@@ -3418,25 +3652,41 @@ async fn GetTenantUsageByModel(
         Ok((items, total)) => {
             let usage: Vec<ModelUsageItem> = items
                 .into_iter()
-                .map(|(funcname, namespace, inference_ms, standby_ms, inference_cents, standby_cents, charge_cents)| {
-                    let usage_ms = inference_ms + standby_ms;
-                    ModelUsageItem {
+                .map(
+                    |(
                         funcname,
                         namespace,
                         inference_ms,
                         standby_ms,
-                        usage_ms,
-                        inference_gpu_hours: inference_ms as f64 / 3600000.0,
-                        standby_gpu_hours: standby_ms as f64 / 3600000.0,
-                        gpu_hours: usage_ms as f64 / 3600000.0,
                         inference_cents,
                         standby_cents,
                         charge_cents,
-                    }
-                })
+                    )| {
+                        let usage_ms = inference_ms + standby_ms;
+                        ModelUsageItem {
+                            funcname,
+                            namespace,
+                            inference_ms,
+                            standby_ms,
+                            usage_ms,
+                            inference_gpu_hours: inference_ms as f64 / 3600000.0,
+                            standby_gpu_hours: standby_ms as f64 / 3600000.0,
+                            gpu_hours: usage_ms as f64 / 3600000.0,
+                            inference_cents,
+                            standby_cents,
+                            charge_cents,
+                        }
+                    },
+                )
                 .collect();
 
-            let (total_inference_ms, total_standby_ms, total_inference_cents, total_standby_cents, total_cents) = total;
+            let (
+                total_inference_ms,
+                total_standby_ms,
+                total_inference_cents,
+                total_standby_cents,
+                total_cents,
+            ) = total;
             let total_ms = total_inference_ms + total_standby_ms;
 
             let resp_body = UsageByModelResponse {
@@ -3596,10 +3846,7 @@ async fn GetTenantHourlyUsageByNamespace(
             return Ok(resp);
         }
         Err(e) => {
-            let body = Body::from(format!(
-                "Failed to get hourly usage by namespace: {:?}",
-                e
-            ));
+            let body = Body::from(format!("Failed to get hourly usage by namespace: {:?}", e));
             let resp = Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .body(body)
@@ -3639,24 +3886,39 @@ async fn GetTenantUsageByNamespace(
         Ok((items, total)) => {
             let usage: Vec<NamespaceUsageItem> = items
                 .into_iter()
-                .map(|(namespace, inference_ms, standby_ms, inference_cents, standby_cents, charge_cents)| {
-                    let usage_ms = inference_ms + standby_ms;
-                    NamespaceUsageItem {
+                .map(
+                    |(
                         namespace,
                         inference_ms,
                         standby_ms,
-                        usage_ms,
-                        inference_gpu_hours: inference_ms as f64 / 3600000.0,
-                        standby_gpu_hours: standby_ms as f64 / 3600000.0,
-                        gpu_hours: usage_ms as f64 / 3600000.0,
                         inference_cents,
                         standby_cents,
                         charge_cents,
-                    }
-                })
+                    )| {
+                        let usage_ms = inference_ms + standby_ms;
+                        NamespaceUsageItem {
+                            namespace,
+                            inference_ms,
+                            standby_ms,
+                            usage_ms,
+                            inference_gpu_hours: inference_ms as f64 / 3600000.0,
+                            standby_gpu_hours: standby_ms as f64 / 3600000.0,
+                            gpu_hours: usage_ms as f64 / 3600000.0,
+                            inference_cents,
+                            standby_cents,
+                            charge_cents,
+                        }
+                    },
+                )
                 .collect();
 
-            let (total_inference_ms, total_standby_ms, total_inference_cents, total_standby_cents, total_cents) = total;
+            let (
+                total_inference_ms,
+                total_standby_ms,
+                total_inference_cents,
+                total_standby_cents,
+                total_cents,
+            ) = total;
             let total_ms = total_inference_ms + total_standby_ms;
 
             let resp_body = UsageByNamespaceResponse {
@@ -3720,8 +3982,21 @@ async fn GetTenantUsageSummary(
 
     let hours = params.hours.unwrap_or(24).min(720).max(1);
 
-    match gw.sqlBilling.GetTenantAnalyticsSummary(&tenant, hours).await {
-        Ok((total_ms, total_cents, top_model_name, top_model_ms, top_namespace_name, top_namespace_ms, peak_hour, peak_hour_ms)) => {
+    match gw
+        .sqlBilling
+        .GetTenantAnalyticsSummary(&tenant, hours)
+        .await
+    {
+        Ok((
+            total_ms,
+            total_cents,
+            top_model_name,
+            top_model_ms,
+            top_namespace_name,
+            top_namespace_ms,
+            peak_hour,
+            peak_hour_ms,
+        )) => {
             let top_model = top_model_name.map(|name| TopModelInfo {
                 funcname: name,
                 gpu_hours: top_model_ms as f64 / 3600000.0,
@@ -3797,6 +4072,58 @@ async fn GetFuncDetail(
 ) -> SResult<Response, StatusCode> {
     match gw.GetFuncDetail(&token, &tenant, &namespace, &funcname) {
         Ok(detail) => {
+            let data = serde_json::to_string(&detail).unwrap();
+            let body = Body::from(format!("{}", data));
+            let resp = Response::builder()
+                .status(StatusCode::OK)
+                .body(body)
+                .unwrap();
+            return Ok(resp);
+        }
+        Err(e) => {
+            let body = Body::from(format!("service failure {:?}", e));
+            let resp = Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(body)
+                .unwrap();
+            return Ok(resp);
+        }
+    }
+}
+
+async fn GetPublishedEndpointDetail(
+    Extension(token): Extension<Arc<AccessToken>>,
+    State(gw): State<HttpGateway>,
+    Path((tenant, slug)): Path<(String, String)>,
+) -> SResult<Response, StatusCode> {
+    if !token.CheckScope("read") {
+        let body = Body::from("service failure NoPermission");
+        let resp = Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body(body)
+            .unwrap();
+        return Ok(resp);
+    }
+
+    if !token.IsTenantUser(&tenant) {
+        let body = Body::from("service failure NoPermission");
+        let resp = Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body(body)
+            .unwrap();
+        return Ok(resp);
+    }
+
+    match resolve_funccall_target(&gw, &tenant, VIRTUAL_ENDPOINTS_NAMESPACE, &slug) {
+        Ok(target) => {
+            let detail = FuncDetail {
+                sampleRestCall: target.func.SampleRestCall(),
+                func: target.func,
+                snapshots: Vec::new(),
+                pods: Vec::new(),
+                isAdmin: false,
+                policy: target.policy,
+            };
             let data = serde_json::to_string(&detail).unwrap();
             let body = Body::from(format!("{}", data));
             let resp = Response::builder()

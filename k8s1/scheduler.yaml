@@ -40,6 +40,9 @@ spec:
             value: "1238"
           - name: ENABLE_SNAPSHOT_BILLING
             value: "false"
+          - name: INFERX_ENDPOINT_FUNC_DEFAULT_POLICY
+            value: >-
+              {"min_replica":0,"max_replica":8,"standby_per_node":1}
           volumeMounts:
             - mountPath: /opt/inferx/log
               name: opt-inferx-log

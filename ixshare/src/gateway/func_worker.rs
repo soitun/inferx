@@ -44,13 +44,15 @@ use crate::na::LeaseWorkerResp;
 use crate::peer_mgr::IxTcpClient;
 use inferxlib::obj_mgr::func_mgr::HttpEndpoint;
 
-use super::func_agent_mgr::{FuncAgent, IxTimestamp, WorkerUpdate, GW_OBJREPO};
+use super::func_agent_mgr::{
+    EndpointLeaseLimiter, FuncAgent, IxTimestamp, WorkerUpdate, GW_OBJREPO,
+};
 use super::http_gateway::GatewayId;
 use super::scheduler_client::SCHEDULER_CLIENT;
+use crate::audit::{UsageTick, USAGE_TICK_AGENT};
+use chrono::Utc;
 use serde_json::json;
 use uuid::Uuid;
-use chrono::Utc;
-use crate::audit::{UsageTick, USAGE_TICK_AGENT};
 
 /// GPU tracking info for billing
 #[derive(Debug, Clone, Default)]
@@ -130,7 +132,13 @@ pub struct FuncWorkerInner {
     pub tenant: String,
     pub namespace: String,
     pub funcname: String,
+    pub physical_tenant: String,
+    pub physical_namespace: String,
+    pub physical_funcname: String,
     pub fprevision: i64,
+    pub endpoint_lease_key: Option<String>,
+    pub endpoint_lease_limiter: EndpointLeaseLimiter,
+    pub lease_released: AtomicBool,
     pub id: AtomicIsize,
 
     pub ipAddr: Mutex<IpAddress>,
@@ -196,7 +204,12 @@ impl FuncWorker {
         tenant: &str,
         namespace: &str,
         funcname: &str,
+        physical_tenant: &str,
+        physical_namespace: &str,
+        physical_funcname: &str,
         fprevision: i64,
+        endpoint_lease_key: Option<String>,
+        endpoint_lease_limiter: EndpointLeaseLimiter,
         parallelLeve: usize,
         keepaliveTime: u64,
         endpoint: HttpEndpoint,
@@ -207,9 +220,9 @@ impl FuncWorker {
         let (etx, erx) = mpsc::channel(parallelLeve * 2);
 
         let connectPool = ConnectionPool::New(
-            tenant,
-            namespace,
-            funcname,
+            physical_tenant,
+            physical_namespace,
+            physical_funcname,
             fprevision,
             endpoint.clone(),
             finishTx.clone(),
@@ -223,7 +236,13 @@ impl FuncWorker {
             tenant: tenant.to_owned(),
             namespace: namespace.to_owned(),
             funcname: funcname.to_owned(),
+            physical_tenant: physical_tenant.to_owned(),
+            physical_namespace: physical_namespace.to_owned(),
+            physical_funcname: physical_funcname.to_owned(),
             fprevision: fprevision,
+            endpoint_lease_key,
+            endpoint_lease_limiter,
+            lease_released: AtomicBool::new(false),
             id: AtomicIsize::new(-1),
             workerName: "".to_owned(), // todo: remove this
 
@@ -309,9 +328,9 @@ impl FuncWorker {
         let id = self.id.load(Ordering::Relaxed);
         return SCHEDULER_CLIENT
             .ReturnWorker(
-                &self.tenant,
-                &self.namespace,
-                &self.funcname,
+                &self.physical_tenant,
+                &self.physical_namespace,
+                &self.physical_funcname,
                 self.fprevision,
                 &format!("{}", id),
                 failworker,
@@ -323,15 +342,16 @@ impl FuncWorker {
     pub async fn LeaseWorker(&self) -> Result<LeaseWorkerResp> {
         return SCHEDULER_CLIENT
             .LeaseWorker(
-                &self.tenant,
-                &self.namespace,
-                &self.funcname,
+                &self.physical_tenant,
+                &self.physical_namespace,
+                &self.physical_funcname,
                 self.fprevision,
             )
             .await;
     }
 
     pub async fn FinishWorker(&self) {
+        self.ReleaseEndpointLease();
         self.funcAgent
             .totalSlot
             .fetch_sub(self.parallelLevel, Ordering::SeqCst);
@@ -347,6 +367,16 @@ impl FuncWorker {
             .fetch_sub(self.ongoingReqCnt.load(Ordering::SeqCst), Ordering::SeqCst);
         // self.PrintCounts().await;
         self.SetState(FuncWorkerState::Finish);
+    }
+
+    fn ReleaseEndpointLease(&self) {
+        if self.lease_released.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        if let Some(key) = &self.endpoint_lease_key {
+            self.endpoint_lease_limiter.Release(key);
+        }
     }
 
     pub fn WorkerId(&self) -> isize {
@@ -431,6 +461,7 @@ impl FuncWorker {
         let resp = match self.LeaseWorker().await {
             Err(e) => {
                 span.end();
+                self.ReleaseEndpointLease();
                 self.funcAgent
                     .startingSlot
                     .fetch_sub(self.parallelLevel, Ordering::SeqCst);
@@ -500,7 +531,11 @@ impl FuncWorker {
             // Pod name format matches gw_obj_repo.rs GetFuncPod usage
             let pod_name = format!(
                 "{}/{}/{}/{}/{}",
-                &self.tenant, &self.namespace, &self.funcname, self.fprevision, id
+                &self.physical_tenant,
+                &self.physical_namespace,
+                &self.physical_funcname,
+                self.fprevision,
+                id
             );
             let mut tracking_info = self.gpuTrackingInfo.lock().unwrap();
             tracking_info.lease_start = Some(std::time::Instant::now());
@@ -512,12 +547,15 @@ impl FuncWorker {
             tracking_info.last_tick_time = Some(std::time::Instant::now());
 
             if let Some(obj_repo) = GW_OBJREPO.get() {
-                if let Ok(pod) = obj_repo.GetFuncPod(&self.tenant, &self.namespace, &pod_name) {
+                if let Ok(pod) =
+                    obj_repo.GetFuncPod(&self.physical_tenant, &self.physical_namespace, &pod_name)
+                {
                     tracking_info.nodename = pod.object.spec.nodename.clone();
                     tracking_info.gpu_type = pod.object.spec.allocResources.gpuType.0.clone();
                     tracking_info.gpu_count = pod.object.spec.reqResources.gpu.gpuCount as i32;
                     tracking_info.vram_mb = pod.object.spec.reqResources.gpu.vRam as i64; // already in MB
-                    tracking_info.total_vram_mb = (pod.object.spec.allocResources.gpus.TotalVRam() / 1024 / 1024) as i64;
+                    tracking_info.total_vram_mb =
+                        (pod.object.spec.allocResources.gpus.TotalVRam() / 1024 / 1024) as i64;
                     trace!(
                         "GpuTracking: populated for pod={}, gpu_count={}, gpu_type={}, vram_mb={}, total_vram_mb={}",
                         pod_name, tracking_info.gpu_count, tracking_info.gpu_type, tracking_info.vram_mb, tracking_info.total_vram_mb

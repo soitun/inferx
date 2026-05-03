@@ -511,8 +511,9 @@
     <section class="model-user-section">
         <h3>Sample REST Call</h3>
         <div class="copyable-area">
-            <button class="copyable-area-copy" type="button" onclick="copyTextFromElement('restcall')">Copy</button>
-            <textarea id="restcall" rows="8">{{ func["sampleRestCall"] }}</textarea>
+            <button class="copyable-area-copy" type="button" onclick="copyTextFromElement('restcall-copy')">Copy</button>
+            <textarea id="restcall" rows="8">{{ func.get("sampleRestCallDisplay", func["sampleRestCall"]) }}</textarea>
+            <textarea id="restcall-copy" rows="8" hidden>{{ func["sampleRestCall"] }}</textarea>
         </div>
     </section>
 

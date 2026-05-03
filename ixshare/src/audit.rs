@@ -1145,8 +1145,6 @@ impl SqlAudit {
         if tenant_names.is_empty() {
             return Ok(HashMap::new());
         }
-
-        let names = tenant_names.to_vec();
         let rows = sqlx::query_as::<_, TenantBillingAdminSummary>(
             r#"
             WITH input_tenants AS (
@@ -1169,7 +1167,7 @@ impl SqlAudit {
             LEFT JOIN TenantQuota q ON q.tenant = i.tenant
             "#
         )
-        .bind(names)
+        .bind(tenant_names.to_vec())
         .fetch_all(&self.pool)
         .await?;
 
