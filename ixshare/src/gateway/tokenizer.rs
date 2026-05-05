@@ -18,12 +18,12 @@ use axum::http::{StatusCode, Uri};
 use axum::response::Response;
 use axum::Extension;
 use dashmap::DashMap;
+use hyper::header::HeaderValue;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::result::Result as SResult;
 use std::sync::Arc;
 use tokenizers::Tokenizer;
-use hyper::header::HeaderValue;
 
 use crate::gateway::auth_layer::AccessToken;
 use crate::gateway::http_gateway::FuncCall1;
@@ -166,7 +166,6 @@ async fn GetOrLoadTokenizer(modelPath: &str) -> SResult<Arc<TokenizerState>, Sta
     Ok(state)
 }
 
-
 // ==================================================================
 // TokenizerRoute handler
 // ==================================================================
@@ -210,7 +209,10 @@ pub async fn ModelsFuncCall(
             Err(e) => {
                 return Ok(Response::builder()
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(Body::from(format!("service failure: list models failed {:?}", e)))
+                    .body(Body::from(format!(
+                        "service failure: list models failed {:?}",
+                        e
+                    )))
                     .unwrap());
             }
         };
@@ -230,12 +232,18 @@ pub async fn ModelsFuncCall(
             "data": model_data
         });
 
-        let bytes = serde_json::to_vec(&response_body).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let bytes =
+            serde_json::to_vec(&response_body).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
         return Ok(Response::builder()
             .status(StatusCode::OK)
             .header("content-type", "application/json")
             .body(Body::from(bytes))
+            .unwrap());
+    } else if remainPath == "/health" && req.method() == axum::http::Method::GET {
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::from("OK"))
             .unwrap());
     }
 
@@ -266,10 +274,9 @@ pub async fn ModelsFuncCall(
     newReq
         .headers_mut()
         .insert("X-Inferx-Model", HeaderValue::from_str(&modelName).unwrap());
-    newReq.headers_mut().insert(
-        "X-Inferx-Model-Call", 
-        HeaderValue::from_static("true")
-    );
+    newReq
+        .headers_mut()
+        .insert("X-Inferx-Model-Call", HeaderValue::from_static("true"));
 
     FuncCall1(&token, &gw, newReq).await
 }
@@ -470,4 +477,3 @@ pub async fn TokenizerRoute(
 
     FuncCall1(&token, &gw, new_req).await
 }
-
