@@ -12,18 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License
 
-use std::sync::Arc;
-
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::Extension;
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use tokenizers::Tokenizer;
-
 use std::path::Path;
 use std::result::Result as SResult;
+use std::sync::Arc;
+use tokenizers::Tokenizer;
 
 use crate::gateway::auth_layer::AccessToken;
 use crate::gateway::http_gateway::FuncCall1;
@@ -89,10 +88,6 @@ pub struct CompletionRequest {
     pub stream: bool,
 }
 
-// ==================================================================
-// VllmCompletionRequest (for tokenizer output)
-// ==================================================================
-
 #[derive(Debug, Clone, Serialize)]
 pub struct VllmCompletionRequest {
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -142,44 +137,32 @@ pub struct TokenizerState {
 }
 
 lazy_static::lazy_static! {
-    pub static ref SHARED_TOKENIZER: Option<TokenizerState> = {
-        match std::env::var("TOKENIZER_PATH") {
-            Ok(path) => {
-                let api = match hf_hub::api::sync::Api::new() {
-                    Ok(a) => a,
-                    Err(e) => {
-                        warn!("failed to create hf_hub Api: {}", e);
-                        return None;
-                    }
-                };
-                let tokenizer = match api.model(path.clone()) {
-                    repo => {
-                        match repo.get("tokenizer.json") {
-                            Ok(file) => {
-                                match Tokenizer::from_file(file).map_err(|e| {
-                                    warn!("tokenizer failed to load from hub '{}': {}", path, e);
-                                    e
-                                }) {
-                                    Ok(t) => t,
-                                    Err(_) => return None,
-                                }
-                            }
-                            Err(e) => {
-                                warn!("failed to get tokenizer.json from hub '{}': {}", path, e);
-                                return None;
-                            }
-                        }
-                    }
-                };
-                let vocab_size = tokenizer.get_vocab_size(false);
-                info!("tokenizer loaded: {} (vocab_size={})", path, vocab_size);
-                Some(TokenizerState {
-                    tokenizer: Arc::new(tokenizer),
-                })
-            }
-            Err(_) => None,
-        }
+    pub static ref SHARED_TOKENIZERS: DashMap<String, Arc<TokenizerState>> = DashMap::new();
+}
+
+async fn GetOrLoadTokenizer(modelPath: &str) -> SResult<Arc<TokenizerState>, StatusCode> {
+    if let Some(state) = SHARED_TOKENIZERS.get(modelPath) {
+        return Ok(state.value().clone());
+    }
+
+    let tokenizer = if Path::new(modelPath).exists() {
+        let tokenizerJson = Path::new(modelPath).join("tokenizer.json");
+        Tokenizer::from_file(tokenizerJson).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    } else {
+        let api = hf_hub::api::sync::Api::new().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let repo = api.model(modelPath.to_string());
+        let file = repo
+            .get("tokenizer.json")
+            .map_err(|_| StatusCode::NOT_FOUND)?;
+        Tokenizer::from_file(file).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
     };
+
+    let state = Arc::new(TokenizerState {
+        tokenizer: Arc::new(tokenizer),
+    });
+
+    SHARED_TOKENIZERS.insert(modelPath.to_string(), state.clone());
+    Ok(state)
 }
 
 // ==================================================================
@@ -204,7 +187,6 @@ pub async fn TokenizerRoute(
         return Ok(resp);
     }
 
-    // Path layout: /tokenizer/:tenant/:namespace/:funcname/*rest
     let tenant = parts[2].to_owned();
     let namespace = parts[3].to_owned();
     let funcname = parts[4].to_owned();
@@ -227,13 +209,37 @@ pub async fn TokenizerRoute(
         return Ok(resp);
     }
 
-    // Extract remainPath from path[5:]
     let mut remainPath = "".to_string();
     for i in 5..partsCount {
         remainPath = remainPath + "/" + parts[i];
     }
 
-    // Get the body bytes
+    let func = match gw
+        .funcAgentMgr
+        .objRepo
+        .GetFunc(&tenant, &namespace, &funcname)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            let errcode = StatusCode::INTERNAL_SERVER_ERROR;
+            let body = Body::from(format!("service failure {:?}", &e));
+            let resp = Response::builder().status(errcode).body(body).unwrap();
+            return Ok(resp);
+        }
+    };
+
+    let model_path = match func.object.spec.ModelPath() {
+        Some(path) => path,
+        None => {
+            let body = Body::from("service failure: --model argument is required");
+            let resp = Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(body)
+                .unwrap();
+            return Ok(resp);
+        }
+    };
+
     let bytes = match axum::body::to_bytes(req.into_parts().1, FUNCCALL_MAX_BODY_BYTES).await {
         Ok(b) => b,
         Err(_) => {
@@ -246,25 +252,22 @@ pub async fn TokenizerRoute(
         }
     };
 
-    let tokenizerState = match SHARED_TOKENIZER.as_ref() {
-        Some(st) => st,
-        None => {
-            error!("Tokenizer not configured");
-            let body = Body::from("service failure: tokenizer not configured");
-            let resp = Response::builder()
-                .status(StatusCode::SERVICE_UNAVAILABLE)
-                .body(body)
-                .unwrap();
+    let tokenizerState = match GetOrLoadTokenizer(&model_path).await {
+        Ok(st) => st,
+        Err(status) => {
+            let body = Body::from(format!(
+                "service failure: failed to load tokenizer for {}",
+                model_path
+            ));
+            let resp = Response::builder().status(status).body(body).unwrap();
             return Ok(resp);
         }
     };
 
-    // Determine endpoint type based on path and build VllmCompletionRequest
     let vllmReq: VllmCompletionRequest;
     let targetPath: String;
 
     if remainPath.starts_with("/v1/chat/completions") {
-        // Chat endpoint: /v1/chat/completions
         let chatReq: ChatRequest = match serde_json::from_slice(&bytes) {
             Ok(r) => r,
             Err(_) => {
@@ -277,14 +280,12 @@ pub async fn TokenizerRoute(
             }
         };
 
-        // Apply chat template
         let formattedText = if chatReq.messages.is_empty() {
             "".to_string()
         } else {
             applyChatTemplate(&chatReq.messages)
         };
 
-        // Encode via tokenizer
         let promptIds = match tokenizerState.tokenizer.encode(&*formattedText, true) {
             Ok(encoded) => encoded.get_ids().to_vec(),
             Err(e) => {
@@ -296,12 +297,6 @@ pub async fn TokenizerRoute(
                 return Ok(resp);
             }
         };
-
-        // info!(
-        //     "tokenized {} messages -> {} tokens (chat endpoint)",
-        //     chatReq.messages.len(),
-        //     promptIds.len()
-        // );
 
         vllmReq = VllmCompletionRequest {
             model: chatReq.model.clone(),
@@ -321,7 +316,6 @@ pub async fn TokenizerRoute(
             skipSpecialTokens: true,
         };
     } else {
-        // Completion endpoint: /v1/completions
         let compReq: CompletionRequest = match serde_json::from_slice(&bytes) {
             Ok(r) => r,
             Err(_) => {
@@ -333,7 +327,6 @@ pub async fn TokenizerRoute(
                 return Ok(resp);
             }
         };
-        // Encode prompt directly (no chat template)
         let promptIds = match tokenizerState.tokenizer.encode(&*compReq.prompt, true) {
             Ok(encoded) => encoded.get_ids().to_vec(),
             Err(e) => {
@@ -345,12 +338,6 @@ pub async fn TokenizerRoute(
                 return Ok(resp);
             }
         };
-
-        info!(
-            "tokenized prompt length {} -> {} tokens (completion endpoint)",
-            compReq.prompt.len(),
-            promptIds.len()
-        );
 
         vllmReq = VllmCompletionRequest {
             model: compReq.model.clone(),
@@ -364,7 +351,6 @@ pub async fn TokenizerRoute(
     }
     targetPath = "/v1/completions".to_string();
 
-    // Create new request and call FuncCall1 directly (no HTTP forward)
     let new_body = serde_json::to_vec(&vllmReq).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let new_req = axum::http::Request::builder()
