@@ -1,0 +1,225 @@
+{% extends 'base.html' %}
+{% from '_metadata_picker_macros.html' import render_tag_picker, render_use_case_picker %}
+
+{% block content %}
+<style>
+    .endpoint-editor { max-width: 980px; margin: 0 auto 32px auto; }
+    .endpoint-panel {
+        background: #fff;
+        border: 1px solid #dbe3ef;
+        border-radius: 4px;
+        padding: 16px 18px;
+        margin-bottom: 14px;
+    }
+    .endpoint-form-grid {
+        display: grid;
+        grid-template-columns: 220px minmax(0, 1fr);
+        gap: 10px 12px;
+        align-items: start;
+    }
+    .endpoint-form-grid label { font-weight: 600; color: #334155; }
+    .endpoint-form-grid input,
+    .endpoint-form-grid textarea {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid #cbd5e1;
+        border-radius: 4px;
+        padding: 8px 10px;
+        background: #fff;
+        color: #0f172a;
+        font-size: 14px;
+    }
+    .endpoint-form-grid textarea {
+        min-height: 110px;
+        resize: vertical;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        line-height: 1.35;
+    }
+    .endpoint-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 14px; }
+    .endpoint-message {
+        display: none;
+        margin-bottom: 12px;
+        padding: 10px 12px;
+        border-radius: 4px;
+    }
+    .endpoint-message.error { display: block; border: 1px solid #fecaca; background: #fef2f2; color: #991b1b; }
+    .endpoint-message.success { display: block; border: 1px solid #bbf7d0; background: #f0fdf4; color: #166534; }
+    .endpoint-hint,
+    .catalog-editor-hint { color: #64748b; font-size: 12px; line-height: 1.45; }
+    .catalog-editor-field {
+        display: contents;
+    }
+    .catalog-editor-control {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-width: 0;
+    }
+    .catalog-editor-field.full {
+        grid-column: 1 / -1;
+    }
+    @media (max-width: 900px) {
+        .endpoint-form-grid {
+            grid-template-columns: 1fr;
+        }
+        .catalog-editor-field {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+    }
+</style>
+{% include '_metadata_picker_styles.html' %}
+
+<section class="endpoint-editor">
+    <div class="endpoint-panel">
+        <div style="display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: flex-start;">
+            <div>
+                <h2 style="margin: 0;">Endpoint Metadata</h2>
+                <p style="margin: 6px 0 0 0; color: #64748b;">Publish or update metadata for `inferx/endpoint/{{ endpoint_slug }}`.</p>
+            </div>
+            <a class="ix-btn secondary" href="{{ endpoint_detail_href }}">Back to Endpoint</a>
+        </div>
+    </div>
+
+    <div class="endpoint-panel">
+        <div id="endpoint-editor-message" class="endpoint-message"></div>
+        <form id="endpoint-editor-form">
+            <div class="endpoint-form-grid">
+                <label for="endpoint-slug">Name</label>
+                <div>
+                    <input id="endpoint-slug" type="text" value="{{ endpoint_slug }}" disabled>
+                </div>
+
+                <label for="brief_intro">Brief Intro</label>
+                <div>
+                    <input id="brief_intro" type="text" value="{{ endpoint_prefill.get('brief_intro', '') }}">
+                </div>
+
+                <label for="detailed_intro">Detailed Intro</label>
+                <div>
+                    <textarea id="detailed_intro">{{ endpoint_prefill.get('detailed_intro', '') }}</textarea>
+                </div>
+
+                <label for="cs_ttft">Cold Start TTFT</label>
+                <div>
+                    <input id="cs_ttft" type="text" value="{{ endpoint_prefill.get('cs_ttft', '') }}">
+                    <div class="endpoint-hint">Free-form summary such as `&gt;95% of all cold starts &lt; 2 sec`.</div>
+                </div>
+
+                {{ render_tag_picker('endpoint-editor', endpoint_prefill.get('tags', []), catalog_tag_groups) }}
+                {{ render_use_case_picker('endpoint-editor', endpoint_prefill.get('recommended_use_cases', []), catalog_use_case_groups) }}
+
+                <label for="provider">Provider</label>
+                <div>
+                    <input id="provider" type="text" value="{{ endpoint_prefill.get('provider', '') }}">
+                </div>
+
+                <label for="parameter_count_b">Parameter Count (B)</label>
+                <div>
+                    <input id="parameter_count_b" type="number" step="0.01" value="{{ endpoint_prefill.get('parameter_count_b', '') }}">
+                </div>
+
+                <label for="context_length">Context Length</label>
+                <div>
+                    <input id="context_length" type="number" step="1" value="{{ endpoint_prefill.get('context_length', '') }}">
+                    <div class="endpoint-hint">Prefill order: existing endpoint row, catalog metadata, then `--max-model-len` from the platform function.</div>
+                </div>
+
+                <label for="concurrency">Concurrency</label>
+                <div>
+                    <input id="concurrency" type="number" step="0.01" value="{{ endpoint_prefill.get('concurrency', '') }}">
+                </div>
+            </div>
+
+            <div class="endpoint-actions">
+                <button type="button" class="ix-btn secondary" onclick="submitEndpointEditor('save')">Save</button>
+                {% if endpoint_state.code == 'published' %}
+                <a class="ix-btn" href="{{ endpoint_detail_href }}">Cancel</a>
+                {% else %}
+                <button type="button" class="ix-btn" onclick="submitEndpointEditor('publish')">Publish</button>
+                {% endif %}
+            </div>
+        </form>
+    </div>
+</section>
+
+{% include '_metadata_picker_script.html' %}
+<script>
+    const endpointTagPicker = window.initMetadataChipPicker({
+        inputId: 'endpoint-editor-tags',
+        addButtonId: 'endpoint-editor-tag-add-btn',
+        selectedNodeId: 'endpoint-editor-selected-tags',
+        suggestionsNodeId: 'endpoint-editor-tag-suggestions',
+        optionSelector: '.catalog-tag-option',
+        optionDataKey: 'tag',
+        initialValuesId: 'endpoint-editor-tags-initial',
+        emptyText: 'No tags selected.',
+        chipClass: 'catalog-selected-tag',
+        removeClass: 'catalog-selected-tag-remove',
+        suggestionClass: 'catalog-tag-suggestion',
+    });
+
+    const endpointUseCasePicker = window.initMetadataChipPicker({
+        inputId: 'endpoint-editor-use-cases',
+        addButtonId: 'endpoint-editor-use-case-add-btn',
+        selectedNodeId: 'endpoint-editor-selected-use-cases',
+        suggestionsNodeId: 'endpoint-editor-use-case-suggestions',
+        optionSelector: '.catalog-use-case-option',
+        optionDataKey: 'useCase',
+        initialValuesId: 'endpoint-editor-use-cases-initial',
+        emptyText: 'No use cases selected.',
+        chipClass: 'catalog-selected-use-case',
+        removeClass: 'catalog-selected-use-case-remove',
+        suggestionClass: 'catalog-use-case-suggestion',
+    });
+
+    function endpointEditorPayload() {
+        return {
+            brief_intro: (document.getElementById('brief_intro')?.value || '').trim(),
+            detailed_intro: (document.getElementById('detailed_intro')?.value || '').trim(),
+            cs_ttft: (document.getElementById('cs_ttft')?.value || '').trim(),
+            recommended_use_cases: endpointUseCasePicker.getValues(),
+            tags: endpointTagPicker.getValues(),
+            provider: (document.getElementById('provider')?.value || '').trim(),
+            parameter_count_b: (document.getElementById('parameter_count_b')?.value || '').trim(),
+            context_length: (document.getElementById('context_length')?.value || '').trim(),
+            concurrency: (document.getElementById('concurrency')?.value || '').trim(),
+        };
+    }
+
+    function setEndpointEditorMessage(kind, text) {
+        const el = document.getElementById('endpoint-editor-message');
+        if (!el) return;
+        el.className = `endpoint-message ${kind}`;
+        el.textContent = text || '';
+    }
+
+    async function submitEndpointEditor(mode) {
+        const payload = endpointEditorPayload();
+        const url = mode === 'publish'
+            ? {{ url_for('prefix.EndpointAdminPublish', slug=endpoint_slug)|tojson }}
+            : {{ url_for('prefix.EndpointAdminSaveMetadata', slug=endpoint_slug)|tojson }};
+        const messageEl = document.getElementById('endpoint-editor-message');
+        if (messageEl) {
+            messageEl.className = 'endpoint-message';
+            messageEl.textContent = '';
+        }
+        try {
+            const resp = await fetch(url, {
+                method: mode === 'publish' ? 'POST' : 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            const body = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(body.error || `HTTP ${resp.status}`);
+            setEndpointEditorMessage('success', mode === 'publish' ? 'Endpoint published.' : 'Metadata saved.');
+            window.setTimeout(() => {
+                window.location.href = {{ endpoint_detail_href|tojson }};
+            }, 500);
+        } catch (err) {
+            setEndpointEditorMessage('error', err.message || String(err));
+        }
+    }
+</script>
+{% endblock %}

@@ -94,15 +94,89 @@
     </tr>
 </table>
 
+{% set section_class = '' %}
+{% include '_client_setup.html' %}
+
 {% if func["func"]["object"]["spec"]["sample_query"]["apiType"] == "image2text" %}
+{% set image_sample_url = func["func"]["object"]["spec"]["sample_query"].get("dataUrl", "") %}
 <h1>Image</h1>
-<textarea id="urlInput" rows="1" cols="120">{{ func["func"]["object"]["spec"]["sample_query"]["dataUrl"] }}</textarea>
-<button onclick="loadImage()">Preview</button>
+<div style="margin: 8px 0 12px;">
+    <label style="display: inline-flex; align-items: center; gap: 8px; margin-right: 16px;">
+        <input id="imageSourceTypeFile" type="radio" name="imageSourceType" value="file" {% if not image_sample_url %}checked{% endif %}>
+        <span>Upload file</span>
+    </label>
+    <label style="display: inline-flex; align-items: center; gap: 8px;">
+        <input id="imageSourceTypeUrl" type="radio" name="imageSourceType" value="url" {% if image_sample_url %}checked{% endif %}>
+        <span>Use remote URL</span>
+    </label>
+</div>
+<div id="imageUploadSection">
+    <input
+        id="imageFileInput"
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        style="display:block; width: 100%; max-width: 720px; margin-bottom: 10px;"
+    >
+    <div style="margin-bottom: 10px; color: #475467;">
+        Upload a local image for best reliability. Remote URL fetch may fail.
+    </div>
+</div>
+<div id="imageUrlSection">
+    <h3>Remote URL</h3>
+    <textarea id="urlInput" rows="1" cols="120" placeholder="https://example.com/image.jpg">{{ image_sample_url }}</textarea>
+    <div style="margin-top: 8px; color: #475467;">
+        Remote URL mode is fetched by dashboard server-side. Some sites may still reject it.
+    </div>
+</div>
+<div id="imageSourceStatus" style="margin: 8px 0; min-height: 1.4em; color: #475467;"></div>
+<button type="button" onclick="loadImage()">Preview</button>
 <img id="preview" src="" alt="Image will appear here" style="max-width: 600px; display: none;">
+<div style="margin-top: 10px; color: #475467;">
+    Larger images take longer before streaming starts because the upload must finish first.
+</div>
+{% elif path|lower == "v1/audio/transcriptions" or func["func"]["object"]["spec"]["sample_query"]["apiType"] == "transcriptions" %}
+{% set audio_sample_url = func["func"]["object"]["spec"]["sample_query"].get("dataUrl", "") %}
+<h1>Audio</h1>
+<div style="margin: 8px 0 12px;">
+    <label style="display: inline-flex; align-items: center; gap: 8px; margin-right: 16px;">
+        <input id="audioSourceTypeFile" type="radio" name="audioSourceType" value="file" {% if not audio_sample_url %}checked{% endif %}>
+        <span>Upload file</span>
+    </label>
+    <label style="display: inline-flex; align-items: center; gap: 8px;">
+        <input id="audioSourceTypeUrl" type="radio" name="audioSourceType" value="url" {% if audio_sample_url %}checked{% endif %}>
+        <span>Use remote URL</span>
+    </label>
+</div>
+<div id="audioUploadSection">
+    <input
+        id="audioFileInput"
+        type="file"
+        accept="audio/*,.wav,.mp3,.mp4,.m4a,.ogg,.webm,.flac"
+        style="display:block; width: 100%; max-width: 720px; margin-bottom: 10px;"
+    >
+    <div style="margin-bottom: 10px; color: #475467;">
+        Upload a local audio file for best reliability. Remote URL mode downloads the audio through dashboard first.
+    </div>
+</div>
+<div id="audioUrlSection">
+    <h3>Remote URL</h3>
+    <textarea id="urlInput" rows="1" cols="120" placeholder="https://example.com/audio.wav">{{ audio_sample_url }}</textarea>
+    <div style="margin-top: 8px; color: #475467;">
+        Remote URL mode fetches the audio through dashboard and forwards it as a multipart file upload.
+    </div>
+</div>
+<div id="audioSourceStatus" style="margin: 8px 0; min-height: 1.4em; color: #475467;"></div>
+<button type="button" onclick="loadAudio()">Preview</button>
+<audio id="audioPreview" controls style="display: none; margin-top: 10px; width: min(100%, 720px);">
+    Your browser does not support the audio element.
+</audio>
+<div style="margin-top: 10px; color: #475467;">
+    The dashboard sends transcription requests as multipart form uploads to match the backend API.
+</div>
 {% elif func["func"]["object"]["spec"]["sample_query"]["apiType"] == "audio2text" %}
 <h1>Audio</h1>
 <textarea id="urlInput" rows="1" cols="120">{{ func["func"]["object"]["spec"]["sample_query"]["dataUrl"] }}</textarea>
-<button onclick="loadAudio()">Preview</button>
+<button type="button" onclick="loadAudio()">Preview</button>
 <audio id="audioPreview" controls style="display: none; margin-top: 10px;">
     Your browser does not support the audio element.
 </audio>
@@ -116,11 +190,11 @@
 <br />
 <!-- <img src="{{ url_for('static', filename='button.gif') }}" alt="My GIF"> -->
 
-<button id="button" onclick="streamOutput()">
+<button id="button" type="button" onclick="streamOutput()">
     <img id="processing" style="display:none;" src="{{ url_for('static', filename='button.gif') }}" />
-    <div id="go"> Go </div>
+    <div id="run-label">Go</div>
 </button>
-<button id="cancel" onclick="cancel()" disabled>Cancel</button>
+<button id="cancel" type="button" onclick="cancel()" disabled>Cancel</button>
 
 <h2>
     <div id="startDiv"></div>
@@ -141,8 +215,11 @@
 
 <h2>Sample Rest Call</h2>
 <div class="copyable-area admin-rest-call">
-    <button class="copyable-area-copy" type="button" onclick="copyTextFromElement('restcall')">Copy</button>
+    <button class="copyable-area-copy" type="button" onclick="copyTextFromElement('restcall-copy')">Copy</button>
     <textarea id="restcall" rows="8" cols="120">
+{{ func.get("sampleRestCallDisplay", func["sampleRestCall"]) }}
+</textarea>
+    <textarea id="restcall-copy" rows="8" cols="120" hidden>
 {{ func["sampleRestCall"] }}
 </textarea>
 </div>
@@ -390,8 +467,11 @@
         name: name,
         apiType: apiType,
         map: map,
+        samplePrompt: {{ func["func"]["object"]["spec"]["sample_query"]["prompt"] | tojson }},
         sampleQueryPath: sampleQueryPath,
         proxyBasePath: {{ (hosturl ~ 'proxy') | tojson }},
+        remoteImageFetchPath: {{ (hosturl ~ 'image2text/fetch-remote') | tojson }},
+        remoteAudioFetchPath: {{ (hosturl ~ 'audio/fetch-remote') | tojson }},
         text2imgPath: {{ (hosturl ~ 'text2img') | tojson }},
         text2audioPath: {{ (hosturl ~ 'text2audio') | tojson }}
     });

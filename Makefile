@@ -1,11 +1,11 @@
 ARCH := ${shell uname -m}
-PLATFORM_VERSION ?= v0.2.4.2
-DB_VERSION ?= v0.2.4
-DASHBOARD_VERSION ?= v0.2.4.4
-RUNTIME_VERSION ?= v0.2.4
-NA_VERSION ?= v0.2.4
-RUNMODEL_VERSION ?= v0.2.4.1
-SPDK_VERSION ?= v0.2.4
+PLATFORM_VERSION ?= v0.4.1
+DB_VERSION ?= v0.4.0
+DASHBOARD_VERSION ?= v0.4.0
+RUNTIME_VERSION ?= v0.4.0
+NA_VERSION ?= v0.4.0
+RUNMODEL_VERSION ?= v0.2.6
+SPDK_VERSION ?= v0.2.6
 
 NODE_NAME=${shell hostname}
 UBUNTU_VERSION :=$(shell lsb_release -sr)
@@ -46,11 +46,11 @@ pushhf: hf
 util:
 	- mkdir -p ./target/util
 	cp -f ./deployment/inferx_util.Dockerfile ./target/util/Dockerfile
-	sudo docker build -t inferx/inferx_util:v0.1.0 ./target/util
+	sudo docker build -t inferx/inferx_util:v0.2.0 ./target/util
 
 pushutil: util
 	# sudo docker login -u inferx
-	sudo docker push inferx/inferx_util:v0.1.0
+	sudo docker push inferx/inferx_util:v0.2.0
 
 util_slim: 
 	- mkdir -p ./target/util
@@ -251,7 +251,7 @@ runna:
 	# -sudo rm /opt/inferx/log/*.log
 	VERSION=$(NA_VERSION) envsubst < k8s/nodeagent.yaml | sudo kubectl apply -f -
 stopna:
-	sudo kubectl delete DaemonSet ixproxy
+# 	sudo kubectl delete DaemonSet ixproxy
 	sudo kubectl delete DaemonSet nodeagent-blob
 	sudo kubectl delete DaemonSet nodeagent-file
 

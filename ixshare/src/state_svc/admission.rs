@@ -19,10 +19,15 @@ use serde_json::Value;
 
 use super::state_svc::*;
 use crate::common::*;
+use crate::metastore::cache_store::BackendStore;
 use inferxlib::data_obj::{DataObject, ObjRef};
 use inferxlib::obj_mgr::func_mgr::{FuncState, Function};
 use inferxlib::obj_mgr::namespace_mgr::Namespace;
 use inferxlib::obj_mgr::tenant_mgr::{Tenant, SYSTEM_NAMESPACE, SYSTEM_TENANT};
+
+const VIRTUAL_ENDPOINTS_NAMESPACE: &str = "endpoints";
+const PLATFORM_TENANT: &str = "inferx";
+const PLATFORM_SHARED_NAMESPACE: &str = "endpoint";
 
 impl StateSvc {
     pub fn CreateObjCheck(&self, obj: &DataObject<Value>) -> Result<()> {
@@ -51,6 +56,7 @@ impl StateSvc {
                 let func: Function = Function::FromDataObject(dataobj.clone())?;
                 let status = FunctionStatusDef {
                     version: func.Version(),
+                    published: Self::DefaultFunctionPublished(&func),
                     state: FuncState::Normal,
                     snapshotingFailureCnt: 0,
                     resumingFailureCnt: 0,
@@ -83,6 +89,7 @@ impl StateSvc {
                 let func: Function = Function::FromDataObject(dataobj.clone())?;
                 let status = FunctionStatusDef {
                     version: func.Version(),
+                    published: Self::DefaultFunctionPublished(&func),
                     state: FuncState::Normal,
                     snapshotingFailureCnt: 0,
                     resumingFailureCnt: 0,
@@ -97,11 +104,36 @@ impl StateSvc {
                     ..Default::default()
                 };
 
-                error!("CreateFuncStatus {:#?}", &funcstatus);
+                info!("UpdateFuncStatus {:#?}", &funcstatus);
 
                 let statusDataObj = funcstatus.DataObject();
 
-                self.store.Update(0, &statusDataObj, 0).await?;
+                let key = format!(
+                    "{}/{}/{}/{}",
+                    FunctionStatus::KEY,
+                    &func.tenant,
+                    &func.namespace,
+                    &func.name
+                );
+                let mut attempts = 0;
+                loop {
+                    attempts += 1;
+                    let expected_rev = match self.store.Get(&key, 0).await? {
+                        Some(current) => current.revision,
+                        None => 0,
+                    };
+
+                    match self.store.Update(expected_rev, &statusDataObj, 0).await {
+                        Ok(_) => break,
+                        Err(Error::UpdateRevNotMatchErr(e)) if attempts < 3 => {
+                            error!(
+                                "UpdateFuncStatus conflict for {} on attempt {} (expected_rev={}, actual_rev={}), retrying",
+                                key, attempts, e.expectRv, e.actualRv
+                            );
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
             }
             _ => (),
         }
@@ -178,6 +210,8 @@ impl StateSvc {
     pub fn CreateNamespaceCheck(&self, obj: &DataObject<Value>) -> Result<()> {
         let namespace = Namespace::FromDataObject(obj.clone())?;
 
+        self.RejectVirtualEndpointsNamespace(&namespace.tenant, &namespace.name)?;
+
         if !self
             .tenantMgr
             .Contains(SYSTEM_TENANT, SYSTEM_NAMESPACE, &namespace.tenant)
@@ -210,6 +244,7 @@ impl StateSvc {
 
     pub fn CreateFuncCheck(&self, obj: &DataObject<Value>) -> Result<()> {
         let func = Function::FromDataObject(obj.clone())?;
+        self.RejectVirtualEndpointsNamespace(&func.tenant, &func.namespace)?;
         self.ContainersNamespace(&func.tenant, &func.namespace)?;
 
         let tenant = self.tenantMgr.Get("system", "system", &func.tenant)?;
@@ -259,6 +294,7 @@ impl StateSvc {
     pub fn CreateFuncPolicyCheck(&self, obj: &DataObject<Value>) -> Result<()> {
         let p = FuncPolicy::FromDataObject(obj.clone())?;
 
+        Self::ValidateEndpointsFuncPolicy(&p.namespace, &p.object)?;
         self.FuncPolicyCheck(&p.tenant, &p.object)?;
         return Ok(());
     }
@@ -294,6 +330,8 @@ impl StateSvc {
     pub fn UpdateObjCheck(&self, obj: &DataObject<Value>) -> Result<()> {
         match obj.objType.as_str() {
             Namespace::KEY => {
+                let namespace = Namespace::FromDataObject(obj.clone())?;
+                self.RejectVirtualEndpointsNamespace(&namespace.tenant, &namespace.name)?;
                 return Ok(());
             }
             Tenant::KEY => {
@@ -340,6 +378,7 @@ impl StateSvc {
 
     pub fn UpdateFuncCheck(&self, obj: &DataObject<Value>) -> Result<()> {
         let func = Function::FromDataObject(obj.clone())?;
+        self.RejectVirtualEndpointsNamespace(&func.tenant, &func.namespace)?;
         self.ContainersNamespace(&func.tenant, &func.namespace)?;
 
         if !self
@@ -393,5 +432,83 @@ impl StateSvc {
         }
 
         return Ok(());
+    }
+
+    fn RejectVirtualEndpointsNamespace(&self, tenant: &str, namespace: &str) -> Result<()> {
+        if tenant != SYSTEM_TENANT && namespace == VIRTUAL_ENDPOINTS_NAMESPACE {
+            return Err(Error::CommonError(format!(
+                "namespace {} is reserved for virtual endpoints; only FuncPolicy objects are allowed there",
+                VIRTUAL_ENDPOINTS_NAMESPACE
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn DefaultFunctionPublished(func: &Function) -> bool {
+        !Self::IsPlatformSharedFunc(&func.tenant, &func.namespace)
+    }
+
+    fn IsPlatformSharedFunc(tenant: &str, namespace: &str) -> bool {
+        tenant == PLATFORM_TENANT && namespace == PLATFORM_SHARED_NAMESPACE
+    }
+
+    fn ValidateEndpointsFuncPolicy(namespace: &str, p: &FuncPolicySpec) -> Result<()> {
+        if namespace != VIRTUAL_ENDPOINTS_NAMESPACE {
+            return Ok(());
+        }
+
+        if p.minReplica > 0 {
+            return Err(Error::CommonError(
+                "min_replica is not supported for endpoints FuncPolicy; standby is controlled by the platform function"
+                    .to_string(),
+            ));
+        }
+
+        if p.standbyPerNode > 0 {
+            return Err(Error::CommonError(
+                "standby_per_node is not supported for endpoints FuncPolicy; standby is controlled by the platform function"
+                    .to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StateSvc;
+    use inferxlib::obj_mgr::funcpolicy_mgr::FuncPolicySpec;
+
+    #[test]
+    fn default_function_published_for_platform_shared_is_false() {
+        assert!(StateSvc::IsPlatformSharedFunc("inferx", "endpoint"));
+    }
+
+    #[test]
+    fn default_function_published_for_other_namespaces_is_true() {
+        assert!(!StateSvc::IsPlatformSharedFunc("tenant-a", "endpoint"));
+        assert!(!StateSvc::IsPlatformSharedFunc("inferx", "models"));
+    }
+
+    #[test]
+    fn endpoints_policy_rejects_min_replica() {
+        let policy = FuncPolicySpec {
+            minReplica: 1,
+            ..Default::default()
+        };
+
+        assert!(StateSvc::ValidateEndpointsFuncPolicy("endpoints", &policy).is_err());
+    }
+
+    #[test]
+    fn endpoints_policy_rejects_standby_per_node() {
+        let policy = FuncPolicySpec {
+            standbyPerNode: 1,
+            ..Default::default()
+        };
+
+        assert!(StateSvc::ValidateEndpointsFuncPolicy("endpoints", &policy).is_err());
     }
 }

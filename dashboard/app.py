@@ -12,12 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import ast
 import json
+import ipaddress
+import mimetypes
 import os
 import re
+import socket
 import time
 from datetime import datetime, timezone
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode, urljoin, urlparse
 import pytz
 
 import requests
@@ -69,6 +73,40 @@ DASHBOARD_GATEWAY_ALIGNED_ANONYMOUS_ACCESS = os.getenv(
     "DASHBOARD_GATEWAY_ALIGNED_ANONYMOUS_ACCESS",
     "false",
 ).lower() in ("1", "true", "yes")
+DEBUG_PROXY_GATEWAY_REQUESTS = os.getenv(
+    "DEBUG_PROXY_GATEWAY_REQUESTS",
+    "false",
+).lower() in ("1", "true", "yes")
+REMOTE_IMAGE_ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
+REMOTE_IMAGE_FETCH_MAX_BYTES = 10 * 1024 * 1024
+REMOTE_AUDIO_ALLOWED_MIME_TYPES = {
+    "audio/flac",
+    "audio/m4a",
+    "audio/mp3",
+    "audio/mp4",
+    "audio/mpeg",
+    "audio/ogg",
+    "audio/wav",
+    "audio/wave",
+    "audio/vnd.wave",
+    "audio/webm",
+    "audio/x-flac",
+    "audio/x-m4a",
+    "audio/x-mp3",
+    "audio/x-wav",
+}
+REMOTE_AUDIO_FETCH_MAX_BYTES = 25 * 1024 * 1024
+REMOTE_IMAGE_FETCH_REDIRECT_LIMIT = 3
+REMOTE_IMAGE_FETCH_CONNECT_TIMEOUT_SEC = 10.0
+REMOTE_IMAGE_FETCH_READ_TIMEOUT_SEC = 20.0
+REMOTE_IMAGE_FETCH_HEADERS = {
+    "Accept": "image/jpeg,image/png,image/webp,image/*;q=0.8,*/*;q=0.1",
+    "User-Agent": "InferX-Dashboard/1.0 remote-image-fetch",
+}
+REMOTE_AUDIO_FETCH_HEADERS = {
+    "Accept": "audio/wav,audio/x-wav,audio/mpeg,audio/mp4,audio/webm,audio/ogg,audio/*;q=0.8,*/*;q=0.1",
+    "User-Agent": "InferX-Dashboard/1.0 remote-audio-fetch",
+}
 
 
 @app.context_processor
@@ -338,7 +376,6 @@ CATALOG_RESERVED_ENV_KEYS = {
     "HUGGING_FACE_HUB_TOKEN",
 }
 CATALOG_PLATFORM_ENV_KEYS = RESERVED_ENV_KEYS | CATALOG_RESERVED_ENV_KEYS
-CATALOG_ALLOWED_API_TYPES = {"text2text", "image2text", "audio2text", "text2img", "text2audio"}
 CATALOG_ALLOWED_STANDBY_TYPES = {"File", "Mem", "Blob"}
 CATALOG_ALLOWED_MOUNT_HOSTPATH_PREFIXES = ("/opt/inferx/",)
 CATALOG_HF_CACHE_MOUNTPATH = "/root/.cache/huggingface"
@@ -837,7 +874,7 @@ def store_onboard_session(sub: str, onboard_info, onboarding_apikey: str = "", o
 def render_onboard_error(redirectpath: str, error_message: str, invite_code: str = ''):
     target = redirectpath
     if target == '':
-        target = url_for('prefix.ListFunc')
+        target = url_for('prefix.EndpointList')
 
     return render_template_string(
         """
@@ -879,7 +916,7 @@ def render_onboard_error(redirectpath: str, error_message: str, invite_code: str
 
 
 def post_login_flow(sub: str, access_token: str, redirectpath: str, invite_code: str):
-    target = redirectpath if redirectpath != '' else url_for('prefix.ListFunc')
+    target = redirectpath if redirectpath != '' else url_for('prefix.EndpointList')
 
     if invite_code == '':
         invite_code = session.get('pending_invite_code', '')
@@ -1254,7 +1291,7 @@ def auth_callback():
         compact_legacy_session_payload()
         log_session_cookie_size_comparison(token, userinfo)
 
-        target = redirectpath if redirectpath != '' else url_for('prefix.ListFunc')
+        target = redirectpath if redirectpath != '' else url_for('prefix.EndpointList')
         try:
             target, invite_code = post_login_flow(
                 sub,
@@ -1275,7 +1312,7 @@ def auth_callback():
 @require_login
 def onboard_retry():
     redirectpath = request.form.get('redirectpath', '')
-    target = redirectpath if redirectpath != '' else url_for('prefix.ListFunc')
+    target = redirectpath if redirectpath != '' else url_for('prefix.EndpointList')
     invite_code = request.form.get('invite_code', '')
     if invite_code == '':
         invite_code = session.get('pending_invite_code', '')
@@ -1787,6 +1824,17 @@ def getfunc_response(tenant: str, namespace: str, funcname: str):
     return resp, response_json_or_none(resp)
 
 
+def get_published_endpoint_response(tenant: str, slug: str):
+    access_token = session.get('access_token', '')
+    if access_token == "":
+        headers = {}
+    else:
+        headers = {'Authorization': f'Bearer {access_token}'}
+    url = "{}/published-endpoint/{}/{}/".format(apihostaddr, tenant, slug)
+    resp = requests.get(url, headers=headers)
+    return resp, response_json_or_none(resp)
+
+
 def listsnapshots(tenant: str, namespace: str):
     access_token = session.get('access_token', '')
     if access_token == "":
@@ -1983,6 +2031,27 @@ def is_upstream_resource_unavailable(resp, payload) -> bool:
     return any(marker in detail for marker in unavailable_markers)
 
 
+def is_upstream_permission_denied(resp, payload) -> bool:
+    if resp is None:
+        return False
+
+    if resp.status_code in (401, 403):
+        return True
+
+    detail = extract_upstream_error_message(resp, payload).lower()
+    if detail == "":
+        return False
+
+    denied_markers = (
+        "permission denied",
+        "no permission",
+        "nopermission",
+        "unauthorized",
+        "forbidden",
+    )
+    return any(marker in detail for marker in denied_markers)
+
+
 def render_resource_unavailable_page(
     *,
     resource_kind: str,
@@ -2137,6 +2206,102 @@ def strip_model_command_args(commands):
         filtered.append(token)
         i += 1
     return filtered
+
+
+JSON_VALUED_COMMAND_FLAGS = (
+    "--attention-config",
+    "--compilation-config",
+    "--ec-transfer-config",
+    "--hf-overrides",
+    "--ir-op-priority",
+    "--kernel-config",
+    "--kv-events-config",
+    "--kv-transfer-config",
+    "--limit-mm-per-prompt",
+    "--mamba-config",
+    "--media-io-kwargs",
+    "--mm-processor-kwargs",
+    "--model-loader-extra-config",
+    "--override-generation-config",
+    "--pooler-config",
+    "--quantization-config",
+    "--reasoning-config",
+    "--speculative-config",
+    "-ac",
+    "-cc",
+    "-sc",
+)
+
+
+def normalize_json_valued_command_arg_value(flag_name, raw_value, *, label="commands"):
+    normalized_value = str(raw_value).strip()
+    if normalized_value == "":
+        raise ValueError(f"{label} contains `{flag_name}` without a value")
+
+    looks_like_structured_value = (
+        (normalized_value.startswith("{") and normalized_value.endswith("}"))
+        or (normalized_value.startswith("[") and normalized_value.endswith("]"))
+    )
+    if not looks_like_structured_value:
+        return normalized_value
+
+    try:
+        parsed_value = json.loads(normalized_value)
+    except Exception:
+        try:
+            parsed_value = ast.literal_eval(normalized_value)
+        except Exception as exc:
+            raise ValueError(
+                f"{label} contains `{flag_name}` with an invalid JSON object/array value"
+            ) from exc
+
+    if not isinstance(parsed_value, (dict, list)):
+        raise ValueError(f"{label} contains `{flag_name}` with a non-object/array JSON value")
+
+    return json.dumps(parsed_value, separators=(",", ":"))
+
+
+def normalize_json_valued_command_args(commands, *, label="commands"):
+    raw_commands = [str(item) for item in commands] if isinstance(commands, list) else []
+    normalized_commands = []
+
+    i = 0
+    while i < len(raw_commands):
+        raw_token = raw_commands[i]
+        token = raw_token.strip()
+
+        matched_flag = None
+        for flag_name in JSON_VALUED_COMMAND_FLAGS:
+            if token == flag_name or token.startswith(f"{flag_name}="):
+                matched_flag = flag_name
+                break
+
+        if matched_flag is None:
+            normalized_commands.append(raw_token)
+            i += 1
+            continue
+
+        if token == matched_flag:
+            if i + 1 >= len(raw_commands):
+                raise ValueError(f"{label} contains `{matched_flag}` without a value")
+            normalized_commands.append(matched_flag)
+            normalized_commands.append(
+                normalize_json_valued_command_arg_value(
+                    matched_flag,
+                    raw_commands[i + 1],
+                    label=label,
+                )
+            )
+            i += 2
+            continue
+
+        raw_value = token.split("=", 1)[1]
+        normalized_commands.append(
+            f"{matched_flag}={normalize_json_valued_command_arg_value(matched_flag, raw_value, label=label)}"
+        )
+        i += 1
+
+    return normalized_commands
 
 
 def is_standard_vllm_image(image):
@@ -2601,6 +2766,10 @@ def validate_partial_spec(
         normalized_policy = {"Obj": policy_obj} if policy_obj else None
 
     normalized_commands = [str(item) for item in commands] if editor_mode == "advanced" else strip_reserved_command_args(commands)
+    normalized_commands = normalize_json_valued_command_args(
+        normalized_commands,
+        label="`spec.commands`",
+    )
 
     normalized_spec = {
         "image": image,
@@ -2614,18 +2783,86 @@ def validate_partial_spec(
     return normalized_spec
 
 
+def build_text2text_chat_body_for_ui(body, prompt):
+    body_for_ui = clone_json_value(body) if isinstance(body, dict) else {}
+    body_for_ui.pop("prompt", None)
+
+    prompt_text = str(prompt or "")
+    messages = body_for_ui.get("messages")
+    if not isinstance(messages, list) or len(messages) == 0:
+        body_for_ui["messages"] = [
+            {
+                "role": "user",
+                "content": prompt_text,
+            }
+        ]
+        return body_for_ui
+
+    normalized_messages = clone_json_value(messages)
+    replaced = False
+    for message in normalized_messages:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role", "") or "").strip().lower()
+        if role != "user":
+            continue
+
+        content = message.get("content")
+        if isinstance(content, str):
+            message["content"] = prompt_text
+            replaced = True
+            break
+
+        if isinstance(content, list):
+            new_content = []
+            text_replaced = False
+            for item in content:
+                if (
+                    not text_replaced
+                    and isinstance(item, dict)
+                    and str(item.get("type", "") or "").strip().lower() == "text"
+                ):
+                    updated_item = clone_json_value(item)
+                    updated_item["text"] = prompt_text
+                    new_content.append(updated_item)
+                    text_replaced = True
+                else:
+                    new_content.append(clone_json_value(item))
+            if not text_replaced:
+                new_content.insert(0, {"type": "text", "text": prompt_text})
+            message["content"] = new_content
+            replaced = True
+            break
+
+    if not replaced:
+        normalized_messages.insert(
+            0,
+            {
+                "role": "user",
+                "content": prompt_text,
+            },
+        )
+    body_for_ui["messages"] = normalized_messages
+    return body_for_ui
+
+
 def build_sample_query(hf_model: str):
-    return {
-        "apiType": "text2text",
-        "prompt": "write a quick sort algorithm.",
-        "prompts": list(DEFAULT_SAMPLE_QUERY_PROMPTS),
-        "path": "v1/completions",
-        "body": {
+    prompt = "write a quick sort algorithm."
+    body = build_text2text_chat_body_for_ui(
+        {
             "model": hf_model,
             "max_tokens": "1000",
             "temperature": "0",
             "stream": "true",
         },
+        prompt,
+    )
+    return {
+        "apiType": "text2text",
+        "prompt": prompt,
+        "prompts": list(DEFAULT_SAMPLE_QUERY_PROMPTS),
+        "path": "v1/chat/completions",
+        "body": body,
     }
 
 
@@ -2699,6 +2936,86 @@ def build_full_spec(hf_model: str, partial_spec, editor_mode="basic"):
 
 def clone_json_value(value):
     return json.loads(json.dumps(value))
+
+
+def redact_inline_media_in_value(value):
+    if isinstance(value, list):
+        return [redact_inline_media_in_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: redact_inline_media_in_value(item) for key, item in value.items()}
+    if isinstance(value, str) and value.startswith("data:"):
+        return f"[redacted data URL; {len(value)} chars]"
+    return value
+
+
+def summarize_headers_for_log(headers):
+    summarized = {}
+    for key, value in (headers or {}).items():
+        normalized_key = str(key or "")
+        if normalized_key.lower() in {"authorization", "cookie", "proxy-authorization", "x-api-key"}:
+            summarized[normalized_key] = "[redacted]"
+        else:
+            summarized[normalized_key] = str(value)
+    return summarized
+
+
+def summarize_cookies_for_log(cookies):
+    try:
+        keys = sorted([str(key) for key in cookies.keys()])
+    except Exception:
+        keys = []
+    return {
+        "count": len(keys),
+        "keys": keys,
+        "values": "[redacted]",
+    }
+
+
+def summarize_request_body_for_log(body_bytes):
+    if not body_bytes:
+        return {"kind": "empty", "bytes": 0}
+
+    body_size = len(body_bytes)
+    try:
+        parsed = json.loads(body_bytes.decode("utf-8"))
+        return {
+            "kind": "json",
+            "bytes": body_size,
+            "body": redact_inline_media_in_value(parsed),
+        }
+    except Exception:
+        pass
+
+    try:
+        text = body_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return {
+            "kind": "binary",
+            "bytes": body_size,
+            "body": "[non-utf8 body omitted]",
+        }
+
+    return {
+        "kind": "text",
+        "bytes": body_size,
+        "body": text if len(text) <= 2048 else f"{text[:2048]}... [truncated]",
+    }
+
+
+def maybe_log_proxy_gateway_request(path, upstream_url, method, headers, cookies, body_bytes, timeout_sec):
+    if not DEBUG_PROXY_GATEWAY_REQUESTS:
+        return
+
+    app.logger.warning(
+        "dashboard proxy gateway request path=%s method=%s upstream=%s timeout_sec=%s headers=%s cookies=%s body=%s",
+        path,
+        method,
+        upstream_url,
+        timeout_sec,
+        summarize_headers_for_log(headers),
+        summarize_cookies_for_log(cookies),
+        summarize_request_body_for_log(body_bytes),
+    )
 
 
 def parse_named_command_arg(commands, flag_name):
@@ -2814,8 +3131,14 @@ def extract_named_command_arg_tokens(commands, flag_name):
 
 
 def merge_catalog_runtime_commands(base_commands, submitted_commands, *, image, gpu_count, editor_mode="basic", sync_tensor_parallel=True):
-    normalized_base = [str(item) for item in base_commands] if isinstance(base_commands, list) else []
-    normalized_submitted = [str(item) for item in submitted_commands] if isinstance(submitted_commands, list) else []
+    normalized_base = normalize_json_valued_command_args(
+        [str(item) for item in base_commands] if isinstance(base_commands, list) else [],
+        label="catalog base commands",
+    )
+    normalized_submitted = normalize_json_valued_command_args(
+        [str(item) for item in submitted_commands] if isinstance(submitted_commands, list) else [],
+        label="submitted catalog commands",
+    )
     prefix_tokens = extract_locked_command_prefix_tokens(normalized_base)
     editable_tokens = strip_matching_command_prefix_tokens(normalized_submitted, prefix_tokens)
 
@@ -2917,6 +3240,17 @@ def maybe_get_catalog_entry_metadata(catalog_source):
     return metadata
 
 
+def query_catalog_entry_by_source(catalog_source):
+    normalized_source = normalize_catalog_source(catalog_source)
+    if normalized_source is None:
+        return None
+
+    try:
+        return query_catalog_entry_by_id(normalized_source["catalog_id"], active_only=False)
+    except Exception:
+        return None
+
+
 def ensure_catalog_db_available():
     if psycopg2 is None or RealDictCursor is None:
         raise RuntimeError("catalog support requires `psycopg2-binary` in the dashboard environment")
@@ -2962,6 +3296,25 @@ def normalize_catalog_api_type(api_type):
     return normalized
 
 
+def infer_catalog_modality_from_sample_query(sample_query):
+    sample_query_obj = sample_query if isinstance(sample_query, dict) else {}
+    api_type = normalize_catalog_api_type(sample_query_obj.get("apiType"))
+    path = str(sample_query_obj.get("path") or "").strip().lower().lstrip("/")
+
+    modality_map = {
+        "text2text": "text",
+        "image2text": "multimodal",
+        "audio2text": "multimodal",
+        "transcriptions": "multimodal",
+        "text2img": "image",
+        "text2audio": "audio",
+    }
+
+    if path == "v1/audio/transcriptions":
+        return "multimodal"
+    return modality_map.get(api_type, "text")
+
+
 def build_catalog_default_spec_from_func(full_spec):
     spec = clone_json_value(full_spec if isinstance(full_spec, dict) else {})
     spec.pop("catalog_source", None)
@@ -2972,15 +3325,6 @@ def build_catalog_default_spec_from_func(full_spec):
 
 def build_catalog_prefill_from_func(hf_model: str, full_spec, func_name: str):
     catalog_spec = build_catalog_default_spec_from_func(full_spec)
-    api_type = normalize_catalog_api_type(((full_spec.get("sample_query") or {}).get("apiType")) if isinstance(full_spec, dict) else "")
-    modality_map = {
-        "text2text": "text",
-        "openai": "text",
-        "image2text": "multimodal",
-        "audio2text": "multimodal",
-        "text2img": "image",
-        "text2audio": "audio",
-    }
     normalized_hf_model = str(hf_model or "").strip()
     provider = normalized_hf_model.split("/", 1)[0] if "/" in normalized_hf_model else ""
     display_name = normalized_hf_model.split("/")[-1] if normalized_hf_model != "" else ""
@@ -2989,7 +3333,9 @@ def build_catalog_prefill_from_func(hf_model: str, full_spec, func_name: str):
         "source_kind": "huggingface",
         "display_name": display_name,
         "provider": provider,
-        "modality": modality_map.get(api_type, "text"),
+        "modality": infer_catalog_modality_from_sample_query(
+            (full_spec.get("sample_query") or {}) if isinstance(full_spec, dict) else {}
+        ),
         "default_func_spec": catalog_spec,
         "parameter_count_b": None,
         "brief_intro": "",
@@ -3038,6 +3384,21 @@ def build_catalog_default_summary(default_func_spec):
     }
 
 
+def extract_gpu_count_from_spec(spec):
+    if not isinstance(spec, dict):
+        return None
+    resources = spec.get("resources")
+    if not isinstance(resources, dict):
+        return None
+    gpu = resources.get("GPU")
+    if not isinstance(gpu, dict):
+        return None
+    gpu_count = gpu.get("Count")
+    if not isinstance(gpu_count, int) or isinstance(gpu_count, bool) or gpu_count <= 0:
+        return None
+    return gpu_count
+
+
 def normalize_catalog_entry_row(row):
     if not isinstance(row, dict):
         raise ValueError("Invalid catalog model row")
@@ -3064,6 +3425,11 @@ def normalize_catalog_entry_row(row):
     entry["updatetime_display"] = format_catalog_datetime(entry.get("updatetime"))
     entry["createtime"] = normalize_catalog_datetime_value(entry.get("createtime"))
     entry["updatetime"] = normalize_catalog_datetime_value(entry.get("updatetime"))
+    source_kind = str(entry.get("source_kind") or "").strip().lower()
+    source_model_id = str(entry.get("source_model_id") or "").strip()
+    entry["source_external_url"] = ""
+    if source_kind == "huggingface" and source_model_id != "":
+        entry["source_external_url"] = f"https://huggingface.co/{quote(source_model_id, safe='/')}"
     entry.update(build_catalog_default_summary(entry.get("default_func_spec")))
     return entry
 
@@ -3663,6 +4029,670 @@ def build_catalog_deploy_target_selector_context(*, roles=None, inferx_admin=Non
     }
 
 
+ENDPOINT_ENTRY_SELECT_COLUMNS = """
+    SELECT
+        slug,
+        func_revision,
+        brief_intro,
+        detailed_intro,
+        cs_ttft,
+        recommended_use_cases,
+        tags,
+        provider,
+        parameter_count_b,
+        context_length,
+        concurrency,
+        last_published_at,
+        last_published_by
+    FROM Endpoints
+"""
+
+
+def ensure_endpoint_db_available():
+    ensure_catalog_db_available()
+
+
+def normalize_endpoint_row(row):
+    if not isinstance(row, dict):
+        raise ValueError("Invalid endpoint row")
+
+    entry = dict(row)
+    for key in ("tags", "recommended_use_cases"):
+        entry[key] = normalize_catalog_json_field(entry.get(key))
+
+    if not isinstance(entry.get("tags"), list):
+        entry["tags"] = []
+    if not isinstance(entry.get("recommended_use_cases"), list):
+        entry["recommended_use_cases"] = []
+
+    parameter_count = entry.get("parameter_count_b")
+    if parameter_count is not None:
+        try:
+            entry["parameter_count_b"] = float(parameter_count)
+        except Exception:
+            entry["parameter_count_b"] = None
+
+    concurrency = entry.get("concurrency")
+    if concurrency is not None:
+        try:
+            entry["concurrency"] = float(concurrency)
+        except Exception:
+            entry["concurrency"] = None
+
+    entry["last_published_at_display"] = format_catalog_datetime(entry.get("last_published_at"))
+    entry["last_published_at"] = normalize_catalog_datetime_value(entry.get("last_published_at"))
+    return entry
+
+
+def list_endpoint_rows():
+    ensure_endpoint_db_available()
+
+    query = f"""
+        {ENDPOINT_ENTRY_SELECT_COLUMNS}
+        ORDER BY slug ASC
+    """
+    try:
+        with psycopg2.connect(SECRDB_ADDR, connect_timeout=5) as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query)
+                rows = cursor.fetchall()
+    except Exception as e:
+        raise RuntimeError(f"failed to query endpoints: {e}")
+
+    return [normalize_endpoint_row(dict(row)) for row in rows]
+
+
+def query_endpoint_row_by_slug(slug: str):
+    ensure_endpoint_db_available()
+    normalized_slug = str(slug or "").strip()
+    if normalized_slug == "":
+        raise ValueError("endpoint slug is required")
+
+    query = f"""
+        {ENDPOINT_ENTRY_SELECT_COLUMNS}
+        WHERE slug = %s
+    """
+    try:
+        with psycopg2.connect(SECRDB_ADDR, connect_timeout=5) as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(query, (normalized_slug,))
+                row = cursor.fetchone()
+    except Exception as e:
+        raise RuntimeError(f"failed to query endpoint `{normalized_slug}`: {e}")
+
+    if row is None:
+        raise LookupError(f"endpoint `{normalized_slug}` not found")
+
+    return normalize_endpoint_row(dict(row))
+
+
+def gateway_request_headers(*, json_body=False):
+    access_token = session.get('access_token', '')
+    headers = {}
+    if access_token != "":
+        headers['Authorization'] = f'Bearer {access_token}'
+    if json_body:
+        headers["Content-Type"] = "application/json"
+    return headers
+
+
+def list_gateway_objects(obj_type: str, tenant: str, namespace: str):
+    url = f"{apihostaddr}/objects/{obj_type}/{tenant}/{namespace}/"
+    resp = requests.get(url, headers=gateway_request_headers())
+    payload = response_json_or_none(resp)
+    if not resp.ok:
+        detail = extract_upstream_error_message(resp, payload)
+        raise RuntimeError(
+            f"failed to list {obj_type} objects in {tenant}/{namespace}: "
+            f"HTTP {resp.status_code}{': ' + detail if detail else ''}"
+        )
+    return payload if isinstance(payload, list) else []
+
+
+def get_gateway_object(obj_type: str, tenant: str, namespace: str, name: str):
+    url = f"{apihostaddr}/object/{obj_type}/{tenant}/{namespace}/{name}/"
+    resp = requests.get(url, headers=gateway_request_headers())
+    payload = response_json_or_none(resp)
+    if is_upstream_resource_unavailable(resp, payload):
+        raise LookupError(f"{obj_type} `{tenant}/{namespace}/{name}` not found")
+    if not resp.ok:
+        detail = extract_upstream_error_message(resp, payload)
+        raise RuntimeError(
+            f"failed to load {obj_type} `{tenant}/{namespace}/{name}`: "
+            f"HTTP {resp.status_code}{': ' + detail if detail else ''}"
+        )
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"invalid {obj_type} response for `{tenant}/{namespace}/{name}`")
+    return payload
+
+
+def proxy_gateway_endpoint_admin_action(method: str, slug: str, *, metadata=None):
+    normalized_slug = str(slug or "").strip()
+    if normalized_slug == "":
+        raise ValueError("endpoint slug is required")
+
+    if method.upper() == "POST" and metadata is None:
+        url = f"{apihostaddr}/admin/endpoints/{normalized_slug}/unpublish"
+        resp = requests.post(url, headers=gateway_request_headers())
+    else:
+        suffix = "metadata" if method.upper() == "PUT" else "publish"
+        url = f"{apihostaddr}/admin/endpoints/{normalized_slug}/{suffix}"
+        resp = requests.request(
+            method.upper(),
+            url,
+            headers=gateway_request_headers(json_body=True),
+            json=metadata,
+        )
+
+    body = (resp.text or "").strip()
+    if not resp.ok:
+        raise RuntimeError(body if body != "" else f"HTTP {resp.status_code}")
+
+    try:
+        return int(body)
+    except Exception:
+        return body
+
+
+def endpoint_metadata_payload_from_prefill(data):
+    entry = data if isinstance(data, dict) else {}
+    context_length_raw = str(entry.get("context_length", "") or "").strip()
+    context_length = None if context_length_raw == "" else int(context_length_raw)
+    return {
+        "brief_intro": str(entry.get("brief_intro", "") or "").strip(),
+        "detailed_intro": str(entry.get("detailed_intro", "") or "").strip(),
+        "cs_ttft": normalize_catalog_string_field(
+            entry.get("cs_ttft"),
+            "cs_ttft",
+            allow_empty=True,
+        ),
+        "recommended_use_cases": normalize_catalog_string_list(
+            entry.get("recommended_use_cases"),
+            "recommended_use_cases",
+        ),
+        "tags": normalize_catalog_string_list(entry.get("tags"), "tags"),
+        "provider": normalize_catalog_string_field(
+            entry.get("provider"),
+            "provider",
+            allow_empty=True,
+        ),
+        "parameter_count_b": normalize_catalog_parameter_count(entry.get("parameter_count_b")),
+        "context_length": context_length,
+        "concurrency": normalize_catalog_parameter_count(entry.get("concurrency")),
+    }
+
+
+def resolve_endpoint_model_name(sample_query, spec=None, fallback_slug: str = "") -> str:
+    model_name = extract_sample_query_model_target(sample_query)
+    if model_name == "":
+        try:
+            model_name = resolve_effective_model_target_from_spec(
+                spec,
+                commands_label="endpoint function commands",
+                sample_query_label="endpoint function sample_query.body.model",
+            )
+        except Exception:
+            model_name = ""
+    if model_name == "":
+        model_name = str(fallback_slug or "").strip()
+    return model_name
+
+
+def build_endpoint_client_setup_preview(tenant: str, slug: str, model_name: str, provider: str = ""):
+    base_url = normalize_public_api_base_url()
+    normalized_model_name = str(model_name or "").strip()
+    if normalized_model_name == "":
+        normalized_slug = str(slug or "").strip()
+        normalized_provider = str(provider or "").strip().strip("/")
+        normalized_model_name = f"{normalized_provider}/{normalized_slug}" if normalized_provider and normalized_slug else normalized_slug
+    return {
+        "api_base_url": f"{base_url}/funccall/{tenant}/endpoints/{slug}/v1",
+        "api_base_url_display": f"{base_url}/funccall/.../v1",
+        "auth_required": True,
+        "model_name": normalized_model_name,
+        "api_key": "<INFERENCE_API_KEY>",
+        "api_key_display": "<INFERENCE_API_KEY>",
+        "api_key_copyable": False,
+        "api_key_name": "",
+    }
+
+
+def build_endpoint_runtime_context(spec, sample_query, *, fallback_slug: str = ""):
+    spec_obj = spec if isinstance(spec, dict) else {}
+    sample_query_obj = sample_query if isinstance(sample_query, dict) else {}
+    body = sample_query_obj.get("body")
+    if not isinstance(body, dict):
+        body = {}
+
+    return {
+        "spec": spec_obj,
+        "sample_query": sample_query_obj,
+        "api_type": str(sample_query_obj.get("apiType", "") or "").strip(),
+        "path": str(sample_query_obj.get("path", "") or "").strip(),
+        "prompt": str(sample_query_obj.get("prompt", "") or "").strip(),
+        "map": clone_json_value(body),
+        "model_name": resolve_endpoint_model_name(sample_query_obj, spec_obj, fallback_slug=fallback_slug),
+        "enabled": isinstance(sample_query_obj, dict) and bool(sample_query_obj) and isinstance(body, dict) and bool(body),
+    }
+
+
+def resolve_endpoint_catalog_entry(slug: str, platform_func=None):
+    platform_spec = (((platform_func or {}).get("func") or {}).get("object") or {}).get("spec")
+    catalog_entry = query_catalog_entry_by_source(
+        platform_spec.get("catalog_source") if isinstance(platform_spec, dict) else None
+    )
+    if isinstance(catalog_entry, dict):
+        return catalog_entry
+
+    normalized_slug = str(slug or "").strip()
+    if normalized_slug == "":
+        return None
+
+    try:
+        return query_catalog_entry_by_slug(normalized_slug, active_only=False)
+    except Exception:
+        return None
+
+
+def fill_missing_endpoint_metadata_from_source(payload, source):
+    merged = clone_json_value(payload) if isinstance(payload, dict) else {}
+    if not isinstance(source, dict):
+        return merged
+
+    for key in (
+        "brief_intro",
+        "detailed_intro",
+        "cs_ttft",
+        "recommended_use_cases",
+        "tags",
+        "provider",
+        "parameter_count_b",
+        "context_length",
+        "concurrency",
+    ):
+        current_value = merged.get(key)
+        source_value = source.get(key)
+
+        if key in ("recommended_use_cases", "tags"):
+            if isinstance(current_value, list) and current_value:
+                continue
+            if isinstance(source_value, list):
+                next_value = [str(item).strip() for item in source_value if str(item).strip() != ""]
+                if next_value:
+                    merged[key] = next_value
+            continue
+
+        if current_value not in ("", None):
+            continue
+        if source_value is None:
+            continue
+        if isinstance(source_value, str) and source_value.strip() == "":
+            continue
+        merged[key] = source_value
+
+    return merged
+
+
+def build_endpoint_editor_prefill(slug: str, existing_entry, platform_func):
+    prefill = {
+        "slug": slug,
+        "brief_intro": "",
+        "detailed_intro": "",
+        "cs_ttft": "",
+        "recommended_use_cases": [],
+        "tags": [],
+        "provider": "",
+        "parameter_count_b": "",
+        "context_length": "",
+        "concurrency": "",
+    }
+
+    catalog_entry = resolve_endpoint_catalog_entry(slug, platform_func)
+
+    platform_spec = (((platform_func or {}).get("func") or {}).get("object") or {}).get("spec")
+    platform_commands = platform_spec.get("commands") if isinstance(platform_spec, dict) else []
+
+    for source in (existing_entry, catalog_entry):
+        if not isinstance(source, dict):
+            continue
+        for key in (
+            "brief_intro",
+            "detailed_intro",
+            "cs_ttft",
+            "recommended_use_cases",
+            "tags",
+            "provider",
+            "parameter_count_b",
+            "context_length",
+            "concurrency",
+        ):
+            value = source.get(key)
+            if key in ("recommended_use_cases", "tags"):
+                if prefill[key]:
+                    continue
+                if isinstance(value, list) and value:
+                    prefill[key] = [str(item).strip() for item in value if str(item).strip() != ""]
+                continue
+            if prefill[key] not in ("", None, []):
+                continue
+            if value is None:
+                continue
+            if isinstance(value, str) and value.strip() == "":
+                continue
+            prefill[key] = value
+
+    if prefill["context_length"] in ("", None):
+        max_model_len = parse_named_command_arg(platform_commands, "--max-model-len")
+        if max_model_len != "":
+            try:
+                prefill["context_length"] = int(max_model_len)
+            except Exception:
+                pass
+
+    if prefill["parameter_count_b"] is None:
+        prefill["parameter_count_b"] = ""
+    if prefill["concurrency"] is None:
+        prefill["concurrency"] = ""
+
+    return prefill, catalog_entry
+
+
+def endpoint_state_from_sources(*, published: bool, metadata_entry, platform_detail):
+    platform_func = (platform_detail or {}).get("func") if isinstance(platform_detail, dict) else {}
+    func_state = ((((platform_func or {}).get("object") or {}).get("status") or {}).get("state") or "")
+    model_status = infer_model_status((platform_detail or {}).get("pods"), func_state, [])
+    has_metadata = isinstance(metadata_entry, dict)
+    has_publish_history = bool((metadata_entry or {}).get("last_published_at"))
+
+    if published:
+        return {"code": "published", "label": "Published"}
+    if model_status["code"] in ("ready", "standby"):
+        return {"code": "ready", "label": "Ready"}
+    if has_metadata or has_publish_history:
+        return {"code": "unpublished", "label": "Unpublished"}
+    return {"code": "deploying", "label": "Deploying"}
+
+
+def accessible_endpoint_tenant_names(roles):
+    if has_inferx_admin_role(roles):
+        tenant_names = []
+        for tenant_obj in listtenants():
+            if not isinstance(tenant_obj, dict):
+                continue
+            tenant_name = str(tenant_obj.get("name", "") or "").strip()
+            if tenant_name == "" or tenant_name.lower() == "system":
+                continue
+            tenant_names.append(tenant_name)
+        return sorted(set(tenant_names), key=lambda item: item.lower())
+
+    tenant_names = get_accessible_tenant_names_from_roles_for_create(roles)
+    if not tenant_names:
+        tenant_names = [
+            str(item).strip()
+            for item in session.get("tenant_names", [])
+            if str(item).strip() != ""
+        ]
+    active_tenant = str(session.get("active_tenant_name", "") or "").strip()
+    if active_tenant != "" and active_tenant not in tenant_names:
+        tenant_names.append(active_tenant)
+    return sorted(set(tenant_names), key=lambda item: item.lower())
+
+
+def enrich_endpoint_catalog_fallback(entry):
+    endpoint = clone_json_value(entry) if isinstance(entry, dict) else {}
+    slug = str(endpoint.get("slug", "") or "").strip()
+    try:
+        catalog_entry = query_catalog_entry_by_slug(slug, active_only=False)
+    except Exception:
+        catalog_entry = None
+
+    endpoint["catalog_entry"] = catalog_entry
+    endpoint["spec"] = (
+        (catalog_entry or {}).get("default_func_spec")
+        if isinstance(catalog_entry, dict)
+        else None
+    )
+    endpoint["sample_query"] = (
+        ((endpoint.get("spec") or {}).get("sample_query"))
+        if isinstance(endpoint.get("spec"), dict)
+        else None
+    )
+    endpoint["model_name"] = resolve_endpoint_model_name(
+        endpoint.get("sample_query"),
+        endpoint.get("spec"),
+        fallback_slug=slug,
+    )
+    return endpoint
+
+
+def load_live_endpoint_detail(
+    slug: str,
+    *,
+    allow_missing_live_spec: bool = False,
+    allow_missing_status: bool = False,
+):
+    normalized_slug = str(slug or "").strip()
+    if normalized_slug == "":
+        raise ValueError("endpoint slug is required")
+
+    metadata_entry = None
+    try:
+        metadata_entry = query_endpoint_row_by_slug(normalized_slug)
+    except LookupError:
+        metadata_entry = None
+
+    entry = enrich_endpoint_catalog_fallback(metadata_entry if metadata_entry is not None else {"slug": normalized_slug})
+    published = False
+    status_obj = None
+    try:
+        status_obj = get_gateway_object("funcstatus", "inferx", "endpoint", normalized_slug)
+        published = bool((((status_obj or {}).get("object") or {}).get("published")))
+    except LookupError:
+        raise
+    except Exception as e:
+        if not allow_missing_status or metadata_entry is None:
+            raise
+        if "No permission" not in str(e) and "permission" not in str(e).lower():
+            raise
+        # Tenant endpoint pages may not be allowed to read shared funcstatus directly.
+        # Fall back to metadata-backed visibility so the page can still render.
+        published = True
+
+    entry["published"] = published
+
+    platform_detail = None
+    resp, platform_detail_payload = getfunc_response("inferx", "endpoint", normalized_slug)
+    if is_upstream_resource_unavailable(resp, platform_detail_payload):
+        raise LookupError(f"endpoint `{normalized_slug}` not found")
+    if resp.ok:
+        if not isinstance(platform_detail_payload, dict):
+            raise RuntimeError(f"invalid function response for endpoint `{normalized_slug}`")
+        platform_detail = platform_detail_payload
+    elif not (allow_missing_live_spec and is_upstream_permission_denied(resp, platform_detail_payload)):
+        detail = extract_upstream_error_message(resp, platform_detail_payload)
+        raise RuntimeError(
+            f"failed to load endpoint `{normalized_slug}`: "
+            f"HTTP {resp.status_code}{': ' + detail if detail else ''}"
+        )
+
+    entry["platform_detail"] = platform_detail
+
+    platform_spec = (((platform_detail or {}).get("func") or {}).get("object") or {}).get("spec")
+    if isinstance(platform_spec, dict):
+        entry["spec"] = clone_json_value(platform_spec)
+        platform_sample_query = platform_spec.get("sample_query")
+        if isinstance(platform_sample_query, dict):
+            entry["sample_query"] = clone_json_value(platform_sample_query)
+    entry["gpu_count"] = extract_gpu_count_from_spec(entry.get("spec"))
+
+    entry["model_name"] = resolve_endpoint_model_name(
+        entry.get("sample_query"),
+        entry.get("spec"),
+        fallback_slug=normalized_slug,
+    )
+    endpoint_state = endpoint_state_from_sources(
+        published=published,
+        metadata_entry=metadata_entry,
+        platform_detail=platform_detail,
+    )
+
+    return {
+        "entry": entry,
+        "metadata_entry": metadata_entry,
+        "platform_detail": platform_detail,
+        "published": published,
+        "endpoint_state": endpoint_state,
+    }
+
+
+def load_tenant_endpoint_detail(slug: str, tenant: str):
+    normalized_slug = str(slug or "").strip()
+    normalized_tenant = str(tenant or "").strip()
+    if normalized_slug == "":
+        raise ValueError("endpoint slug is required")
+    if normalized_tenant == "":
+        raise ValueError("tenant is required")
+
+    metadata_entry = None
+    try:
+        metadata_entry = query_endpoint_row_by_slug(normalized_slug)
+    except LookupError:
+        metadata_entry = None
+
+    entry = enrich_endpoint_catalog_fallback(metadata_entry if metadata_entry is not None else {"slug": normalized_slug})
+
+    resp, platform_detail_payload = get_published_endpoint_response(normalized_tenant, normalized_slug)
+    if is_upstream_resource_unavailable(resp, platform_detail_payload):
+        raise LookupError(f"endpoint `{normalized_slug}` not found")
+    if is_upstream_permission_denied(resp, platform_detail_payload):
+        raise PermissionError(f"endpoint `{normalized_slug}` unavailable")
+    if not resp.ok:
+        detail = extract_upstream_error_message(resp, platform_detail_payload)
+        raise RuntimeError(
+            f"failed to load endpoint `{normalized_slug}`: "
+            f"HTTP {resp.status_code}{': ' + detail if detail else ''}"
+        )
+    if not isinstance(platform_detail_payload, dict):
+        raise RuntimeError(f"invalid published endpoint response for `{normalized_slug}`")
+
+    platform_detail = platform_detail_payload
+    entry["platform_detail"] = platform_detail
+    entry["published"] = True
+
+    platform_spec = (((platform_detail or {}).get("func") or {}).get("object") or {}).get("spec")
+    if isinstance(platform_spec, dict):
+        entry["spec"] = clone_json_value(platform_spec)
+        platform_sample_query = platform_spec.get("sample_query")
+        if isinstance(platform_sample_query, dict):
+            entry["sample_query"] = clone_json_value(platform_sample_query)
+    entry["gpu_count"] = extract_gpu_count_from_spec(entry.get("spec"))
+
+    entry["model_name"] = resolve_endpoint_model_name(
+        entry.get("sample_query"),
+        entry.get("spec"),
+        fallback_slug=normalized_slug,
+    )
+
+    return {
+        "entry": entry,
+        "metadata_entry": metadata_entry,
+        "platform_detail": platform_detail,
+        "published": True,
+        "endpoint_state": {"code": "published", "label": "Published"},
+    }
+
+
+def build_endpoint_list_entries(*, include_unpublished: bool, tenant: str = ""):
+    metadata_rows = {row["slug"]: row for row in list_endpoint_rows()}
+    status_rows = list_gateway_objects("funcstatus", "inferx", "endpoint")
+    platform_status = {}
+    for status in status_rows:
+        name = str(status.get("name", "") or "").strip()
+        if name != "":
+            platform_status[name] = status
+
+    slugs = sorted(set(metadata_rows.keys()) | set(platform_status.keys()))
+    entries = []
+    for slug in slugs:
+        published = bool((((platform_status.get(slug) or {}).get("object") or {}).get("published")))
+        if not include_unpublished and not published:
+            continue
+        entry = metadata_rows.get(slug)
+        if entry is None:
+            entry = {"slug": slug}
+        entry = enrich_endpoint_catalog_fallback(entry)
+        entry["published"] = published
+        platform_detail = None
+        normalized_tenant = str(tenant or "").strip()
+        if normalized_tenant != "":
+            try:
+                resp, platform_detail_payload = get_published_endpoint_response(normalized_tenant, slug)
+                if resp.ok and isinstance(platform_detail_payload, dict):
+                    platform_detail = platform_detail_payload
+            except Exception:
+                platform_detail = None
+
+        if platform_detail is None:
+            try:
+                platform_detail = getfunc("inferx", "endpoint", slug)
+            except Exception:
+                platform_detail = None
+
+        if isinstance(platform_detail, dict):
+            entry["platform_detail"] = platform_detail
+            platform_spec = (((platform_detail or {}).get("func") or {}).get("object") or {}).get("spec")
+            if isinstance(platform_spec, dict):
+                entry["spec"] = clone_json_value(platform_spec)
+                platform_sample_query = platform_spec.get("sample_query")
+                if isinstance(platform_sample_query, dict):
+                    entry["sample_query"] = clone_json_value(platform_sample_query)
+        entry["gpu_count"] = extract_gpu_count_from_spec(entry.get("spec"))
+
+        entry["model_name"] = resolve_endpoint_model_name(
+            entry.get("sample_query"),
+            entry.get("spec"),
+            fallback_slug=slug,
+        )
+        entries.append(entry)
+
+    return entries
+
+
+def build_admin_endpoint_list_entries():
+    metadata_rows = {row["slug"]: row for row in list_endpoint_rows()}
+    platform_funcs = listfuncs("inferx", "endpoint")
+    status_rows = list_gateway_objects("funcstatus", "inferx", "endpoint")
+    platform_status = {}
+    for status in status_rows:
+        name = str(status.get("name", "") or "").strip()
+        if name != "":
+            platform_status[name] = status
+
+    entries = []
+    for func_brief in platform_funcs:
+        slug = str(((func_brief or {}).get("func") or {}).get("name") or "").strip()
+        if slug == "":
+            continue
+        platform_detail = getfunc("inferx", "endpoint", slug)
+        metadata_entry = metadata_rows.get(slug)
+        published = bool((((platform_status.get(slug) or {}).get("object") or {}).get("published")))
+        entry = enrich_endpoint_catalog_fallback(metadata_entry if metadata_entry is not None else {"slug": slug})
+        entry["platform_detail"] = platform_detail
+        entry["published"] = published
+        platform_spec = (((platform_detail or {}).get("func") or {}).get("object") or {}).get("spec")
+        if isinstance(platform_spec, dict):
+            entry["spec"] = clone_json_value(platform_spec)
+        entry["gpu_count"] = extract_gpu_count_from_spec(entry.get("spec"))
+        entry["state"] = endpoint_state_from_sources(
+            published=published,
+            metadata_entry=metadata_entry,
+            platform_detail=platform_detail,
+        )
+        entries.append(entry)
+
+    return entries
+
+
 def resolve_case_insensitive_catalog_target_value(valid_values, requested_value: str):
     requested = str(requested_value or "").strip()
     if requested == "":
@@ -3959,7 +4989,10 @@ def validate_catalog_template_spec(spec, *, source_model_id="", max_node_vram=0,
     commands = normalized_spec.get("commands")
     if not isinstance(commands, list) or any(not isinstance(item, str) for item in commands):
         raise ValueError("catalog `default_func_spec.commands` must be an array of strings")
-    commands = [str(item) for item in commands]
+    commands = normalize_json_valued_command_args(
+        [str(item) for item in commands],
+        label="catalog `default_func_spec.commands`",
+    )
     validate_catalog_command_tokens(commands)
     hf_model = resolve_effective_model_target_from_spec(
         normalized_spec,
@@ -4034,8 +5067,8 @@ def validate_catalog_template_spec(spec, *, source_model_id="", max_node_vram=0,
     if not isinstance(sample_query, dict):
         raise ValueError("catalog `default_func_spec.sample_query` must be an object")
     api_type = normalize_catalog_api_type(sample_query.get("apiType"))
-    if api_type not in CATALOG_ALLOWED_API_TYPES:
-        raise ValueError("catalog `default_func_spec.sample_query.apiType` must be a supported api type")
+    if api_type == "":
+        raise ValueError("catalog `default_func_spec.sample_query.apiType` must be a non-empty string")
     if not isinstance(sample_query.get("path"), str) or str(sample_query.get("path")).strip() == "":
         raise ValueError("catalog `default_func_spec.sample_query.path` must be a non-empty string")
     if not isinstance(sample_query.get("prompt"), str) or str(sample_query.get("prompt")).strip() == "":
@@ -4762,49 +5795,265 @@ def getrest(tenant: str, namespace: str, name: str):
     return resp
 
 
-def build_sample_rest_call_for_ui(tenant: str, namespace: str, funcname: str, sample_query, apikey: str):
-    if not isinstance(sample_query, dict):
+def build_inference_apikey_placeholder() -> str:
+    return "<INFERENCE_API_KEY(Find or create one on Admin|Apikeys page)>"
+
+
+def mask_apikey_for_ui(raw_key: str) -> str:
+    normalized = str(raw_key or "")
+    if normalized == "":
         return ""
+    if len(normalized) <= 8:
+        return "********"
+    return f"{normalized[:3]}{'*' * max(0, len(normalized) - 7)}{normalized[-4:]}"
+
+
+def build_onboard_inference_apikey_name_for_ui(tenant_name: str, sub: str) -> str:
+    normalized_tenant = str(tenant_name or "").strip().lower()
+    normalized_sub = str(sub or "").strip().lower()
+    if normalized_tenant == "" or normalized_sub == "":
+        return ""
+
+    tenant_slug_parts = []
+    previous_was_dash = False
+    for char in normalized_tenant:
+        if char.isalnum():
+            tenant_slug_parts.append(char)
+            previous_was_dash = False
+            continue
+        if not previous_was_dash:
+            tenant_slug_parts.append("-")
+            previous_was_dash = True
+
+    tenant_slug = "".join(tenant_slug_parts).strip("-")
+    if tenant_slug == "":
+        tenant_slug = "tenant"
+
+    sub_slug = "".join(char for char in normalized_sub if char.isalnum())
+    if sub_slug == "":
+        sub_suffix = "user"
+    else:
+        sub_suffix = sub_slug[:8]
+
+    return f"quickstart-inference-{tenant_slug}-{sub_suffix}"
+
+
+def resolve_onboarding_inference_apikey_for_ui(tenant_name: str):
+    normalized_tenant = str(tenant_name or "").strip()
+    if normalized_tenant.lower() == "public":
+        return "", ""
+
+    onboarding_apikey = str(session.get("onboarding_inference_apikey", "") or "").strip()
+    onboarding_apikey_name = str(session.get("onboarding_inference_apikey_name", "") or "").strip()
+
+    if onboarding_apikey != "":
+        return onboarding_apikey, onboarding_apikey_name
+
+    if onboarding_apikey_name == "":
+        onboarding_apikey_name = build_onboard_inference_apikey_name_for_ui(
+            normalized_tenant,
+            session.get("sub", ""),
+        )
+
+    if onboarding_apikey_name == "":
+        return "", ""
+
+    try:
+        apikeys = getapikeys()
+    except Exception:
+        return "", onboarding_apikey_name
+
+    if not isinstance(apikeys, list):
+        return "", onboarding_apikey_name
+
+    for apikey in apikeys:
+        if not isinstance(apikey, dict):
+            continue
+        if str(apikey.get("keyname", "") or "").strip() != onboarding_apikey_name:
+            continue
+
+        restrict_tenant = str(apikey.get("restrict_tenant", "") or "").strip()
+        if restrict_tenant != "" and restrict_tenant != normalized_tenant:
+            continue
+
+        raw_apikey = str(apikey.get("apikey", "") or "").strip()
+        if raw_apikey == "":
+            continue
+
+        session["onboarding_inference_apikey"] = raw_apikey
+        session["onboarding_inference_apikey_name"] = onboarding_apikey_name
+        return raw_apikey, onboarding_apikey_name
+
+    return "", onboarding_apikey_name
+
+
+def build_client_setup_for_ui(tenant: str, namespace: str, funcname: str, sample_query, apikey: str, apikey_name: str, spec=None):
+    if not isinstance(sample_query, dict):
+        return {}
 
     path = str(sample_query.get("path", "v1/completions") or "v1/completions").strip()
     path = path.lstrip("/")
     body = sample_query.get("body", {})
     if not isinstance(body, dict):
         body = {}
-    body_for_ui = dict(body)
+
+    base_url = normalize_public_api_base_url()
+    api_base_url = ""
+    if path == "v1" or path.startswith("v1/"):
+        api_base_url = f"{base_url}/funccall/{tenant}/{namespace}/{funcname}/v1"
+
+    model_name = extract_sample_query_model_target(sample_query)
+    if model_name == "":
+        try:
+            model_name = resolve_effective_model_target_from_spec(
+                spec,
+                commands_label="deployed function commands",
+                sample_query_label="deployed function sample_query.body.model",
+            )
+        except ValueError:
+            model_name = ""
+
+    tenant_name = str(tenant or "").strip().lower()
+    auth_required = tenant_name != "public"
+    normalized_apikey = str(apikey or "").strip()
+    normalized_apikey_name = str(apikey_name or "").strip()
+    api_key_copyable = False
+
+    if not auth_required:
+        api_key_value = "(not required for public models)"
+        api_key_display = api_key_value
+        normalized_apikey_name = ""
+    elif normalized_apikey != "":
+        api_key_value = normalized_apikey
+        api_key_display = mask_apikey_for_ui(normalized_apikey)
+        api_key_copyable = True
+    else:
+        api_key_value = build_inference_apikey_placeholder()
+        api_key_display = api_key_value
+
+    return {
+        "api_base_url": api_base_url,
+        "auth_required": auth_required,
+        "model_name": model_name,
+        "api_key": api_key_value,
+        "api_key_display": api_key_display,
+        "api_key_copyable": api_key_copyable,
+        "api_key_name": normalized_apikey_name,
+        "path": path,
+    }
+
+
+def build_sample_rest_call_for_ui(tenant: str, namespace: str, funcname: str, sample_query, apikey: str):
+    if not isinstance(sample_query, dict):
+        return ""
+
+    path = str(sample_query.get("path", "v1/completions") or "v1/completions").strip().lstrip("/")
+    body = sample_query.get("body", {})
+    if not isinstance(body, dict):
+        body = {}
+    body_for_ui = clone_json_value(body)
 
     prompt = sample_query.get("prompt")
     api_type = str(sample_query.get("apiType", "") or "").strip().lower()
-    if (
-        isinstance(prompt, str)
-        and prompt.strip() != ""
-        and api_type == "text2text"
-        and "prompt" not in body_for_ui
-        and "messages" not in body_for_ui
-        and "input" not in body_for_ui
-    ):
-        body_for_ui["prompt"] = prompt
+    if api_type == "text2text":
+        path = "v1/chat/completions"
+        body_for_ui = build_text2text_chat_body_for_ui(body_for_ui, prompt)
+        body_for_ui.setdefault("stream", True)
+
+    if api_type == "image2text":
+        messages = body_for_ui.get("messages")
+        if not isinstance(messages, list) or len(messages) == 0:
+            body_for_ui["messages"] = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": str(prompt or "What is in this image?")},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": "<data-url>",
+                            },
+                        },
+                    ],
+                },
+            ]
+        else:
+            def replace_image_urls_with_placeholder(value):
+                if isinstance(value, list):
+                    return [replace_image_urls_with_placeholder(item) for item in value]
+                if isinstance(value, dict):
+                    replaced = {}
+                    for key, item in value.items():
+                        if key == "image_url":
+                            image_value = clone_json_value(item) if isinstance(item, dict) else {}
+                            image_value["url"] = "<data-url>"
+                            replaced[key] = image_value
+                        else:
+                            replaced[key] = replace_image_urls_with_placeholder(item)
+                    return replaced
+                if isinstance(value, str) and value.startswith("data:"):
+                    return "<data-url>"
+                return value
+
+            body_for_ui["messages"] = replace_image_urls_with_placeholder(messages)
+        body_for_ui.setdefault("stream", True)
 
     token = str(apikey or "").strip()
     if token == "":
-        token = "<INFERENCE_API_KEY(Find or create one on Admin|Apikeys page)>"
+        token = build_inference_apikey_placeholder()
 
-    body_json = json.dumps(body_for_ui, ensure_ascii=False)
-    body_json = body_json.replace("'", "'\"'\"'")
     base_url = normalize_public_api_base_url()
     url = f"{base_url}/funccall/{tenant}/{namespace}/{funcname}/{path}"
     tenant_name = str(tenant or "").strip().lower()
     include_auth_header = tenant_name != "public"
-    auth_header_line = ""
-    if include_auth_header:
-        auth_header_line = f"  -H 'Authorization: Bearer {token}' \\\n"
+    auth_header_line = f"  -H 'Authorization: Bearer {token}'" if include_auth_header else ""
 
-    return (
-        f"curl -X POST {url} \\\n"
-        f"  -H 'Content-Type: application/json' \\\n"
-        f"{auth_header_line}"
-        f"  -d '{body_json}'"
-    )
+    def shell_single_quote(value) -> str:
+        return str(value).replace("'", "'\"'\"'")
+
+    is_transcription_path = path.lower() == "v1/audio/transcriptions"
+    if api_type == "transcriptions" or is_transcription_path:
+        curl_lines = [
+            f"curl -X POST {url}",
+            "  -H 'Content-Type: multipart/form-data'",
+        ]
+        if auth_header_line != "":
+            curl_lines.append(auth_header_line)
+        curl_lines.append("  -F 'file=@/path/to/audio.wav'")
+        for key, value in body_for_ui.items():
+            if str(key or "").strip() == "" or key == "model" or value is None:
+                continue
+            if isinstance(value, (dict, list)):
+                serialized_value = json.dumps(value, ensure_ascii=False)
+            elif isinstance(value, bool):
+                serialized_value = "true" if value else "false"
+            else:
+                serialized_value = str(value)
+            if serialized_value.strip() == "":
+                continue
+            curl_lines.append(
+                f"  -F '{shell_single_quote(key)}={shell_single_quote(serialized_value)}'"
+            )
+        return " \\\n".join(curl_lines)
+
+    body_json = json.dumps(body_for_ui, ensure_ascii=False)
+    body_json = body_json.replace("'", "'\"'\"'")
+    curl_lines = [
+        f"curl -X POST {url}",
+        "  -H 'Content-Type: application/json'",
+    ]
+    if auth_header_line != "":
+        curl_lines.append(auth_header_line)
+    curl_lines.append(f"  -d '{body_json}'")
+    return " \\\n".join(curl_lines)
+
+
+def mask_sample_rest_call_for_ui(sample_rest_call: str, apikey: str) -> str:
+    rendered_call = str(sample_rest_call or "")
+    token = str(apikey or "").strip()
+    if rendered_call == "" or token == "":
+        return rendered_call
+    return rendered_call.replace(token, mask_apikey_for_ui(token))
 
 
 @prefix_bp.route('/text2img', methods=['POST'])
@@ -4957,6 +6206,319 @@ def generate_namespaceuser():
     namespace = request.args.get('namespace')
     users = list_namespaceusers(role, tenant, namespace)
     return users
+
+
+@prefix_bp.route("/endpoints", methods=["GET"])
+@require_login
+def EndpointList():
+    view = str(request.args.get("view", "") or "").strip().lower()
+    roles = listroles()
+    is_inferx_admin = has_inferx_admin_role(roles)
+
+    if view == "" and is_inferx_admin:
+        view = "admin"
+
+    if view == "admin" and is_inferx_admin:
+        try:
+            entries = build_admin_endpoint_list_entries()
+        except Exception as e:
+            return json_error(f"failed to load admin endpoints: {e}", 500)
+        return render_template(
+            "endpoints_list.html",
+            endpoint_entries=entries,
+            is_admin_view=True,
+            selected_tenant="",
+            tenant_options=[],
+            public_api_base_url=normalize_public_api_base_url(),
+            endpoint_admin_href=dashboard_href("prefix.EndpointList", view="admin"),
+            endpoint_tenant_href=dashboard_href("prefix.EndpointList", view="tenant"),
+        )
+
+    tenant_options = accessible_endpoint_tenant_names(roles)
+    selected_tenant = str(request.args.get("tenant", "") or "").strip()
+    if selected_tenant != "" and selected_tenant not in tenant_options:
+        selected_tenant = ""
+    if selected_tenant == "" and tenant_options:
+        active_tenant = str(session.get("active_tenant_name", session.get("tenant_name", "")) or "").strip()
+        selected_tenant = active_tenant if active_tenant in tenant_options else tenant_options[0]
+
+    try:
+        entries = build_endpoint_list_entries(include_unpublished=False, tenant=selected_tenant)
+        onboarding_apikey, onboarding_apikey_name = resolve_onboarding_inference_apikey_for_ui(selected_tenant)
+    except Exception as e:
+        return json_error(f"failed to load endpoints: {e}", 500)
+
+    for entry in entries:
+        entry["client_setup_preview"] = build_endpoint_client_setup_preview(
+            selected_tenant,
+            entry.get("slug", ""),
+            entry.get("model_name", ""),
+            entry.get("provider", ""),
+        )
+
+    return render_template(
+        "endpoints_list.html",
+        endpoint_entries=entries,
+        is_admin_view=False,
+        selected_tenant=selected_tenant,
+        tenant_options=tenant_options,
+        api_key_display=mask_apikey_for_ui(onboarding_apikey) if onboarding_apikey else build_inference_apikey_placeholder(),
+        api_key_copy_value=onboarding_apikey if onboarding_apikey else build_inference_apikey_placeholder(),
+        api_key_copyable=bool(onboarding_apikey),
+        api_key_name=onboarding_apikey_name,
+        public_api_base_url=normalize_public_api_base_url(),
+        endpoint_admin_href=dashboard_href("prefix.EndpointList", view="admin"),
+        endpoint_tenant_href=dashboard_href("prefix.EndpointList", tenant=selected_tenant, view="tenant"),
+    )
+
+
+@prefix_bp.route("/endpoints/<slug>", methods=["GET"])
+@require_login
+def EndpointDetail(slug):
+    selected_tenant = str(request.args.get("tenant", session.get("active_tenant_name", session.get("tenant_name", ""))) or "").strip()
+    if selected_tenant == "":
+        tenant_options = accessible_endpoint_tenant_names(listroles())
+        selected_tenant = tenant_options[0] if tenant_options else ""
+
+    try:
+        detail = load_tenant_endpoint_detail(slug, selected_tenant)
+        entry = detail["entry"]
+        endpoint_state = detail["endpoint_state"]
+        if not detail["published"]:
+            raise LookupError(f"endpoint `{slug}` not found")
+    except LookupError:
+        return render_resource_unavailable_page(
+            resource_kind="Endpoint",
+            resource_name=slug,
+            tenant=selected_tenant,
+            namespace="endpoints",
+            message="This endpoint is no longer published.",
+            suggestion="It may have been unpublished or the URL may be outdated.",
+            primary_href=dashboard_href("prefix.EndpointList"),
+            primary_label="Back to Endpoints",
+            secondary_href=dashboard_href("prefix.CatalogList"),
+            secondary_label="Catalog",
+            status=404,
+        )
+    except PermissionError:
+        return render_resource_unavailable_page(
+            resource_kind="Endpoint",
+            resource_name=slug,
+            tenant=selected_tenant,
+            namespace="endpoints",
+            message="This endpoint is unavailable.",
+            suggestion="The URL may be outdated or this endpoint may not be available in the current tenant context.",
+            primary_href=dashboard_href("prefix.EndpointList"),
+            primary_label="Back to Endpoints",
+            secondary_href=dashboard_href("prefix.CatalogList"),
+            secondary_label="Catalog",
+            status=404,
+        )
+    except Exception as e:
+        return json_error(f"failed to load endpoint `{slug}`: {e}", 500)
+
+    onboarding_apikey, onboarding_apikey_name = resolve_onboarding_inference_apikey_for_ui(selected_tenant)
+    client_setup = build_client_setup_for_ui(
+        tenant=selected_tenant,
+        namespace="endpoints",
+        funcname=slug,
+        sample_query=entry.get("sample_query"),
+        apikey=onboarding_apikey,
+        apikey_name=onboarding_apikey_name,
+        spec=entry.get("spec"),
+    )
+    sample_rest_call = build_sample_rest_call_for_ui(
+        tenant=selected_tenant,
+        namespace="endpoints",
+        funcname=slug,
+        sample_query=entry.get("sample_query"),
+        apikey=onboarding_apikey,
+    )
+    sample_rest_call_display = mask_sample_rest_call_for_ui(sample_rest_call, onboarding_apikey)
+    runtime_context = build_endpoint_runtime_context(
+        entry.get("spec"),
+        entry.get("sample_query"),
+        fallback_slug=slug,
+    )
+    endpoint_funcspec = ""
+    try:
+        endpoint_funcspec = json.dumps(project_func_for_edit(entry.get("platform_detail"))["spec"], indent=4)
+    except Exception:
+        endpoint_funcspec = ""
+
+    return render_template(
+        "endpoint_detail.html",
+        endpoint_entry=entry,
+        is_admin_view=False,
+        selected_tenant=selected_tenant,
+        client_setup=client_setup,
+        sample_rest_call=sample_rest_call,
+        sample_rest_call_display=sample_rest_call_display,
+        interactive_enabled=runtime_context["enabled"],
+        interactive_api_type=runtime_context["api_type"],
+        interactive_path=runtime_context["path"],
+        interactive_prompt=runtime_context["prompt"],
+        interactive_map=runtime_context["map"],
+        endpoint_list_href=dashboard_href("prefix.EndpointList", tenant=selected_tenant),
+        endpoint_admin_href=dashboard_href("prefix.EndpointAdminDetail", slug=slug),
+        endpoint_tenant_href=dashboard_href("prefix.EndpointDetail", slug=slug, tenant=selected_tenant),
+        endpoint_state=endpoint_state,
+        endpoint_funcspec=endpoint_funcspec,
+    )
+
+
+@prefix_bp.route("/admin/endpoints/<slug>", methods=["GET"])
+@require_login
+@require_admin
+def EndpointAdminDetail(slug):
+    try:
+        detail = load_live_endpoint_detail(slug)
+        entry = detail["entry"]
+        endpoint_state = detail["endpoint_state"]
+    except LookupError:
+        return render_resource_unavailable_page(
+            resource_kind="Endpoint",
+            resource_name=slug,
+            tenant="inferx",
+            namespace="endpoint",
+            message="This platform endpoint is no longer available.",
+            suggestion="It may have been removed or renamed.",
+            primary_href=dashboard_href("prefix.EndpointList", view="admin"),
+            primary_label="Back to Endpoints",
+            secondary_href=dashboard_href("prefix.CatalogList"),
+            secondary_label="Catalog",
+            status=404,
+        )
+    except Exception as e:
+        return json_error(f"failed to load admin endpoint `{slug}`: {e}", 500)
+
+    client_setup = build_endpoint_client_setup_preview("<tenant>", slug, entry.get("model_name", ""), entry.get("provider", ""))
+    sample_rest_call = build_sample_rest_call_for_ui(
+        tenant="inferx",
+        namespace="endpoint",
+        funcname=slug,
+        sample_query=entry.get("sample_query"),
+        apikey="<INFERENCE_API_KEY>",
+    )
+    sample_rest_call_display = sample_rest_call
+    runtime_context = build_endpoint_runtime_context(
+        entry.get("spec"),
+        entry.get("sample_query"),
+        fallback_slug=slug,
+    )
+    endpoint_funcspec = ""
+    try:
+        endpoint_funcspec = json.dumps(project_func_for_edit(entry.get("platform_detail"))["spec"], indent=4)
+    except Exception:
+        endpoint_funcspec = ""
+    return render_template(
+        "endpoint_detail.html",
+        endpoint_entry=entry,
+        is_admin_view=True,
+        selected_tenant="",
+        client_setup=client_setup,
+        sample_rest_call=sample_rest_call,
+        sample_rest_call_display=sample_rest_call_display,
+        interactive_enabled=runtime_context["enabled"],
+        interactive_api_type=runtime_context["api_type"],
+        interactive_path=runtime_context["path"],
+        interactive_prompt=runtime_context["prompt"],
+        interactive_map=runtime_context["map"],
+        endpoint_list_href=dashboard_href("prefix.EndpointList", view="admin"),
+        endpoint_admin_href=dashboard_href("prefix.EndpointAdminDetail", slug=slug),
+        endpoint_tenant_href=dashboard_href("prefix.EndpointDetail", slug=slug, view="tenant"),
+        endpoint_state=endpoint_state,
+        endpoint_funcspec=endpoint_funcspec,
+    )
+
+
+@prefix_bp.route("/admin/endpoints/<slug>/edit", methods=["GET"])
+@require_login
+@require_admin
+def EndpointAdminEdit(slug):
+    try:
+        detail = load_live_endpoint_detail(slug, allow_missing_live_spec=False, allow_missing_status=False)
+        existing_entry = detail["metadata_entry"]
+        platform_detail = detail["platform_detail"]
+        endpoint_state = detail["endpoint_state"]
+        prefill, catalog_entry = build_endpoint_editor_prefill(slug, existing_entry, platform_detail)
+    except LookupError:
+        return render_resource_unavailable_page(
+            resource_kind="Endpoint",
+            resource_name=slug,
+            tenant="inferx",
+            namespace="endpoint",
+            message="This platform endpoint is no longer available.",
+            suggestion="It may have been removed or renamed.",
+            primary_href=dashboard_href("prefix.EndpointList", view="admin"),
+            primary_label="Back to Endpoints",
+            status=404,
+        )
+    except Exception as e:
+        return json_error(f"failed to load endpoint editor for `{slug}`: {e}", 500)
+
+    return render_template(
+        "endpoint_admin_edit.html",
+        endpoint_slug=slug,
+        endpoint_prefill=prefill,
+        endpoint_catalog_entry=catalog_entry,
+        endpoint_detail_href=dashboard_href("prefix.EndpointAdminDetail", slug=slug),
+        endpoint_state=endpoint_state,
+        catalog_tag_groups=CATALOG_TAG_GROUPS,
+        catalog_use_case_groups=CATALOG_RECOMMENDED_USE_CASE_GROUPS,
+    )
+
+
+@prefix_bp.route("/admin/endpoints/<slug>/metadata", methods=["PUT"])
+@require_login
+@require_admin
+def EndpointAdminSaveMetadata(slug):
+    req = request.get_json(silent=True) or {}
+    try:
+        payload = endpoint_metadata_payload_from_prefill(req)
+        version = proxy_gateway_endpoint_admin_action("PUT", slug, metadata=payload)
+    except ValueError as e:
+        return json_error(str(e), 400)
+    except Exception as e:
+        return json_error(f"failed to save endpoint metadata: {e}", 502)
+    return jsonify({"slug": slug, "version": version, "saved": True})
+
+
+@prefix_bp.route("/admin/endpoints/<slug>/publish", methods=["POST"])
+@require_login
+@require_admin
+def EndpointAdminPublish(slug):
+    req = request.get_json(silent=True) or {}
+    try:
+        payload = endpoint_metadata_payload_from_prefill(req)
+        existing_entry = None
+        try:
+            existing_entry = query_endpoint_row_by_slug(slug)
+        except LookupError:
+            existing_entry = None
+
+        if existing_entry is None:
+            platform_detail = getfunc("inferx", "endpoint", slug)
+            catalog_entry = resolve_endpoint_catalog_entry(slug, platform_detail)
+            payload = fill_missing_endpoint_metadata_from_source(payload, catalog_entry)
+
+        version = proxy_gateway_endpoint_admin_action("POST", slug, metadata=payload)
+    except ValueError as e:
+        return json_error(str(e), 400)
+    except Exception as e:
+        return json_error(f"failed to publish endpoint: {e}", 502)
+    return jsonify({"slug": slug, "version": version, "published": True})
+
+
+@prefix_bp.route("/admin/endpoints/<slug>/unpublish", methods=["POST"])
+@require_login
+@require_admin
+def EndpointAdminUnpublish(slug):
+    try:
+        version = proxy_gateway_endpoint_admin_action("POST", slug, metadata=None)
+    except Exception as e:
+        return json_error(f"failed to unpublish endpoint: {e}", 502)
+    return jsonify({"slug": slug, "version": version, "published": False})
 
 
 @prefix_bp.route("/catalog", methods=["GET"])
@@ -5224,6 +6786,276 @@ def parse_inferx_timeout_seconds(raw_value, default_value: float = 60.0, min_val
         return max_value
     return value
 
+
+class RemoteImageFetchError(Exception):
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
+
+
+class RemoteAudioFetchError(Exception):
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
+
+
+def infer_remote_image_content_type(content_type: str, remote_url: str) -> str:
+    normalized_type = str(content_type or "").split(";", 1)[0].strip().lower()
+    if normalized_type in REMOTE_IMAGE_ALLOWED_MIME_TYPES:
+        return normalized_type
+
+    guessed_type, _ = mimetypes.guess_type(urlparse(remote_url).path)
+    guessed_type = str(guessed_type or "").strip().lower()
+    if guessed_type in REMOTE_IMAGE_ALLOWED_MIME_TYPES:
+        return guessed_type
+    return ""
+
+
+def infer_remote_audio_content_type(content_type: str, remote_url: str) -> str:
+    normalized_type = str(content_type or "").split(";", 1)[0].strip().lower()
+    if normalized_type in REMOTE_AUDIO_ALLOWED_MIME_TYPES:
+        return normalized_type
+
+    guessed_type, _ = mimetypes.guess_type(urlparse(remote_url).path)
+    guessed_type = str(guessed_type or "").split(";", 1)[0].strip().lower()
+    if guessed_type in REMOTE_AUDIO_ALLOWED_MIME_TYPES:
+        return guessed_type
+    return ""
+
+
+def is_allowed_remote_fetch_host(hostname: str) -> bool:
+    normalized_host = str(hostname or "").strip().lower()
+    if normalized_host == "" or normalized_host == "localhost" or normalized_host.endswith(".local"):
+        return False
+
+    try:
+        address_info = socket.getaddrinfo(normalized_host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return False
+
+    if len(address_info) == 0:
+        return False
+
+    for entry in address_info:
+        ip_text = str(entry[4][0] or "").split("%", 1)[0].strip()
+        if ip_text == "":
+            return False
+        try:
+            ip_addr = ipaddress.ip_address(ip_text)
+        except ValueError:
+            return False
+        if (
+            ip_addr.is_private
+            or ip_addr.is_loopback
+            or ip_addr.is_link_local
+            or ip_addr.is_reserved
+            or ip_addr.is_multicast
+            or ip_addr.is_unspecified
+        ):
+            return False
+
+    return True
+
+
+def validate_remote_fetch_url(raw_url: str, error_cls) -> str:
+    normalized_url = str(raw_url or "").strip()
+    if normalized_url == "":
+        raise error_cls(400, "Remote URL is required.")
+
+    parsed = urlparse(normalized_url)
+    if parsed.scheme not in ("http", "https"):
+        raise error_cls(400, "Remote URL must use http or https.")
+    if parsed.hostname is None or parsed.netloc == "":
+        raise error_cls(400, "Remote URL must include a valid host.")
+    if parsed.username or parsed.password:
+        raise error_cls(400, "Remote URL must not include embedded credentials.")
+    if not is_allowed_remote_fetch_host(parsed.hostname):
+        raise error_cls(403, "Remote URL host is not allowed.")
+
+    return parsed._replace(fragment="").geturl()
+
+
+def fetch_remote_image_bytes(remote_url: str) -> tuple[bytes, str]:
+    current_url = validate_remote_fetch_url(remote_url, RemoteImageFetchError)
+    session = requests.Session()
+
+    try:
+        for _redirect_index in range(REMOTE_IMAGE_FETCH_REDIRECT_LIMIT + 1):
+            try:
+                resp = session.get(
+                    current_url,
+                    headers=REMOTE_IMAGE_FETCH_HEADERS,
+                    timeout=(REMOTE_IMAGE_FETCH_CONNECT_TIMEOUT_SEC, REMOTE_IMAGE_FETCH_READ_TIMEOUT_SEC),
+                    stream=True,
+                    allow_redirects=False,
+                )
+            except requests.exceptions.Timeout:
+                raise RemoteImageFetchError(504, "Remote image download timed out.")
+            except requests.exceptions.RequestException as e:
+                raise RemoteImageFetchError(502, f"Remote image download failed: {e}")
+
+            if resp.status_code in (301, 302, 303, 307, 308):
+                redirect_target = str(resp.headers.get("Location") or "").strip()
+                resp.close()
+                if redirect_target == "":
+                    raise RemoteImageFetchError(502, "Remote image redirect was missing a Location header.")
+                current_url = validate_remote_fetch_url(urljoin(current_url, redirect_target), RemoteImageFetchError)
+                continue
+
+            if resp.status_code != 200:
+                resp.close()
+                raise RemoteImageFetchError(
+                    resp.status_code,
+                    f"Remote image fetch failed with HTTP {resp.status_code}.",
+                )
+
+            content_type = infer_remote_image_content_type(resp.headers.get("Content-Type"), current_url)
+            if content_type == "":
+                resp.close()
+                raise RemoteImageFetchError(
+                    415,
+                    "Remote URL did not return a supported image type. Use JPEG, PNG, or WebP.",
+                )
+
+            image_bytes = bytearray()
+            try:
+                for chunk in resp.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    image_bytes.extend(chunk)
+                    if len(image_bytes) > REMOTE_IMAGE_FETCH_MAX_BYTES:
+                        raise RemoteImageFetchError(
+                            413,
+                            "Remote image is too large. The source file must be 10 MiB or smaller.",
+                        )
+            except requests.exceptions.Timeout:
+                raise RemoteImageFetchError(504, "Remote image download timed out while reading the response body.")
+            except requests.exceptions.RequestException as e:
+                raise RemoteImageFetchError(
+                    502,
+                    f"Remote image download failed while reading the response body: {e}",
+                )
+            finally:
+                resp.close()
+
+            return bytes(image_bytes), content_type
+
+        raise RemoteImageFetchError(400, "Remote image fetch hit too many redirects.")
+    finally:
+        session.close()
+
+
+def fetch_remote_audio_bytes(remote_url: str) -> tuple[bytes, str]:
+    current_url = validate_remote_fetch_url(remote_url, RemoteAudioFetchError)
+    session = requests.Session()
+
+    try:
+        for _redirect_index in range(REMOTE_IMAGE_FETCH_REDIRECT_LIMIT + 1):
+            try:
+                resp = session.get(
+                    current_url,
+                    headers=REMOTE_AUDIO_FETCH_HEADERS,
+                    timeout=(REMOTE_IMAGE_FETCH_CONNECT_TIMEOUT_SEC, REMOTE_IMAGE_FETCH_READ_TIMEOUT_SEC),
+                    stream=True,
+                    allow_redirects=False,
+                )
+            except requests.exceptions.Timeout:
+                raise RemoteAudioFetchError(504, "Remote audio download timed out.")
+            except requests.exceptions.RequestException as e:
+                raise RemoteAudioFetchError(502, f"Remote audio download failed: {e}")
+
+            if resp.status_code in (301, 302, 303, 307, 308):
+                redirect_target = str(resp.headers.get("Location") or "").strip()
+                resp.close()
+                if redirect_target == "":
+                    raise RemoteAudioFetchError(502, "Remote audio redirect was missing a Location header.")
+                current_url = validate_remote_fetch_url(urljoin(current_url, redirect_target), RemoteAudioFetchError)
+                continue
+
+            if resp.status_code != 200:
+                resp.close()
+                raise RemoteAudioFetchError(
+                    resp.status_code,
+                    f"Remote audio fetch failed with HTTP {resp.status_code}.",
+                )
+
+            content_type = infer_remote_audio_content_type(resp.headers.get("Content-Type"), current_url)
+            if content_type == "":
+                resp.close()
+                raise RemoteAudioFetchError(
+                    415,
+                    "Remote URL did not return a supported audio type. Use WAV, MP3, MP4, M4A, OGG, WebM, or FLAC.",
+                )
+
+            audio_bytes = bytearray()
+            try:
+                for chunk in resp.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    audio_bytes.extend(chunk)
+                    if len(audio_bytes) > REMOTE_AUDIO_FETCH_MAX_BYTES:
+                        raise RemoteAudioFetchError(
+                            413,
+                            "Remote audio is too large. The source file must be 25 MiB or smaller.",
+                        )
+            except requests.exceptions.Timeout:
+                raise RemoteAudioFetchError(504, "Remote audio download timed out while reading the response body.")
+            except requests.exceptions.RequestException as e:
+                raise RemoteAudioFetchError(
+                    502,
+                    f"Remote audio download failed while reading the response body: {e}",
+                )
+            finally:
+                resp.close()
+
+            return bytes(audio_bytes), content_type
+
+        raise RemoteAudioFetchError(400, "Remote audio fetch hit too many redirects.")
+    finally:
+        session.close()
+
+
+@prefix_bp.route('/image2text/fetch-remote', methods=['POST'])
+@not_require_login
+def fetch_remote_image_for_image2text():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return Response("Request body must be a JSON object.", status=400, mimetype='text/plain')
+
+    remote_url = payload.get("url")
+    try:
+        image_bytes, content_type = fetch_remote_image_bytes(remote_url)
+    except RemoteImageFetchError as e:
+        return Response(e.message, status=e.status_code, mimetype='text/plain')
+
+    response = Response(image_bytes, status=200, mimetype=content_type)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Content-Length"] = str(len(image_bytes))
+    return response
+
+
+@prefix_bp.route('/audio/fetch-remote', methods=['POST'])
+@not_require_login
+def fetch_remote_audio_for_transcriptions():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return Response("Request body must be a JSON object.", status=400, mimetype='text/plain')
+
+    remote_url = payload.get("url")
+    try:
+        audio_bytes, content_type = fetch_remote_audio_bytes(remote_url)
+    except RemoteAudioFetchError as e:
+        return Response(e.message, status=e.status_code, mimetype='text/plain')
+
+    response = Response(audio_bytes, status=200, mimetype=content_type)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Content-Length"] = str(len(audio_bytes))
+    return response
+
 @prefix_bp.route('/proxy/<path:path>', methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'])
 @not_require_login
 def proxy(path):
@@ -5243,18 +7075,28 @@ def proxy(path):
     
     # Construct the full URL for the backend request
     url = f"{apihostaddr}/{path}"
+    request_body = request.get_data()
     # Keep proxy read-timeout slightly above client-declared inference timeout so
     # backend timeout responses are returned directly when possible.
     requested_timeout_sec = parse_inferx_timeout_seconds(request.headers.get("X-Inferx-Timeout"), default_value=60.0)
     proxy_read_timeout_sec = min(requested_timeout_sec + 5.0, 600.0)
     connect_timeout_sec = 10.0
+    maybe_log_proxy_gateway_request(
+        path=normalized_path,
+        upstream_url=url,
+        method=request.method,
+        headers=headers,
+        cookies=request.cookies,
+        body_bytes=request_body,
+        timeout_sec=proxy_read_timeout_sec,
+    )
 
     try:
         resp = requests.request(
             method=request.method,
             url=url,
             headers=headers,
-            data=request.get_data(),
+            data=request_body,
             cookies=request.cookies,
             allow_redirects=False,
             timeout=(connect_timeout_sec, proxy_read_timeout_sec),
@@ -5863,7 +7705,16 @@ def GetFunc():
         func_edit_data = None
         funcspec = json.dumps(func["func"]["object"]["spec"], indent=4)
 
-    onboarding_apikey = str(session.get("onboarding_inference_apikey", "") or "").strip()
+    onboarding_apikey, onboarding_apikey_name = resolve_onboarding_inference_apikey_for_ui(tenant)
+    client_setup = build_client_setup_for_ui(
+        tenant=tenant,
+        namespace=namespace,
+        funcname=name,
+        sample_query=sample,
+        apikey=onboarding_apikey,
+        apikey_name=onboarding_apikey_name,
+        spec=((func.get("func") or {}).get("object") or {}).get("spec"),
+    )
     sample_rest_call_for_ui = build_sample_rest_call_for_ui(
         tenant=tenant,
         namespace=namespace,
@@ -5873,18 +7724,22 @@ def GetFunc():
     )
     if sample_rest_call_for_ui != "":
         func["sampleRestCall"] = sample_rest_call_for_ui
+        func["sampleRestCallDisplay"] = mask_sample_rest_call_for_ui(
+            sample_rest_call_for_ui,
+            onboarding_apikey,
+        )
 
     is_inferx_admin = is_inferx_admin_user()
     initial_model_status = infer_model_status(func.get("pods", []), func_health_state, fails)
-    func_admin_href = dashboard_href("prefix.GetFunc", tenant=tenant, namespace=namespace, name=name)
-    func_user_href = dashboard_href("prefix.GetFunc", tenant=tenant, namespace=namespace, name=name, view="user")
+    func_admin_href = dashboard_href("prefix.GetFunc", tenant=tenant, namespace=namespace, name=name, view="admin")
+    func_user_href = dashboard_href("prefix.GetFunc", tenant=tenant, namespace=namespace, name=name)
     func_edit_href = "{}?{}".format(
         dashboard_href("prefix.FuncCreate"),
         urlencode({"edit": f"{tenant}/{namespace}/{name}"}),
     )
     tenant_models_href = dashboard_href("prefix.ListFunc", tenant=tenant)
     models_list_href = dashboard_href("prefix.ListFunc", tenant=tenant, namespace=namespace)
-    template_name = "func.html" if is_inferx_admin and view != "user" else "func_user.html"
+    template_name = "func.html" if is_inferx_admin and view == "admin" else "func_user.html"
 
     return render_template(
         template_name,
@@ -5904,6 +7759,7 @@ def GetFunc():
         funcpolicy=funcpolicy,
         path=sample["path"],
         initial_model_status=initial_model_status,
+        client_setup=client_setup,
         func_admin_href=func_admin_href,
         func_user_href=func_user_href,
         func_edit_href=func_edit_href,

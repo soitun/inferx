@@ -32,6 +32,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use std::time::SystemTime;
 
+use chrono::Utc;
 use inferxlib::node::WorkerPodState;
 use inferxlib::obj_mgr::node_mgr::NAState;
 use inferxlib::resource::StandbyType;
@@ -42,13 +43,12 @@ use tokio::sync::Notify;
 use tokio::sync::Semaphore;
 use tokio::time::{Duration, Interval};
 use uuid::Uuid;
-use chrono::Utc;
 
-use crate::audit::UsageTick;
 use crate::audit::SnapshotScheduleAudit;
 use crate::audit::SqlAudit;
-use crate::audit::USAGE_TICK_AGENT;
+use crate::audit::UsageTick;
 use crate::audit::POD_AUDIT_AGENT;
+use crate::audit::USAGE_TICK_AGENT;
 use crate::common::*;
 use crate::gateway::metrics::Nodelabel;
 use crate::gateway::metrics::PodLabels;
@@ -101,6 +101,9 @@ lazy_static::lazy_static! {
 static GLOBAL_RPC_SEMAPHORE: Lazy<Arc<Semaphore>> = Lazy::new(|| {
     Arc::new(Semaphore::new(16)) // Max 16 concurrent RPCs
 });
+
+const PLATFORM_TENANT: &str = "inferx";
+const PLATFORM_SHARED_NAMESPACE: &str = "endpoint";
 
 /// Billing session for tracking snapshot loading usage
 /// Tracks start time and metadata for generating billing ticks
@@ -309,7 +312,21 @@ impl NodeStatus {
         //   }
         // This would catch bugs while still allowing legitimate temporary negatives.
 
-        let res = self.available.Alloc(req, createSnapshot)?;
+        let res = match self.available.Alloc(req, createSnapshot) {
+            Ok(res) => res,
+            Err(e) => {
+                error!(
+                    "AllocResource failed node={} action={} owner={} req={} available_before={} err={:?}",
+                    self.available.nodename,
+                    action,
+                    owner,
+                    serde_json::to_string(req).unwrap_or_default(),
+                    serde_json::to_string(&self.available).unwrap_or_default(),
+                    e
+                );
+                return Err(e);
+            }
+        };
         trace!(
             "AllocResource node={} action={} owner={} allocated={} available_after={}",
             self.available.nodename,
@@ -794,6 +811,30 @@ impl SchedulerHandler {
         let mut handler = Self::default();
         handler.msgTx = msgTx;
         handler
+    }
+
+    fn IsPlatformSharedFunc(tenant: &str, namespace: &str) -> bool {
+        tenant == PLATFORM_TENANT && namespace == PLATFORM_SHARED_NAMESPACE
+    }
+
+    fn ResolveReferencedFuncPolicy(
+        &self,
+        tenant: &str,
+        p: &ObjRef<FuncPolicySpec>,
+    ) -> FuncPolicySpec {
+        match p {
+            ObjRef::Obj(p) => p.clone(),
+            ObjRef::Link(l) => {
+                if l.objType != FuncPolicy::KEY {
+                    return FuncPolicySpec::default();
+                }
+
+                match self.funcpolicy.get(&l.Key(tenant)) {
+                    None => FuncPolicySpec::default(),
+                    Some(p) => p.clone(),
+                }
+            }
+        }
     }
 
     #[inline]
@@ -1767,6 +1808,10 @@ impl SchedulerHandler {
             Err(e) => {
                 // ResumePod failed before spawning RPC (no standby, alloc failure, etc.)
                 // Send error response to caller
+                error!(
+                    "ProcessLeaseWorkerReq failed to resume pod for {}: {:?}",
+                    funcname, e
+                );
                 let resp = na::LeaseWorkerResp {
                     error: format!("Failed to resume pod: {:?}", e),
                     ..Default::default()
@@ -2692,7 +2737,6 @@ impl SchedulerHandler {
 
         if remove {
             info!("RemovePodsByFunckey remove {} done", funckey);
-            self.funcs.remove(funckey);
         } else {
             info!(
                 "RemovePodsByFunckey remove {} fail, will retry later",
@@ -4088,26 +4132,14 @@ impl SchedulerHandler {
             Some(p) => return p.clone(),
         }
 
-        match p {
-            ObjRef::Obj(p) => return p.clone(),
-            ObjRef::Link(l) => {
-                if l.objType != FuncPolicy::KEY {
-                    return FuncPolicySpec::default();
-                    // return Err(Error::CommonError(format!(
-                    //     "FuncStatus::FuncPolicy for policy {} fail invalic link type {}",
-                    //     l.Key(),
-                    //     l.objType
-                    // )));
-                }
-
-                match self.funcpolicy.get(&l.Key(tenant)) {
-                    None => {
-                        return FuncPolicySpec::default();
-                    }
-                    Some(p) => return p.clone(),
-                }
-            }
+        let mut policy = self.ResolveReferencedFuncPolicy(tenant, p);
+        if Self::IsPlatformSharedFunc(tenant, namespace) {
+            SCHEDULER_CONFIG
+                .inferxEndpointFuncDefaultPolicy
+                .ApplyTo(&mut policy);
         }
+
+        policy
     }
 
     /// Adjust standby pods on a node following the async pattern from ResumePod
@@ -4397,10 +4429,9 @@ impl SchedulerHandler {
     pub const PRINT_SCHEDER_INFO: bool = false;
 
     pub async fn ProcessRemoveFunc(&mut self, spec: &Function) -> Result<()> {
-        let hasPod = self.RemovePodsByFunckey(&spec.Key())?;
-
+        let hasPod = self.RemovePodsByFunckey(&spec.Id())?;
         if !hasPod {
-            self.RemoveSnapshotByFunckey(&spec.Key())?;
+            self.RemoveSnapshotByFunckey(&spec.Id())?;
         }
 
         return Ok(());
@@ -5679,8 +5710,40 @@ impl SchedulerHandler {
 
                                     let client = GetClient().await.unwrap();
 
-                                    // update the func
-                                    client.Update(&status.DataObject(), 0).await.unwrap();
+                                    let mut attempts = 0;
+                                    loop {
+                                        attempts += 1;
+                                        let expected_rev = status.revision;
+                                        match client.Update(&status.DataObject(), expected_rev).await {
+                                            Ok(_) => break,
+                                            Err(e) if attempts < 3 => {
+                                                error!(
+                                                    "RemovePod funcstatus update conflict for {} on attempt {}: {:?}",
+                                                    funcKey, attempts, e
+                                                );
+                                                let latest = client
+                                                    .Get(
+                                                        FunctionStatus::KEY,
+                                                        &status.tenant,
+                                                        &status.namespace,
+                                                        &status.name,
+                                                        0,
+                                                    )
+                                                    .await
+                                                    .unwrap()
+                                                    .unwrap();
+                                                status = FunctionStatus::FromDataObject(latest).unwrap();
+                                                status.object.snapshotingFailureCnt += 1;
+                                                if status.object.snapshotingFailureCnt >= 3 {
+                                                    status.object.state = FuncState::Fail;
+                                                }
+                                            }
+                                            Err(e) => panic!(
+                                                "RemovePod failed to update funcstatus {} after {} attempts: {:?}",
+                                                funcKey, attempts, e
+                                            ),
+                                        }
+                                    }
                                 }
                             }
                         }

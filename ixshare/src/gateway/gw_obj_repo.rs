@@ -58,6 +58,10 @@ lazy_static::lazy_static! {
     pub static ref SCHEDULER_URL : Mutex<Option<String>> = Mutex::new(None);
 }
 
+const VIRTUAL_ENDPOINTS_NAMESPACE: &str = "endpoints";
+const PLATFORM_TENANT: &str = "inferx";
+const PLATFORM_SHARED_NAMESPACE: &str = "endpoint";
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct GatewayInfo {
     pub name: String,
@@ -211,17 +215,17 @@ impl GwObjRepo {
     }
 
     pub fn FuncPolicy(&self, func: &Function) -> FuncPolicySpec {
+        // same-name funcpolicy has highest priority
+        if let Ok(p) = self.funcpolicyMgr.Get(&func.tenant, &func.namespace, &func.name) {
+            return p.object;
+        }
+
         let p = &func.object.spec.policy;
         match p {
             ObjRef::Obj(p) => return p.clone(),
             ObjRef::Link(l) => {
                 if l.objType != FuncPolicy::KEY {
                     return FuncPolicySpec::default();
-                    // return Err(Error::CommonError(format!(
-                    //     "FuncStatus::FuncPolicy for policy {} fail invalic link type {}",
-                    //     l.Key(),
-                    //     l.objType
-                    // )));
                 }
 
                 match self.funcpolicyMgr.Get(&func.tenant, &l.namespace, &l.name) {
@@ -630,10 +634,10 @@ impl GwObjRepo {
                         }
                         Function::KEY => {
                             let oldfunc = event.oldObj.clone().unwrap().To::<FuncObject>()?;
-                            // Function::FromDataObject(event.oldObj.clone().unwrap())?;
+                            let newfunc = obj.To::<FuncObject>()?;
+                            self.FuncAgentMgr().RetireAgent(&oldfunc.Id());
                             self.RemoveFunc(oldfunc)?;
-                            let func = obj.To::<FuncObject>()?;
-                            self.AddFunc(func)?;
+                            self.AddFunc(newfunc)?;
                         }
                         FunctionStatus::KEY => {
                             let func = obj.To::<FunctionStatusDef>()?;
@@ -681,6 +685,7 @@ impl GwObjRepo {
                         Function::KEY => {
                             let obj = event.oldObj.clone().unwrap();
                             let func = obj.To::<FuncObject>()?;
+                            self.FuncAgentMgr().RetireAgent(&func.Id());
                             self.RemoveFunc(func)?;
                         }
                         FunctionStatus::KEY => {
@@ -780,6 +785,28 @@ impl GwObjRepo {
 }
 
 impl GwObjRepo {
+    pub fn EndpointRoutePolicy(&self, tenant: &str, slug: &str) -> FuncPolicySpec {
+        match self
+            .funcpolicyMgr
+            .Get(tenant, VIRTUAL_ENDPOINTS_NAMESPACE, slug)
+        {
+            Ok(policy) => policy.object,
+            Err(_) => {
+                let mut policy = GATEWAY_CONFIG.endpointsDefaultPolicy.AsFuncPolicySpec();
+                if let Ok(func) = self.GetFunc(PLATFORM_TENANT, PLATFORM_SHARED_NAMESPACE, slug) {
+                    let backing_policy = self.FuncPolicy(&func);
+                    policy.parallel = backing_policy.parallel;
+                    policy.queueLen = backing_policy.queueLen;
+                    policy.queueTimeout = backing_policy.queueTimeout;
+                    policy.scaleoutPolicy = backing_policy.scaleoutPolicy;
+                    policy.scaleinTimeout = backing_policy.scaleinTimeout;
+                }
+
+                policy
+            }
+        }
+    }
+
     pub fn ListFunc(&self, tenant: &str, namespace: &str) -> Result<Vec<FuncBrief>> {
         let funcs = self.GetFuncs(tenant, namespace)?;
         let mut funcbriefs = Vec::new();
