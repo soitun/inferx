@@ -105,6 +105,67 @@
     .endpoint-actions { display: flex; gap: 8px; flex-wrap: wrap; }
     .endpoint-empty { color: #64748b; }
     .endpoint-published-at { white-space: nowrap; }
+    .endpoint-quickstart {
+        border: 1px solid #bfdbfe;
+        background: linear-gradient(180deg, #f8fbff 0%, #eff6ff 100%);
+        border-radius: 4px;
+        margin-bottom: 14px;
+    }
+    .endpoint-quickstart summary {
+        cursor: pointer;
+        list-style: none;
+        padding: 12px 14px;
+        color: #1e3a8a;
+        font-size: 13px;
+        font-weight: 600;
+    }
+    .endpoint-quickstart summary::-webkit-details-marker {
+        display: none;
+    }
+    .endpoint-quickstart summary::before {
+        content: "Show integration steps";
+    }
+    .endpoint-quickstart[open] summary::before {
+        content: "Hide integration steps";
+    }
+    .endpoint-quickstart-body {
+        padding: 0 14px 14px 14px;
+    }
+    .endpoint-quickstart-body p {
+        margin: 0;
+        color: #475569;
+    }
+    .endpoint-quickstart-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 10px;
+        margin-top: 12px;
+    }
+    .endpoint-quickstart-step {
+        border: 1px solid #dbeafe;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.92);
+        padding: 10px 12px;
+    }
+    .endpoint-quickstart-step strong {
+        display: block;
+        color: #0f172a;
+        margin-bottom: 4px;
+    }
+    .endpoint-quickstart-step span {
+        color: #475569;
+        font-size: 13px;
+        line-height: 1.45;
+    }
+    .endpoint-quickstart-note {
+        margin-top: 12px;
+        padding: 10px 12px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.92);
+        border: 1px solid #dbeafe;
+        color: #1e3a8a;
+        font-size: 13px;
+    }
 </style>
 
 <section class="endpoint-shell">
@@ -116,7 +177,7 @@
                     {% if is_admin_view %}
                     Publish and curate `inferx/endpoint` endpoints.
                     {% else %}
-                    Instantly usable endpoints. Integrate with your applications and workflows right away.
+                    Instantly usable serverless inference endpoints with OpenAI-compatible APIs for OpenCode, KiloCode, Dify, OpenWebUI, and other agent-native workloads. Built for fast integration and subsecond cold start workflows.
                     {% endif %}
                 </p>
             </div>
@@ -133,7 +194,7 @@
 
         {% if not is_admin_view %}
         <div style="margin-top: 12px; display: grid; gap: 12px;">
-            {% if tenant_options|length > 1 %}
+            {% if is_authenticated and tenant_options|length > 1 %}
             <div style="max-width: 320px;">
                 <label for="tenant-selector" style="display: block; margin-bottom: 6px; font-size: 12px; font-weight: 600; color: #475569;">Tenant</label>
                 <select id="tenant-selector" onchange="window.location.href=this.value">
@@ -143,6 +204,7 @@
                 </select>
             </div>
             {% endif %}
+            {% if is_authenticated %}
             <div>
                 <div style="font-size: 12px; font-weight: 600; color: #475569; margin-bottom: 6px;">Inference API Key{% if api_key_name %} · {{ api_key_name }}{% endif %}</div>
                 <div class="endpoint-api-key">
@@ -150,18 +212,66 @@
                     <button
                         type="button"
                         class="endpoint-copy-btn"
-                        data-tooltip="{% if api_key_copyable %}Copy API key{% else %}Create on Admin{% endif %}"
+                        data-tooltip="{% if api_key_copyable %}Copy API key{% else %}API key unavailable{% endif %}"
                         data-copy-value="{{ api_key_copy_value }}"
                         {% if not api_key_copyable %}disabled{% endif %}
                         onclick="copyEndpointSetupValue(this)"
                     >
-                        {% if api_key_copyable %}Copy{% else %}Create on Admin{% endif %}
+                        {% if api_key_copyable %}Copy{% else %}Unavailable{% endif %}
                     </button>
                 </div>
             </div>
+            {% else %}
+            <div class="endpoint-quickstart-note" style="margin-top: 0;">
+                Browse published endpoints here. Log in to get a tenant-scoped endpoint URL and inference API key.
+                <div style="margin-top: 10px;">
+                    <a class="ix-btn" href="{{ login_href }}">Log in to use Endpoints</a>
+                </div>
+            </div>
+            {% endif %}
         </div>
         {% endif %}
     </div>
+
+    {% if not is_admin_view %}
+    <details class="endpoint-quickstart">
+        <summary></summary>
+        <div class="endpoint-quickstart-body">
+            <p>
+                {% if not is_authenticated %}
+                Browse the published endpoints first, then log in when you want a tenant-scoped URL, API key, and runnable integration flow.
+                {% elif api_key_copyable %}
+                Your inference key is ready. Pick an endpoint, copy the setup values, then validate with the sample request on the detail page.
+                {% else %}
+                Start by choosing an endpoint. Once an inference key is available, use the detail page sample request to validate your first call.
+                {% endif %}
+            </p>
+            <div class="endpoint-quickstart-grid">
+                <div class="endpoint-quickstart-step">
+                    <strong>1. Choose an endpoint</strong>
+                    <span>Filter by provider, tag, or use case, then open the endpoint that matches your workload.</span>
+                </div>
+                <div class="endpoint-quickstart-step">
+                    <strong>2. Copy setup values</strong>
+                    <span>Use the API base URL, model name, and API key to configure Dify, OpenWebUI, Continue, OpenCode, or plain curl.</span>
+                </div>
+                <div class="endpoint-quickstart-step">
+                    <strong>3. Validate the integration</strong>
+                    <span>Open the endpoint detail page to copy a sample REST call or run the playground before wiring it into your app.</span>
+                </div>
+            </div>
+            <div class="endpoint-quickstart-note">
+                {% if not is_authenticated %}
+                Public pages show the published endpoint metadata and model identifiers. Sign in to get the real tenant path and API key.
+                {% elif api_key_copyable %}
+                Onboarding key{% if api_key_name %} `{{ api_key_name }}`{% endif %} is available above. The full value stays copyable even though it is masked on screen.
+                {% else %}
+                No onboarding inference key is cached for this tenant yet. The page still shows the exact endpoint and model values you will need once the key is available.
+                {% endif %}
+            </div>
+        </div>
+    </details>
+    {% endif %}
 
     <div class="endpoint-toolbar">
         <div class="endpoint-toolbar-grid">

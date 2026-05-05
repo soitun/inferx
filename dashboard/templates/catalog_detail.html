@@ -338,6 +338,7 @@
                 </div>
             </div>
             <div class="catalog-actions">
+                {% if is_authenticated %}
                 <a class="ix-btn secondary" href="{{ url_for('prefix.FuncCreate') }}?catalog_id={{ catalog_entry.id }}">Customize &amp; Deploy</a>
                 {% if is_inferx_admin %}
                 <a class="ix-btn secondary" href="{{ url_for('prefix.CatalogAdminEdit', catalog_id=catalog_entry.id) }}">Edit</a>
@@ -360,6 +361,9 @@
                     Delete
                 </button>
                 {% endif %}
+                {% else %}
+                <a class="ix-btn" href="{{ login_href }}">Log in to deploy</a>
+                {% endif %}
             </div>
         </div>
         {% if catalog_entry.detailed_intro %}
@@ -373,6 +377,7 @@
     </div>
     {% endif %}
 
+    {% if is_authenticated %}
     <div class="catalog-status-banner catalog-deploy-banner">
         {{ catalog_deploy_target.render_catalog_deploy_target('catalog-detail-deploy-target', deploy_target) }}
         <div class="catalog-deploy-banner-actions">
@@ -387,6 +392,14 @@
             </button>
         </div>
     </div>
+    {% else %}
+    <div class="catalog-status-banner">
+        <strong>Log in to deploy:</strong> this public page shows the catalog model details, but deployment and customization stay behind login.
+        <div style="margin-top: 10px;">
+            <a class="ix-btn" href="{{ login_href }}">Log in to deploy</a>
+        </div>
+    </div>
+    {% endif %}
 
     <div class="catalog-grid">
         <div class="catalog-section">
@@ -479,6 +492,7 @@
     {% endif %}
 </div>
 
+{% if is_authenticated %}
 <div id="model-save-modal" class="model-save-modal" hidden>
     <div class="model-save-modal-card" role="dialog" aria-modal="true" aria-labelledby="model-save-modal-title">
         <h3 id="model-save-modal-title">Model Saved Successfully</h3>
@@ -715,4 +729,5 @@
         });
     })();
 </script>
+{% endif %}
 {% endblock %}

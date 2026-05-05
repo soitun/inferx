@@ -1098,6 +1098,9 @@ def can_view_public_tenant(roles=None):
 
 
 def can_access_public_tenant_in_dashboard(roles=None):
+    if session.get('access_token', '') == '':
+        return True
+
     if is_gateway_aligned_anonymous_request():
         return True
 
@@ -6209,11 +6212,12 @@ def generate_namespaceuser():
 
 
 @prefix_bp.route("/endpoints", methods=["GET"])
-@require_login
+@not_require_login
 def EndpointList():
+    is_authenticated = session.get('access_token', '') != ''
     view = str(request.args.get("view", "") or "").strip().lower()
-    roles = listroles()
-    is_inferx_admin = has_inferx_admin_role(roles)
+    roles = listroles() if is_authenticated else []
+    is_inferx_admin = has_inferx_admin_role(roles) if is_authenticated else False
 
     if view == "" and is_inferx_admin:
         view = "admin"
@@ -6234,23 +6238,43 @@ def EndpointList():
             endpoint_tenant_href=dashboard_href("prefix.EndpointList", view="tenant"),
         )
 
-    tenant_options = accessible_endpoint_tenant_names(roles)
-    selected_tenant = str(request.args.get("tenant", "") or "").strip()
-    if selected_tenant != "" and selected_tenant not in tenant_options:
-        selected_tenant = ""
-    if selected_tenant == "" and tenant_options:
-        active_tenant = str(session.get("active_tenant_name", session.get("tenant_name", "")) or "").strip()
-        selected_tenant = active_tenant if active_tenant in tenant_options else tenant_options[0]
+    if is_authenticated:
+        tenant_options = accessible_endpoint_tenant_names(roles)
+        selected_tenant = str(request.args.get("tenant", "") or "").strip()
+        if selected_tenant != "" and selected_tenant not in tenant_options:
+            selected_tenant = ""
+        if selected_tenant == "" and tenant_options:
+            active_tenant = str(session.get("active_tenant_name", session.get("tenant_name", "")) or "").strip()
+            selected_tenant = active_tenant if active_tenant in tenant_options else tenant_options[0]
 
-    try:
-        entries = build_endpoint_list_entries(include_unpublished=False, tenant=selected_tenant)
-        onboarding_apikey, onboarding_apikey_name = resolve_onboarding_inference_apikey_for_ui(selected_tenant)
-    except Exception as e:
-        return json_error(f"failed to load endpoints: {e}", 500)
+        try:
+            entries = build_endpoint_list_entries(include_unpublished=False, tenant=selected_tenant)
+            onboarding_apikey, onboarding_apikey_name = resolve_onboarding_inference_apikey_for_ui(selected_tenant)
+        except Exception as e:
+            return json_error(f"failed to load endpoints: {e}", 500)
+
+        preview_tenant = selected_tenant
+        api_key_display = mask_apikey_for_ui(onboarding_apikey) if onboarding_apikey else build_inference_apikey_placeholder()
+        api_key_copy_value = onboarding_apikey if onboarding_apikey else build_inference_apikey_placeholder()
+        api_key_copyable = bool(onboarding_apikey)
+        api_key_name = onboarding_apikey_name
+    else:
+        tenant_options = []
+        selected_tenant = "public"
+        try:
+            entries = build_endpoint_list_entries(include_unpublished=False, tenant=PUBLIC_TENANT_NAME)
+        except Exception as e:
+            return json_error(f"failed to load public endpoints: {e}", 500)
+
+        preview_tenant = "<tenant>"
+        api_key_display = "Log in to get API key"
+        api_key_copy_value = ""
+        api_key_copyable = False
+        api_key_name = ""
 
     for entry in entries:
         entry["client_setup_preview"] = build_endpoint_client_setup_preview(
-            selected_tenant,
+            preview_tenant,
             entry.get("slug", ""),
             entry.get("model_name", ""),
             entry.get("provider", ""),
@@ -6260,81 +6284,142 @@ def EndpointList():
         "endpoints_list.html",
         endpoint_entries=entries,
         is_admin_view=False,
+        is_authenticated=is_authenticated,
         selected_tenant=selected_tenant,
         tenant_options=tenant_options,
-        api_key_display=mask_apikey_for_ui(onboarding_apikey) if onboarding_apikey else build_inference_apikey_placeholder(),
-        api_key_copy_value=onboarding_apikey if onboarding_apikey else build_inference_apikey_placeholder(),
-        api_key_copyable=bool(onboarding_apikey),
-        api_key_name=onboarding_apikey_name,
+        api_key_display=api_key_display,
+        api_key_copy_value=api_key_copy_value,
+        api_key_copyable=api_key_copyable,
+        api_key_name=api_key_name,
         public_api_base_url=normalize_public_api_base_url(),
         endpoint_admin_href=dashboard_href("prefix.EndpointList", view="admin"),
         endpoint_tenant_href=dashboard_href("prefix.EndpointList", tenant=selected_tenant, view="tenant"),
+        login_href=url_for('prefix.login', redirectpath=request.url),
+        page_title="InferX Endpoints | Serverless Inference For OpenCode, Dify, OpenWebUI",
+        page_description="Browse published InferX endpoints for serverless GPU inference, OpenAI-compatible APIs, OpenCode, KiloCode, Dify, OpenWebUI, and agent-native workloads optimized for subsecond cold start integration.",
+        page_keywords="InferX endpoints, OpenCode, KiloCode, Dify, OpenWebUI, serverless inference, subsecond cold start, OpenAI-compatible API, agent-native workloads",
+        page_robots="index, follow",
     )
 
 
 @prefix_bp.route("/endpoints/<slug>", methods=["GET"])
-@require_login
+@not_require_login
 def EndpointDetail(slug):
+    is_authenticated = session.get('access_token', '') != ''
     selected_tenant = str(request.args.get("tenant", session.get("active_tenant_name", session.get("tenant_name", ""))) or "").strip()
-    if selected_tenant == "":
-        tenant_options = accessible_endpoint_tenant_names(listroles())
-        selected_tenant = tenant_options[0] if tenant_options else ""
 
-    try:
-        detail = load_tenant_endpoint_detail(slug, selected_tenant)
-        entry = detail["entry"]
-        endpoint_state = detail["endpoint_state"]
-        if not detail["published"]:
-            raise LookupError(f"endpoint `{slug}` not found")
-    except LookupError:
-        return render_resource_unavailable_page(
-            resource_kind="Endpoint",
-            resource_name=slug,
+    if is_authenticated:
+        if selected_tenant == "":
+            tenant_options = accessible_endpoint_tenant_names(listroles())
+            selected_tenant = tenant_options[0] if tenant_options else ""
+
+        try:
+            detail = load_tenant_endpoint_detail(slug, selected_tenant)
+            entry = detail["entry"]
+            endpoint_state = detail["endpoint_state"]
+            if not detail["published"]:
+                raise LookupError(f"endpoint `{slug}` not found")
+        except LookupError:
+            return render_resource_unavailable_page(
+                resource_kind="Endpoint",
+                resource_name=slug,
+                tenant=selected_tenant,
+                namespace="endpoints",
+                message="This endpoint is no longer published.",
+                suggestion="It may have been unpublished or the URL may be outdated.",
+                primary_href=dashboard_href("prefix.EndpointList"),
+                primary_label="Back to Endpoints",
+                secondary_href=dashboard_href("prefix.CatalogList"),
+                secondary_label="Catalog",
+                status=404,
+            )
+        except PermissionError:
+            return render_resource_unavailable_page(
+                resource_kind="Endpoint",
+                resource_name=slug,
+                tenant=selected_tenant,
+                namespace="endpoints",
+                message="This endpoint is unavailable.",
+                suggestion="The URL may be outdated or this endpoint may not be available in the current tenant context.",
+                primary_href=dashboard_href("prefix.EndpointList"),
+                primary_label="Back to Endpoints",
+                secondary_href=dashboard_href("prefix.CatalogList"),
+                secondary_label="Catalog",
+                status=404,
+            )
+        except Exception as e:
+            return json_error(f"failed to load endpoint `{slug}`: {e}", 500)
+
+        onboarding_apikey, onboarding_apikey_name = resolve_onboarding_inference_apikey_for_ui(selected_tenant)
+        client_setup = build_client_setup_for_ui(
             tenant=selected_tenant,
             namespace="endpoints",
-            message="This endpoint is no longer published.",
-            suggestion="It may have been unpublished or the URL may be outdated.",
-            primary_href=dashboard_href("prefix.EndpointList"),
-            primary_label="Back to Endpoints",
-            secondary_href=dashboard_href("prefix.CatalogList"),
-            secondary_label="Catalog",
-            status=404,
+            funcname=slug,
+            sample_query=entry.get("sample_query"),
+            apikey=onboarding_apikey,
+            apikey_name=onboarding_apikey_name,
+            spec=entry.get("spec"),
         )
-    except PermissionError:
-        return render_resource_unavailable_page(
-            resource_kind="Endpoint",
-            resource_name=slug,
+        sample_rest_call = build_sample_rest_call_for_ui(
             tenant=selected_tenant,
             namespace="endpoints",
-            message="This endpoint is unavailable.",
-            suggestion="The URL may be outdated or this endpoint may not be available in the current tenant context.",
-            primary_href=dashboard_href("prefix.EndpointList"),
-            primary_label="Back to Endpoints",
-            secondary_href=dashboard_href("prefix.CatalogList"),
-            secondary_label="Catalog",
-            status=404,
+            funcname=slug,
+            sample_query=entry.get("sample_query"),
+            apikey=onboarding_apikey,
         )
-    except Exception as e:
-        return json_error(f"failed to load endpoint `{slug}`: {e}", 500)
+        sample_rest_call_display = mask_sample_rest_call_for_ui(sample_rest_call, onboarding_apikey)
+    else:
+        selected_tenant = PUBLIC_TENANT_NAME
+        try:
+            detail = load_tenant_endpoint_detail(slug, PUBLIC_TENANT_NAME)
+            entry = detail["entry"]
+            endpoint_state = detail["endpoint_state"]
+        except LookupError:
+            return render_resource_unavailable_page(
+                resource_kind="Endpoint",
+                resource_name=slug,
+                tenant=PUBLIC_TENANT_NAME,
+                namespace="endpoints",
+                message="This endpoint is no longer published.",
+                suggestion="It may have been unpublished or the URL may be outdated.",
+                primary_href=dashboard_href("prefix.EndpointList"),
+                primary_label="Back to Endpoints",
+                secondary_href=dashboard_href("prefix.CatalogList"),
+                secondary_label="Catalog",
+                status=404,
+            )
+        except PermissionError:
+            return render_resource_unavailable_page(
+                resource_kind="Endpoint",
+                resource_name=slug,
+                tenant=PUBLIC_TENANT_NAME,
+                namespace="endpoints",
+                message="This endpoint is unavailable.",
+                suggestion="The URL may be outdated or the endpoint is not currently public.",
+                primary_href=dashboard_href("prefix.EndpointList"),
+                primary_label="Back to Endpoints",
+                secondary_href=dashboard_href("prefix.CatalogList"),
+                secondary_label="Catalog",
+                status=404,
+            )
+        except Exception as e:
+            return json_error(f"failed to load public endpoint `{slug}`: {e}", 500)
 
-    onboarding_apikey, onboarding_apikey_name = resolve_onboarding_inference_apikey_for_ui(selected_tenant)
-    client_setup = build_client_setup_for_ui(
-        tenant=selected_tenant,
-        namespace="endpoints",
-        funcname=slug,
-        sample_query=entry.get("sample_query"),
-        apikey=onboarding_apikey,
-        apikey_name=onboarding_apikey_name,
-        spec=entry.get("spec"),
-    )
-    sample_rest_call = build_sample_rest_call_for_ui(
-        tenant=selected_tenant,
-        namespace="endpoints",
-        funcname=slug,
-        sample_query=entry.get("sample_query"),
-        apikey=onboarding_apikey,
-    )
-    sample_rest_call_display = mask_sample_rest_call_for_ui(sample_rest_call, onboarding_apikey)
+        client_setup = build_endpoint_client_setup_preview(
+            "<tenant>",
+            slug,
+            entry.get("model_name", ""),
+            entry.get("provider", ""),
+        )
+        sample_rest_call = build_sample_rest_call_for_ui(
+            "<tenant>",
+            "endpoints",
+            slug,
+            entry.get("sample_query"),
+            "<INFERENCE_API_KEY>",
+        )
+        sample_rest_call_display = sample_rest_call
+
     runtime_context = build_endpoint_runtime_context(
         entry.get("spec"),
         entry.get("sample_query"),
@@ -6350,20 +6435,26 @@ def EndpointDetail(slug):
         "endpoint_detail.html",
         endpoint_entry=entry,
         is_admin_view=False,
+        is_authenticated=is_authenticated,
         selected_tenant=selected_tenant,
         client_setup=client_setup,
         sample_rest_call=sample_rest_call,
         sample_rest_call_display=sample_rest_call_display,
-        interactive_enabled=runtime_context["enabled"],
+        interactive_enabled=runtime_context["enabled"] if is_authenticated else False,
         interactive_api_type=runtime_context["api_type"],
         interactive_path=runtime_context["path"],
         interactive_prompt=runtime_context["prompt"],
         interactive_map=runtime_context["map"],
-        endpoint_list_href=dashboard_href("prefix.EndpointList", tenant=selected_tenant),
+        endpoint_list_href=dashboard_href("prefix.EndpointList", tenant=selected_tenant) if is_authenticated else dashboard_href("prefix.EndpointList"),
         endpoint_admin_href=dashboard_href("prefix.EndpointAdminDetail", slug=slug),
-        endpoint_tenant_href=dashboard_href("prefix.EndpointDetail", slug=slug, tenant=selected_tenant),
+        endpoint_tenant_href=dashboard_href("prefix.EndpointDetail", slug=slug, tenant=selected_tenant) if is_authenticated else dashboard_href("prefix.EndpointDetail", slug=slug),
         endpoint_state=endpoint_state,
         endpoint_funcspec=endpoint_funcspec,
+        login_href=url_for('prefix.login', redirectpath=request.url),
+        page_title=f"InferX Endpoint | {slug}",
+        page_description=f"Explore the InferX endpoint `{slug}` with OpenAI-compatible integration details for OpenCode, KiloCode, Dify, OpenWebUI, and serverless GPU inference workflows.",
+        page_keywords=f"{slug}, InferX endpoint, OpenCode, KiloCode, Dify, OpenWebUI, serverless inference, OpenAI-compatible API",
+        page_robots="index, follow",
     )
 
 
@@ -6522,13 +6613,19 @@ def EndpointAdminUnpublish(slug):
 
 
 @prefix_bp.route("/catalog", methods=["GET"])
-@require_login
+@not_require_login
 def CatalogList():
+    is_authenticated = session.get('access_token', '') != ''
     try:
-        is_inferx_admin = is_inferx_admin_user()
+        is_inferx_admin = is_inferx_admin_user() if is_authenticated else False
         entries = list_catalog_entries(active_only=not is_inferx_admin)
         filter_options = collect_catalog_filter_options(entries)
-        deploy_target = build_catalog_deploy_target_selector_context()
+        if is_authenticated:
+            deploy_target = build_catalog_deploy_target_selector_context()
+        else:
+            deploy_target = build_catalog_deploy_target_unavailable_context(
+                "Log in to deploy or customize a catalog model."
+            )
         published_entry_count = sum(1 for entry in entries if bool(entry.get("is_active")))
         unpublished_entry_count = max(0, len(entries) - published_entry_count)
     except RuntimeError as e:
@@ -6546,18 +6643,31 @@ def CatalogList():
         use_case_options=filter_options["use_cases"],
         deploy_target=deploy_target,
         is_inferx_admin=is_inferx_admin,
+        is_authenticated=is_authenticated,
+        login_href=url_for('prefix.login', redirectpath=request.url),
         published_entry_count=published_entry_count,
         unpublished_entry_count=unpublished_entry_count,
+        page_title="InferX Catalog | Serverless Model Catalog For Agent-Native Workloads",
+        page_description="Browse the InferX catalog of deployable serverless models for OpenAI-compatible inference, OpenCode, Dify, OpenWebUI, and agent-native workloads.",
+        page_keywords="InferX catalog, serverless model catalog, deployable AI models, OpenCode, Dify, OpenWebUI, OpenAI-compatible API, agent-native workloads",
+        page_robots="index, follow",
     )
 
 
 @prefix_bp.route("/catalog/<slug>", methods=["GET"])
-@require_login
+@not_require_login
 def CatalogDetail(slug):
+    is_authenticated = session.get('access_token', '') != ''
     try:
-        is_inferx_admin = is_inferx_admin_user()
-        entry = fetch_catalog_entry_by_slug_for_current_user(slug)
-        deploy_target = build_catalog_deploy_target_selector_context()
+        is_inferx_admin = is_inferx_admin_user() if is_authenticated else False
+        if is_authenticated:
+            entry = fetch_catalog_entry_by_slug_for_current_user(slug)
+            deploy_target = build_catalog_deploy_target_selector_context()
+        else:
+            entry = fetch_active_catalog_entry_by_slug(slug)
+            deploy_target = build_catalog_deploy_target_unavailable_context(
+                "Log in to deploy this catalog model."
+            )
     except ValueError as e:
         return json_error(str(e), 400)
     except LookupError:
@@ -6602,6 +6712,32 @@ def CatalogDetail(slug):
         catalog_full_funcspec=catalog_full_funcspec,
         deploy_target=deploy_target,
         is_inferx_admin=is_inferx_admin,
+        is_authenticated=is_authenticated,
+        login_href=url_for('prefix.login', redirectpath=request.url),
+        page_title=f"InferX Catalog | {entry_for_view.get('display_name', slug)}",
+        page_description=f"Explore the InferX catalog model `{entry_for_view.get('display_name', slug)}` for serverless deployment, OpenAI-compatible inference, and agent-native application integration.",
+        page_keywords=f"{entry_for_view.get('display_name', slug)}, InferX catalog, serverless model deployment, OpenAI-compatible inference, OpenCode, Dify, OpenWebUI",
+        page_robots="index, follow",
+    )
+
+
+@prefix_bp.route("/help", methods=["GET"])
+@not_require_login
+def HelpPage():
+    is_authenticated = session.get('access_token', '') != ''
+    endpoint_href = dashboard_href("prefix.EndpointList")
+    model_create_href = dashboard_href("prefix.FuncCreate") if is_authenticated else url_for('prefix.login', redirectpath=dashboard_href("prefix.FuncCreate"))
+    return render_template(
+        "help.html",
+        endpoint_list_href=endpoint_href,
+        catalog_list_href=dashboard_href("prefix.CatalogList"),
+        model_create_href=model_create_href,
+        models_list_href=dashboard_href("prefix.ListFunc"),
+        is_authenticated=is_authenticated,
+        page_title="InferX Help | Endpoints, Catalog, And Serverless Model Deployment",
+        page_description="Learn when to use InferX Endpoints, Catalog, or deploy from scratch for OpenCode, Dify, OpenWebUI, OpenAI-compatible APIs, serverless inference, and agent-native workloads.",
+        page_keywords="InferX help, OpenCode, Dify, OpenWebUI, serverless inference, OpenAI-compatible API, subsecond cold start, endpoints, catalog, model deployment",
+        page_robots="index, follow",
     )
 
 
@@ -7502,15 +7638,8 @@ def func_save():
 @not_require_login
 def Home():
     if session.get('access_token', '') != '':
-        return redirect(url_for('prefix.ListFunc'))
-    if DASHBOARD_GATEWAY_ALIGNED_ANONYMOUS_ACCESS:
-        return redirect(url_for('prefix.ListFunc'))
-
-    return render_template(
-        "entry.html",
-        signup_url=url_for('prefix.signup'),
-        login_url=url_for('prefix.login'),
-    )
+        return redirect(url_for('prefix.EndpointList'))
+    return redirect(url_for('prefix.EndpointList'))
 
 
 @prefix_bp.route("/listfunc")

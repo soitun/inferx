@@ -237,6 +237,16 @@
         </div>
     </section>
 
+    {% if not is_authenticated %}
+    <section class="model-user-section">
+        <h3>Log In To Use This Endpoint</h3>
+        <p class="status-note" style="margin-bottom: 0;">
+            This public page shows the published endpoint metadata and integration shape. Log in to get a tenant-scoped endpoint URL, inference API key, and the interactive playground.
+            <a href="{{ login_href }}" style="margin-left: 8px;">Log in</a>
+        </p>
+    </section>
+    {% endif %}
+
     {% set section_class = 'model-user-section' %}
     {% include '_client_setup.html' %}
 
