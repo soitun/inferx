@@ -34,6 +34,8 @@ spec:
             valueFrom:
               fieldRef:
                 fieldPath: status.podIP  
+          - name: HF_HOME
+            value: "/opt/inferx/cache"   
           - name: ENABLE_TRACER
             value: "true"   
           - name: KEYCLOAK_REALM
@@ -57,11 +59,16 @@ spec:
           volumeMounts:
             - mountPath: /opt/inferx/log
               name: opt-inferx-log
+            - mountPath: /opt/inferx/cache
+              name: opt-inferx-cache
           command: ["./svc", "/opt/inferx/config/node.json"]
       volumes:
         - name: opt-inferx-log
           hostPath:
             path: /opt/inferx/log      
+        - name: opt-inferx-cache
+          hostPath:
+            path: /opt/inferx/cache
 ---
 apiVersion: v1
 kind: Service
