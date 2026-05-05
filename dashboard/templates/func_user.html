@@ -365,7 +365,11 @@
                 {% for pod in func["pods"] %}
                 <tr>
                     <td>
+                        {% if is_authenticated %}
                         <a href="{{ hosturl }}pod?tenant={{ pod['tenant'] }}&namespace={{ pod['namespace'] }}&name={{ pod['name'] }}">{{ pod["name"] }}</a>
+                        {% else %}
+                        {{ pod["name"] }}
+                        {% endif %}
                     </td>
                     <td>{{ pod["object"]["status"]["state"] }}</td>
                 </tr>
@@ -536,7 +540,13 @@
                 <tr>
                     <td>{{ fail["createtime"] }}</td>
                     <td>{{ fail["exit_info"] }}</td>
-                    <td><a href="{{ hosturl }}failpod?tenant={{ fail['tenant'] }}&namespace={{ fail['namespace'] }}&name={{ fail['fpname'] }}&version={{ fail['fprevision'] }}&id={{ fail['id'] }}&funcname={{ name }}">log</a></td>
+                    <td>
+                        {% if is_authenticated %}
+                        <a href="{{ hosturl }}failpod?tenant={{ fail['tenant'] }}&namespace={{ fail['namespace'] }}&name={{ fail['fpname'] }}&version={{ fail['fprevision'] }}&id={{ fail['id'] }}&funcname={{ name }}">log</a>
+                        {% else %}
+                        log in to view
+                        {% endif %}
+                    </td>
                 </tr>
                 {% endfor %}
                 {% else %}

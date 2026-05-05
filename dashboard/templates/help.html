@@ -1,0 +1,237 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<style>
+    .help-page {
+        display: grid;
+        max-width: var(--ix-page-max-width);
+        margin: 0 auto 32px auto;
+        gap: 14px;
+    }
+    .help-section {
+        border: 1px solid #cbd5e1;
+        border-radius: var(--ix-panel-radius);
+        background: #ffffff;
+        padding: var(--ix-panel-padding);
+    }
+    .help-section h2,
+    .help-section h3 {
+        margin: 0 0 10px 0;
+        color: #0f172a;
+    }
+    .help-section p {
+        margin: 0;
+        color: #475569;
+    }
+    .help-lead {
+        font-size: 15px;
+        line-height: 1.55;
+    }
+    .help-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 12px;
+    }
+    .help-card {
+        border: 1px solid #dbe3ef;
+        border-radius: 4px;
+        background: #f8fafc;
+        padding: 14px;
+    }
+    .help-card h3 {
+        margin-bottom: 8px;
+    }
+    .help-card ul,
+    .help-checklist {
+        margin: 10px 0 0 18px;
+        color: #475569;
+    }
+    .help-card li,
+    .help-checklist li {
+        margin: 6px 0;
+    }
+    .help-card-actions {
+        margin-top: 12px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .help-decision {
+        display: grid;
+        gap: 10px;
+    }
+    .help-decision-row {
+        border: 1px solid #dbe3ef;
+        border-radius: 4px;
+        background: #ffffff;
+        padding: 12px 14px;
+    }
+    .help-decision-row strong {
+        display: block;
+        margin-bottom: 4px;
+        color: #0f172a;
+    }
+    .help-table-wrap {
+        overflow-x: auto;
+    }
+    .help-shared-note {
+        border: 1px solid #dbeafe;
+        border-radius: 4px;
+        background: #f8fbff;
+        padding: 12px 14px;
+    }
+    .help-shared-note strong {
+        color: #0f172a;
+    }
+    .help-table {
+        width: 100%;
+    }
+    .content table.help-table th,
+    .content table.help-table td {
+        text-align: left;
+        vertical-align: top;
+    }
+    .help-pill {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 3px 8px;
+        font-size: 12px;
+        font-weight: 700;
+    }
+    .help-pill.endpoints {
+        background: #dbeafe;
+        color: #1d4ed8;
+    }
+    .help-pill.catalog {
+        background: #dcfce7;
+        color: #166534;
+    }
+    .help-pill.scratch {
+        background: #fef3c7;
+        color: #92400e;
+    }
+</style>
+
+<div class="help-page">
+    <section class="help-section">
+        <h2>Help</h2>
+        <p class="help-lead">
+            Use this page to decide whether you should call a ready-made endpoint, deploy a curated catalog model into your tenant, or build a model deployment from scratch.
+        </p>
+        <div class="help-shared-note" style="margin-top: 12px;">
+            <strong>Whichever path you choose:</strong>
+            you still get your own dedicated serverless instance, and InferX provides an OpenAI-compatible interface for easy integration with applications such as OpenCode, KiloCode, Dify, OpenWebUI, and more.
+        </div>
+        <p class="help-lead" style="margin-top: 12px;">
+            InferX is built for agent-native workloads, serverless GPU inference, and fast production integration with OpenAI-compatible APIs.
+        </p>
+    </section>
+
+    <section class="help-section">
+        <h3>Start Here</h3>
+        <div class="help-decision">
+            <div class="help-decision-row">
+                <strong>I want the fastest path to a working API.</strong>
+                Use <span class="help-pill endpoints">Endpoints</span>. You do not need to deploy models yourself, no snapshot retention fee is charged, and your traffic still runs on your own dedicated instance.
+            </div>
+            <div class="help-decision-row">
+                <strong>I want a known model, but I don't find it's available in Endpoints or I need some customization.</strong>
+                Use <span class="help-pill catalog">Catalog</span>. Start from a curated template, then deploy it into your own tenant.
+            </div>
+            <div class="help-decision-row">
+                <strong>I need a model or runtime setup that is not already offered from Catalog</strong>
+                Use <span class="help-pill scratch">Deploy From Scratch</span>. Create a model directly and define the spec, runtime, and configuration yourself.
+            </div>
+        </div>
+    </section>
+
+    <section class="help-section">
+        <h3>Which Path Should I Use?</h3>
+        <div class="help-grid">
+            <div class="help-card">
+                <h3>Endpoints</h3>
+                <p>Best when you want the fastest path to a working API without deploying models yourself.</p>
+                <ul>
+                    <li>Use when an endpoint already matches your use case.</li>
+                    <li>Use when you do not want to deploy and manage the model yourself.</li>
+                    <li>Use when you want to avoid snapshot retention fees.</li>
+                    <li>Use when you still want your traffic to run on your own dedicated instance.</li>
+                    <li>Use when you just want to grab the endpoint and API key and integrate with your application.</li>
+                </ul>
+                <div class="help-card-actions">
+                    <a class="ix-btn" href="{{ endpoint_list_href }}">Open Endpoints</a>
+                </div>
+            </div>
+            <div class="help-card">
+                <h3>Catalog</h3>
+                <p>Best when you do not find what you need in Endpoints or when you need some customization but still want a curated starting point.</p>
+                <ul>
+                    <li>Use when the model is available in Catalog but not in Endpoints.</li>
+                    <li>Use when you want to deploy the model into your own tenant.</li>
+                    <li>Use when you need some customization after starting from a curated template.</li>
+                    <li>Use when you want a safer starting point than building the full deployment from scratch.</li>
+                </ul>
+                <div class="help-card-actions">
+                    <a class="ix-btn" href="{{ catalog_list_href }}">Open Catalog</a>
+                </div>
+            </div>
+            <div class="help-card">
+                <h3>Deploy From Scratch</h3>
+                <p>Best when the model or runtime setup you need is not already offered in Catalog.</p>
+                <ul>
+                    <li>Use when the model is not available in Endpoints or Catalog.</li>
+                    <li>Use when you need full control over model choice, runtime, commands, and deployment shape.</li>
+                    <li>Use when you need custom environment variables or runtime behavior.</li>
+                    <li>Use when you are comfortable owning the full deployment configuration yourself.</li>
+                </ul>
+                <div class="help-card-actions">
+                    <a class="ix-btn" href="{{ model_create_href }}">Create Model</a>
+                    <a class="ix-btn secondary" href="{{ models_list_href }}">My Models</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="help-section">
+        <h3>Quick Comparison</h3>
+        <div class="help-table-wrap">
+            <table class="ix-table help-table">
+                <thead>
+                    <tr>
+                        <th>Need</th>
+                        <th>Best Fit</th>
+                        <th>Why</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Call an API right now</td>
+                        <td><span class="help-pill endpoints">Endpoints</span></td>
+                        <td>You do not need to deploy the model yourself, there is no snapshot retention fee, and your traffic still runs on your own dedicated instance.</td>
+                    </tr>
+                    <tr>
+                        <td>I do not find it in Endpoints or I need some customization</td>
+                        <td><span class="help-pill catalog">Catalog</span></td>
+                        <td>Catalog lets you start from a curated template and deploy it into your own tenant.</td>
+                    </tr>
+                    <tr>
+                        <td>I need a model or runtime setup that Catalog does not already offer</td>
+                        <td><span class="help-pill scratch">Deploy From Scratch</span></td>
+                        <td>Direct model creation gives you full control when neither Endpoints nor Catalog fits.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="help-section">
+        <h3>Rule Of Thumb</h3>
+        <ul class="help-checklist">
+            <li>Start with <strong>Endpoints</strong> when you want the fastest integration path and do not want to deploy models yourself.</li>
+            <li>Move to <strong>Catalog</strong> when Endpoints does not have what you need or when you need some customization in your own tenant.</li>
+            <li>Use <strong>Deploy From Scratch</strong> only when Catalog still does not cover the model or runtime setup you need.</li>
+        </ul>
+    </section>
+</div>
+{% endblock %}

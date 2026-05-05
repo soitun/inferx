@@ -336,18 +336,28 @@
     <div id="catalog-error" class="catalog-error" role="alert"></div>
 
     <div class="catalog-banner">
+        {% if is_authenticated %}
         {{ catalog_deploy_target.render_catalog_deploy_target('catalog-list-deploy-target', deploy_target) }}
+        {% endif %}
         <div class="catalog-banner-detail">
-            Currently we have {{ published_entry_count }} published model{{ '' if published_entry_count == 1 else 's' }} in the catalog, and we're continuing to add more.
             {% if is_inferx_admin and unpublished_entry_count %}
             There {{ 'is' if unpublished_entry_count == 1 else 'are' }} also {{ unpublished_entry_count }} unpublished admin-only draft{{ '' if unpublished_entry_count == 1 else 's' }}.
             {% endif %}
+            {% if is_authenticated %}
             <strong>Customize &amp; Deploy</strong> opens the create form with catalog defaults prefilled so you can review and adjust them before saving.
             <strong>Deploy Now</strong> creates the model immediately using the stored catalog template for the currently selected tenant and namespace.
+            {% else %}
+            Browse published catalog models for agent-native workloads and serverless GPU inference, log in when you want to customize one or deploy it into your own tenant.
+            {% endif %}
             {% if is_inferx_admin %}
             Unpublished models remain visible only to InferX admins until you publish them.
             {% endif %}
         </div>
+        {% if not is_authenticated %}
+        <div class="catalog-admin-actions">
+            <a class="ix-btn" href="{{ login_href }}">Log in to deploy</a>
+        </div>
+        {% endif %}
         {% if is_inferx_admin %}
         <div class="catalog-admin-actions">
             <a class="ix-btn" href="{{ url_for('prefix.CatalogAdminNew') }}">+New Catalog Model</a>
@@ -470,6 +480,7 @@
                     {% endif %}
                     <td>
                         <div class="ix-row-actions catalog-actions">
+                            {% if is_authenticated %}
                             <a class="ix-btn secondary" href="{{ url_for('prefix.FuncCreate') }}?catalog_id={{ entry.id }}">Customize &amp; Deploy</a>
                             <button
                                 type="button"
@@ -499,6 +510,10 @@
                                 Delete
                             </button>
                             {% endif %}
+                            {% else %}
+                            <a class="ix-btn secondary" href="{{ url_for('prefix.CatalogDetail', slug=entry.slug) }}">View Details</a>
+                            <a class="ix-btn" href="{{ url_for('prefix.login', redirectpath=url_for('prefix.CatalogDetail', slug=entry.slug)) }}">Log in to deploy</a>
+                            {% endif %}
                         </div>
                     </td>
                 </tr>
@@ -517,6 +532,7 @@
     </div>
 </div>
 
+{% if is_authenticated %}
 <div id="model-save-modal" class="model-save-modal" hidden>
     <div class="model-save-modal-card" role="dialog" aria-modal="true" aria-labelledby="model-save-modal-title">
         <h3 id="model-save-modal-title">Model Saved Successfully</h3>
@@ -823,4 +839,5 @@
 
     })();
 </script>
+{% endif %}
 {% endblock %}

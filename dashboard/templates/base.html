@@ -3,11 +3,32 @@
 
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <title> InferX | Serverless Inference Platform </title>
+    {% set seo_title = page_title | default('InferX | Serverless GPU Inference Platform') %}
+    {% set seo_description = page_description | default('InferX is a serverless GPU inference platform for agent-native workloads with OpenAI-compatible APIs.') %}
+    {% set seo_keywords = page_keywords | default('InferX, serverless inference, GPU inference, OpenAI-compatible API, agent-native workloads') %}
+    {% set seo_robots = page_robots | default('noindex, nofollow') %}
+    {% set seo_canonical = canonical_url | default(request.base_url if request is defined and request.base_url is defined else '') %}
+    {% set seo_og_type = page_og_type | default('website') %}
+    <title>{{ seo_title }}</title>
+    <meta name="description" content="{{ seo_description }}">
+    <meta name="keywords" content="{{ seo_keywords }}">
+    <meta name="robots" content="{{ seo_robots }}">
+    {% if seo_canonical %}
+    <link rel="canonical" href="{{ seo_canonical }}">
+    <meta property="og:url" content="{{ seo_canonical }}">
+    {% endif %}
+    <meta property="og:site_name" content="InferX">
+    <meta property="og:type" content="{{ seo_og_type }}">
+    <meta property="og:title" content="{{ seo_title }}">
+    <meta property="og:description" content="{{ seo_description }}">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="{{ seo_title }}">
+    <meta name="twitter:description" content="{{ seo_description }}">
     <style>
         :root {
             --ix-font-size-micro: 11px;
@@ -563,16 +584,18 @@
 <body>
     {% set is_logged_in = session.get('access_token', '') != '' %}
     {% set is_gateway_aligned_anonymous_active = dashboard_gateway_aligned_anonymous_active | default(false) %}
-    {% set show_public_nav = is_logged_in or is_gateway_aligned_anonymous_active %}
-    {% set nav_is_inferx_admin = dashboard_is_inferx_admin | default(false) %}
     {% set request_path = request.path if request is defined and request.path is defined else '' %}
     {% set request_path_no_slash = request_path.rstrip('/') %}
+    {% set is_public_visitor = (not is_logged_in) and (not is_gateway_aligned_anonymous_active) %}
+    {% set show_public_nav = is_logged_in or is_gateway_aligned_anonymous_active or '/catalog' in request_path or '/help' in request_path or '/endpoints' in request_path %}
+    {% set nav_is_inferx_admin = dashboard_is_inferx_admin | default(false) %}
     {% set nav_models_active = '/listfunc' in request_path or '/func_create' in request_path or '/func' in request_path or '/funclog' in request_path %}
     {% set nav_catalog_active = '/catalog' in request_path %}
     {% set nav_endpoints_active = request_path_no_slash in ('',) or '/endpoints' in request_path %}
     {% set nav_pods_active = '/listpod' in request_path or '/pod' in request_path %}
     {% set nav_snapshots_active = '/listsnapshot' in request_path or '/snapshot' in request_path %}
     {% set nav_nodes_active = '/listnode' in request_path or '/node' in request_path %}
+    {% set nav_help_active = '/help' in request_path %}
     {% set nav_admin_active = '/admin' in request_path and '/admin/endpoints' not in request_path %}
     <table class="brand-header">
         <tr>
@@ -602,15 +625,18 @@
     <nav>
         <a href="{{ hosturl }}endpoints" class="{% if nav_endpoints_active %}active{% endif %}"> Endpoints </a>
         <a href="{{ hosturl }}catalog" class="{% if nav_catalog_active %}active{% endif %}"> Catalog </a>
+        {% if not is_public_visitor %}
         <a href="{{ hosturl }}listfunc" class="{% if nav_models_active %}active{% endif %}"> Models </a>
         <a href="{{ hosturl }}listpod" class="{% if nav_pods_active %}active{% endif %}"> Instances </a>
         {% if nav_is_inferx_admin %}
         <a href="{{ hosturl }}listsnapshot" class="{% if nav_snapshots_active %}active{% endif %}"> Snapshots </a>
         {% endif %}
         <a href="{{ hosturl }}listnode" id="nav-nodes-link" class="{% if nav_nodes_active %}active{% endif %}"{% if not dashboard_gateway_aligned_anonymous_access %} style="display: none;"{% endif %}> Nodes </a>
+        {% endif %}
         {% if is_logged_in %}
         <a href="{{ hosturl }}admin" id="admin" class="{% if nav_admin_active %}active{% endif %}"> Admin </a>
         {% endif %}
+        <a href="{{ hosturl }}help" class="{% if nav_help_active %}active{% endif %}"> Help </a>
         <a href="{{ slack_invite_url }}" class="nav-support-link" data-tooltip="Join InferX Slack community for support" aria-label="Get support on Slack" target="_blank" rel="noopener noreferrer">
             <svg class="nav-support-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
                 <path d="M3 3.5h10a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H8.2L5 14v-2.5H3a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
