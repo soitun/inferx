@@ -86,12 +86,15 @@ fn default_max_queue_len() -> usize {
 pub struct TenantSpec {
     #[serde(default = "default_resourcelimit", rename = "limit")]
     pub resourceLimit: ResourceLimit,
+    #[serde(default)]
+    pub quota_exempt: bool,
 }
 
 impl Default for TenantSpec {
     fn default() -> Self {
         Self {
             resourceLimit: default_resourcelimit(),
+            quota_exempt: false,
         }
     }
 }

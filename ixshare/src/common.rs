@@ -61,7 +61,7 @@ pub enum Error {
 
     Timeout(u64),
     QueueFull,
-    ServiceUnaviable,
+    ServiceUnavailable,
     BAD_REQUEST(http::status::StatusCode),
 
     MinRevsionErr(MinRevsionErr),

@@ -20,12 +20,111 @@ use std::sync::Mutex;
 use crate::common::*;
 use crate::consts::*;
 use crate::gateway::auth_layer::KeycloadConfig;
+use inferxlib::obj_mgr::funcpolicy_mgr::{
+    EndpointGatewayPolicySpec, FuncPolicySchedulerDefaults, DEFAULT_PLATFORM_ENDPOINT_MAX_REPLICA,
+};
 use inferxlib::resource::{GPUSet, ResourceConfig};
 
 use std::collections::BTreeSet;
 use std::num::ParseIntError;
 
 pub const SNAPSHOT_DIR: &str = "/opt/inferx/snapshot";
+
+fn default_endpoints_policy() -> EndpointGatewayPolicySpec {
+    EndpointGatewayPolicySpec::default()
+}
+
+fn default_inferx_endpoint_func_default_policy() -> FuncPolicySchedulerDefaults {
+    FuncPolicySchedulerDefaults {
+        minReplica: Some(0),
+        maxReplica: Some(DEFAULT_PLATFORM_ENDPOINT_MAX_REPLICA),
+        standbyPerNode: Some(0),
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct InferxTenantPolicy {
+    #[serde(default)]
+    pub quota_exempt: Option<bool>,
+    #[serde(default, rename = "allow_mem_standby")]
+    pub allowMemStandby: Option<bool>,
+    #[serde(default, rename = "max_funccount")]
+    pub maxFuncCnt: Option<u64>,
+    #[serde(default, rename = "max_replica")]
+    pub maxReplica: Option<u64>,
+    #[serde(default, rename = "max_standby")]
+    pub maxStandby: Option<u64>,
+    #[serde(default, rename = "max_queue_len")]
+    pub maxQueueLen: Option<usize>,
+}
+
+fn merge_json_value(base: &mut serde_json::Value, overlay: serde_json::Value) {
+    match (base, overlay) {
+        (serde_json::Value::Object(base_map), serde_json::Value::Object(overlay_map)) => {
+            for (key, value) in overlay_map {
+                merge_json_value(
+                    base_map.entry(key).or_insert(serde_json::Value::Null),
+                    value,
+                );
+            }
+        }
+        (base_slot, overlay_value) => *base_slot = overlay_value,
+    }
+}
+
+fn resolve_endpoints_default_policy(config: &NodeConfig) -> EndpointGatewayPolicySpec {
+    match std::env::var("ENDPOINTS_DEFAULT_POLICY") {
+        Ok(raw) => {
+            let mut base = serde_json::to_value(&config.endpoints_default_policy)
+                .expect("endpoints_default_policy should serialize");
+            let overlay = serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_else(|e| {
+                panic!("invalid ENDPOINTS_DEFAULT_POLICY JSON '{}': {:?}", raw, e)
+            });
+            merge_json_value(&mut base, overlay);
+            serde_json::from_value(base)
+                .expect("ENDPOINTS_DEFAULT_POLICY merge produced invalid EndpointGatewayPolicySpec")
+        }
+        Err(_) => config.endpoints_default_policy.clone(),
+    }
+}
+
+fn resolve_inferx_endpoint_func_default_policy(
+    config: &NodeConfig,
+) -> FuncPolicySchedulerDefaults {
+    match std::env::var("INFERX_ENDPOINT_FUNC_DEFAULT_POLICY") {
+        Ok(raw) => {
+            let mut base = serde_json::to_value(&config.inferx_endpoint_func_default_policy)
+                .expect("inferx_endpoint_func_default_policy should serialize");
+            let overlay = serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_else(|e| {
+                panic!(
+                    "invalid INFERX_ENDPOINT_FUNC_DEFAULT_POLICY JSON '{}': {:?}",
+                    raw, e
+                )
+            });
+            merge_json_value(&mut base, overlay);
+            serde_json::from_value(base).expect(
+                "INFERX_ENDPOINT_FUNC_DEFAULT_POLICY merge produced invalid FuncPolicySchedulerDefaults",
+            )
+        }
+        Err(_) => config.inferx_endpoint_func_default_policy.clone(),
+    }
+}
+
+fn resolve_inferx_tenant_policy(config: &NodeConfig) -> InferxTenantPolicy {
+    match std::env::var("INFERX_TENANT_POLICY") {
+        Ok(raw) => {
+            let mut base = serde_json::to_value(&config.inferx_tenant_policy)
+                .expect("inferx_tenant_policy should serialize");
+            let overlay = serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_else(|e| {
+                panic!("invalid INFERX_TENANT_POLICY JSON '{}': {:?}", raw, e)
+            });
+            merge_json_value(&mut base, overlay);
+            serde_json::from_value(base)
+                .expect("INFERX_TENANT_POLICY merge produced invalid InferxTenantPolicy")
+        }
+        Err(_) => config.inferx_tenant_policy.clone(),
+    }
+}
 
 lazy_static::lazy_static! {
     #[derive(Debug)]
@@ -168,6 +267,8 @@ pub struct GatewayConfig {
     pub inferxAdminApikey: String,
     pub onboardInitialCreditCents: i64,
     pub gatewayPort: u16,
+    pub endpointsDefaultPolicy: EndpointGatewayPolicySpec,
+    pub inferxTenantPolicy: InferxTenantPolicy,
 }
 
 impl GatewayConfig {
@@ -296,6 +397,9 @@ impl GatewayConfig {
             config.gatewayPort
         };
 
+        let endpointsDefaultPolicy = resolve_endpoints_default_policy(config);
+        let inferxTenantPolicy = resolve_inferx_tenant_policy(config);
+
         let ret = Self {
             nodeName: nodeName,
             etcdAddrs: etcdAddrs,
@@ -313,6 +417,8 @@ impl GatewayConfig {
             inferxAdminApikey: inferxAdminApikey,
             onboardInitialCreditCents: onboardInitialCreditCents,
             gatewayPort: gatewayPort,
+            endpointsDefaultPolicy,
+            inferxTenantPolicy,
         };
 
         info!("GatewayConfig is {:#?}", &ret);
@@ -330,6 +436,7 @@ pub struct SchedulerConfig {
     pub auditdbAddr: String,
     pub billingdbAddr: String,
     pub enableSnapshotBilling: bool,
+    pub inferxEndpointFuncDefaultPolicy: FuncPolicySchedulerDefaults,
 }
 
 impl SchedulerConfig {
@@ -383,14 +490,16 @@ impl SchedulerConfig {
                 Err(_) => {
                     warn!(
                         "invalid ENABLE_SNAPSHOT_BILLING value '{}', defaulting to {}",
-                        &s,
-                        config.enableSnapshotBilling
+                        &s, config.enableSnapshotBilling
                     );
                     config.enableSnapshotBilling
                 }
             },
             Err(_) => config.enableSnapshotBilling,
         };
+
+        let inferxEndpointFuncDefaultPolicy =
+            resolve_inferx_endpoint_func_default_policy(config);
 
         let ret = Self {
             etcdAddrs: etcdAddrs,
@@ -400,6 +509,7 @@ impl SchedulerConfig {
             auditdbAddr: auditdbAddr,
             billingdbAddr: billingdbAddr,
             enableSnapshotBilling: enableSnapshotBilling,
+            inferxEndpointFuncDefaultPolicy: inferxEndpointFuncDefaultPolicy,
         };
 
         info!("SchedulerConfig is {:#?}", &ret);
@@ -944,6 +1054,15 @@ pub struct NodeConfig {
 
     #[serde(default)]
     pub peerLoad: bool,
+
+    #[serde(default = "default_endpoints_policy")]
+    pub endpoints_default_policy: EndpointGatewayPolicySpec,
+
+    #[serde(default = "default_inferx_endpoint_func_default_policy")]
+    pub inferx_endpoint_func_default_policy: FuncPolicySchedulerDefaults,
+
+    #[serde(default)]
+    pub inferx_tenant_policy: InferxTenantPolicy,
 }
 
 impl NodeConfig {
@@ -959,5 +1078,128 @@ impl NodeConfig {
         } else {
             return self.snapshotDir.clone();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_node_config() -> NodeConfig {
+        NodeConfig {
+            nodeName: "node-a".to_owned(),
+            etcdAddrs: vec!["127.0.0.1:2379".to_owned()],
+            nodeIp: String::new(),
+            hostIpCidr: String::new(),
+            podMgrPort: 0,
+            tsotCniPort: 0,
+            tsotSvcPort: 0,
+            nodeagentStateSvcPort: 0,
+            stateSvcPort: 0,
+            schedulerPort: 0,
+            gatewayPort: 0,
+            cidr: String::new(),
+            stateSvcAddrs: vec!["127.0.0.1:5000".to_owned()],
+            tsotSocketPath: String::new(),
+            tsotGwSocketPath: String::new(),
+            runService: true,
+            auditdbAddr: String::new(),
+            billingdbAddr: String::new(),
+            resources: ResourceConfig::default(),
+            snapshotDir: String::new(),
+            enableBlobStore: false,
+            enableSnapshotBilling: false,
+            sharemem: ShareMem::default(),
+            tlsconfig: TLSConfig::default(),
+            keycloakconfig: KeycloadConfig::default(),
+            secretStoreAddr: String::new(),
+            peerLoad: false,
+            endpoints_default_policy: default_endpoints_policy(),
+            inferx_endpoint_func_default_policy: default_inferx_endpoint_func_default_policy(),
+            inferx_tenant_policy: InferxTenantPolicy::default(),
+        }
+    }
+
+    #[test]
+    fn default_endpoints_policy_disables_standby() {
+        let policy = default_endpoints_policy();
+        assert_eq!(policy.maxReplica, 1);
+        assert_eq!(policy.queueLen, 100);
+    }
+
+    #[test]
+    fn resolve_endpoints_default_policy_uses_node_config_without_env() {
+        std::env::remove_var("ENDPOINTS_DEFAULT_POLICY");
+
+        let mut config = test_node_config();
+        config.endpoints_default_policy.maxReplica = 3;
+        config.endpoints_default_policy.queueTimeout = 12.5;
+
+        let resolved = resolve_endpoints_default_policy(&config);
+        assert_eq!(resolved.maxReplica, 3);
+        assert_eq!(resolved.queueTimeout, 12.5);
+    }
+
+    #[test]
+    fn resolve_endpoints_default_policy_merges_env_json() {
+        std::env::set_var(
+            "ENDPOINTS_DEFAULT_POLICY",
+            r#"{"max_replica":2,"queue_timeout":9.5}"#,
+        );
+
+        let mut config = test_node_config();
+        config.endpoints_default_policy.maxReplica = 5;
+        config.endpoints_default_policy.queueLen = 77;
+
+        let resolved = resolve_endpoints_default_policy(&config);
+        std::env::remove_var("ENDPOINTS_DEFAULT_POLICY");
+
+        assert_eq!(resolved.maxReplica, 2);
+        assert_eq!(resolved.queueTimeout, 9.5);
+        assert_eq!(resolved.queueLen, 77);
+    }
+
+    #[test]
+    fn resolve_inferx_tenant_policy_merges_env_json() {
+        std::env::set_var(
+            "INFERX_TENANT_POLICY",
+            r#"{"quota_exempt":true,"max_replica":8,"max_queue_len":1000}"#,
+        );
+        let mut config = test_node_config();
+        config.inferx_tenant_policy.allowMemStandby = Some(false);
+        config.inferx_tenant_policy.maxStandby = Some(2);
+
+        let resolved = resolve_inferx_tenant_policy(&config);
+        std::env::remove_var("INFERX_TENANT_POLICY");
+
+        assert_eq!(resolved.quota_exempt, Some(true));
+        assert_eq!(resolved.allowMemStandby, Some(false));
+        assert_eq!(resolved.maxReplica, Some(8));
+        assert_eq!(resolved.maxStandby, Some(2));
+        assert_eq!(resolved.maxQueueLen, Some(1000));
+    }
+
+    #[test]
+    fn default_inferx_endpoint_scheduler_policy_uses_platform_baseline() {
+        let policy = default_inferx_endpoint_func_default_policy();
+        assert_eq!(policy.minReplica, Some(0));
+        assert_eq!(policy.maxReplica, Some(DEFAULT_PLATFORM_ENDPOINT_MAX_REPLICA));
+        assert_eq!(policy.standbyPerNode, Some(0));
+    }
+
+    #[test]
+    fn resolve_inferx_endpoint_scheduler_policy_merges_env_json() {
+        std::env::set_var(
+            "INFERX_ENDPOINT_FUNC_DEFAULT_POLICY",
+            r#"{"max_replica":6,"standby_per_node":1}"#,
+        );
+
+        let config = test_node_config();
+        let resolved = resolve_inferx_endpoint_func_default_policy(&config);
+        std::env::remove_var("INFERX_ENDPOINT_FUNC_DEFAULT_POLICY");
+
+        assert_eq!(resolved.minReplica, Some(0));
+        assert_eq!(resolved.maxReplica, Some(6));
+        assert_eq!(resolved.standbyPerNode, Some(1));
     }
 }
