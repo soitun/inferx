@@ -89,6 +89,7 @@ use super::metrics::Status;
 use super::metrics::GATEWAY_METRICS;
 use super::metrics::METRICS_REGISTRY;
 use super::scheduler_client::SCHEDULER_CLIENT;
+use super::tokenizer::TokenizerRoute;
 use super::secret::{EndpointMetadata, SqlSecret};
 pub static GATEWAY_ID: AtomicI64 = AtomicI64::new(-1);
 const FUNCCALL_MAX_BODY_BYTES: usize = 20 * 1024 * 1024;
@@ -261,6 +262,7 @@ fn tenant_from_path(path: &str) -> Option<&str> {
         "pod" => parts.get(2).copied(),
         "functions" => parts.get(2).copied(),
         "function" => parts.get(2).copied(),
+        "tokenizer" => parts.get(2).copied(),
         "snapshot" => parts.get(2).copied(),
         "snapshots" => parts.get(2).copied(),
         "tenant" => parts.get(2).copied(),
@@ -562,6 +564,9 @@ impl HttpGateway {
             .route("/funccall/*rest", post(FuncCall))
             .route("/funccall/*rest", get(FuncCall))
             .route("/funccall/*rest", head(FuncCall))
+            .route("/tokenizer/*rest", post(TokenizerRoute))
+            .route("/tokenizer/*rest", get(TokenizerRoute))
+            .route("/tokenizer/*rest", head(TokenizerRoute))
             .route("/prompt/", post(PostPrompt))
             .route("/debug/func_agents", get(GetFuncAgentsState))
             .route(
@@ -1305,6 +1310,14 @@ impl Drop for Disconnect {
 async fn FuncCall(
     Extension(token): Extension<Arc<AccessToken>>,
     State(gw): State<HttpGateway>,
+    req: Request,
+) -> SResult<Response, StatusCode> {
+    return FuncCall1(&token, &gw, req).await
+}
+
+pub async fn FuncCall1(
+    token: &Arc<AccessToken>,
+    gw: &HttpGateway,
     mut req: Request,
 ) -> SResult<Response, StatusCode> {
     let reqStart = std::time::Instant::now();

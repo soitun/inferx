@@ -317,6 +317,19 @@ impl FuncSpec {
         resource.gpu.contextCount = 1;
         return resource;
     }
+
+    pub fn ModelPath(&self) -> Option<String> {
+        match self.commands.windows(2).find_map(|w| {
+            if w[0] == "--model" {
+                Some(w[1].clone())
+            } else {
+                None
+            }
+        }) {
+            Some(path) => Some(path),
+            None => None,
+        }
+    }
 }
 
 fn port_default() -> u16 {

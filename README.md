@@ -1,3 +1,4 @@
+[![oosmetrics](https://api.oosmetrics.com/api/v1/badge/achievement/1fcf9d3b-4d07-4e84-91eb-ce17062d2857.svg)](https://oosmetrics.com/repo/inferx-net/inferx)
 
 ## InferX: AI Lambda-Like Inference Function as a Service with 2-Second Cold Starts & 90% GPU Utilization
 InferX is an advanced serverless inference platform engineered for ultra-fast, efficient, and scalable deployment of AI models. It enables serving multiple models within a single environment, achieving cold start times of less than two seconds. Please explore its capabilities further at https://inferx.net.
