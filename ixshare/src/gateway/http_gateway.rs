@@ -62,6 +62,7 @@ use crate::audit::{
 use crate::common::*;
 use crate::gateway::auth_layer::auth_transform_keycloaktoken;
 use crate::gateway::func_worker::QHttpCallClientDirect;
+use crate::gateway::tokenizer::ModelsFuncCall;
 use crate::ixmeta::req_watching_service_client::ReqWatchingServiceClient;
 use crate::ixmeta::ReqWatchRequest;
 use crate::metastore::cacher_client::CacherClient;
@@ -359,6 +360,9 @@ impl HttpGateway {
             .route("/directfunccall/*rest", post(DirectFuncCall))
             .route("/directfunccall/*rest", get(DirectFuncCall))
             .route("/directfunccall/*rest", head(DirectFuncCall))
+            .route("/models/*rest", post(ModelsFuncCall))
+            .route("/models/*rest", get(ModelsFuncCall))
+            .route("/models/*rest", head(ModelsFuncCall))
             .route("/funccall/*rest", post(FuncCall))
             .route("/funccall/*rest", get(FuncCall))
             .route("/funccall/*rest", head(FuncCall))
