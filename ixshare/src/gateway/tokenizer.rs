@@ -145,25 +145,31 @@ lazy_static::lazy_static! {
     pub static ref SHARED_TOKENIZER: Option<TokenizerState> = {
         match std::env::var("TOKENIZER_PATH") {
             Ok(path) => {
-                let tokenizer = if Path::new(&path).is_file() {
-                    match Tokenizer::from_file(&path) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            warn!("tokenizer failed to load '{}': {}", path, e);
-                            return None;
+                let api = match hf_hub::api::sync::Api::new() {
+                    Ok(a) => a,
+                    Err(e) => {
+                        warn!("failed to create hf_hub Api: {}", e);
+                        return None;
+                    }
+                };
+                let tokenizer = match api.model(path.clone()) {
+                    repo => {
+                        match repo.get("tokenizer.json") {
+                            Ok(file) => {
+                                match Tokenizer::from_file(file).map_err(|e| {
+                                    warn!("tokenizer failed to load from hub '{}': {}", path, e);
+                                    e
+                                }) {
+                                    Ok(t) => t,
+                                    Err(_) => return None,
+                                }
+                            }
+                            Err(e) => {
+                                warn!("failed to get tokenizer.json from hub '{}': {}", path, e);
+                                return None;
+                            }
                         }
                     }
-                } else if Path::new(&path).join("tokenizer.json").is_file() {
-                    match Tokenizer::from_file(&format!("{}/tokenizer.json", path)) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            warn!("tokenizer failed to load dir '{}': {}", path, e);
-                            return None;
-                        }
-                    }
-                } else {
-                    warn!("tokenizer path '{}' not found", path);
-                    return None;
                 };
                 let vocab_size = tokenizer.get_vocab_size(false);
                 info!("tokenizer loaded: {} (vocab_size={})", path, vocab_size);
