@@ -197,6 +197,48 @@ pub async fn ModelsFuncCall(
     let tenant = parts[2].to_owned();
     let namespace = parts[3].to_owned();
 
+    let mut remainPath = "".to_string();
+    if parts.len() > 4 {
+        for i in 4..parts.len() {
+            remainPath = remainPath + "/" + parts[i];
+        }
+    }
+
+    if remainPath == "/v1/models" && req.method() == axum::http::Method::GET {
+        let functions = match gw.objRepo.ListFunc(&tenant, &namespace) {
+            Ok(funcs) => funcs,
+            Err(e) => {
+                return Ok(Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::from(format!("service failure: list models failed {:?}", e)))
+                    .unwrap());
+            }
+        };
+
+        let model_data: Vec<serde_json::Value> = functions
+            .into_iter()
+            .map(|f| {
+                serde_json::json!({
+                    "id": f.func.name,
+                    "object": "model",
+                })
+            })
+            .collect();
+
+        let response_body = serde_json::json!({
+            "object": "list",
+            "data": model_data
+        });
+
+        let bytes = serde_json::to_vec(&response_body).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/json")
+            .body(Body::from(bytes))
+            .unwrap());
+    }
+
     let (mut reqParts, body) = req.into_parts();
     reqParts.headers.remove(hyper::header::CONTENT_LENGTH);
     let bytes = match axum::body::to_bytes(body, FUNCCALL_MAX_BODY_BYTES).await {
@@ -213,13 +255,6 @@ pub async fn ModelsFuncCall(
         .ok_or(StatusCode::BAD_REQUEST)?;
 
     let bytes = serde_json::to_vec(&jsonReq).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    let mut remainPath = "".to_string();
-    if parts.len() > 4 {
-        for i in 4..parts.len() {
-            remainPath = remainPath + "/" + parts[i];
-        }
-    }
 
     let finalPath = format!(
         "/funccall/{}/{}/{}{}",
