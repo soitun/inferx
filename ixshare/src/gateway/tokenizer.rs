@@ -38,7 +38,7 @@ const FUNCCALL_MAX_BODY_BYTES: usize = 20 * 1024 * 1024;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ChatRequest {
-    #[serde(rename = "model")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub model: String,
     #[serde(rename = "messages")]
     pub messages: Vec<ChatMessage>,
@@ -68,24 +68,49 @@ fn default_top_p() -> f32 {
     1.0
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CompletionRequest {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model: String,
+    #[serde(rename = "prompt")]
+    pub prompt: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "max_tokens"
+    )]
+    pub maxTokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "top_p")]
+    pub topP: Option<f32>,
+    #[serde(rename = "stream")]
+    pub stream: bool,
+}
+
 // ==================================================================
 // VllmCompletionRequest (for tokenizer output)
 // ==================================================================
 
 #[derive(Debug, Clone, Serialize)]
 pub struct VllmCompletionRequest {
-    #[serde(skip_serializing)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub model: String,
     #[serde(rename = "prompt")]
     pub prompt: Vec<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "max_tokens"
+    )]
     pub maxTokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "top_p")]
     pub topP: Option<f32>,
     pub stream: bool,
-    #[serde(skip_serializing)]
+    #[serde(rename = "skip_special_tokens")]
     pub skipSpecialTokens: bool,
 }
 
@@ -228,75 +253,119 @@ pub async fn TokenizerRoute(
         }
     };
 
-    let chatReq: ChatRequest = match serde_json::from_slice(&bytes) {
-        Ok(r) => r,
-        Err(_) => {
-            let body = Body::from("service failure: invalid JSON body");
-            let resp = Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(body)
-                .unwrap();
-            return Ok(resp);
-        }
-    };
+    // Determine endpoint type based on path and build VllmCompletionRequest
+    let vllmReq: VllmCompletionRequest;
+    let targetPath: String;
 
-    // Apply chat template
-    let formattedText = if chatReq.messages.is_empty() {
-        "".to_string()
+    if remainPath.starts_with("/v1/chat/completions") {
+        // Chat endpoint: /v1/chat/completions
+        let chatReq: ChatRequest = match serde_json::from_slice(&bytes) {
+            Ok(r) => r,
+            Err(_) => {
+                let body = Body::from("service failure: invalid JSON body");
+                let resp = Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(body)
+                    .unwrap();
+                return Ok(resp);
+            }
+        };
+
+        // Apply chat template
+        let formattedText = if chatReq.messages.is_empty() {
+            "".to_string()
+        } else {
+            applyChatTemplate(&chatReq.messages)
+        };
+
+        // Encode via tokenizer
+        let promptIds = match tokenizerState.tokenizer.encode(&*formattedText, true) {
+            Ok(encoded) => encoded.get_ids().to_vec(),
+            Err(e) => {
+                let body = Body::from(format!("tokenization error: {}", e));
+                let resp = Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(body)
+                    .unwrap();
+                return Ok(resp);
+            }
+        };
+
+        // info!(
+        //     "tokenized {} messages -> {} tokens (chat endpoint)",
+        //     chatReq.messages.len(),
+        //     promptIds.len()
+        // );
+
+        vllmReq = VllmCompletionRequest {
+            model: chatReq.model.clone(),
+            prompt: promptIds,
+            maxTokens: chatReq.maxTokens,
+            temperature: if (chatReq.temperature - 1.0).abs() > f32::EPSILON {
+                Some(chatReq.temperature)
+            } else {
+                None
+            },
+            topP: if (chatReq.topP - 1.0).abs() > f32::EPSILON {
+                Some(chatReq.topP)
+            } else {
+                None
+            },
+            stream: chatReq.stream,
+            skipSpecialTokens: true,
+        };
     } else {
-        applyChatTemplate(&chatReq.messages)
-    };
+        // Completion endpoint: /v1/completions
+        let compReq: CompletionRequest = match serde_json::from_slice(&bytes) {
+            Ok(r) => r,
+            Err(_) => {
+                let body = Body::from("service failure: invalid JSON body");
+                let resp = Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(body)
+                    .unwrap();
+                return Ok(resp);
+            }
+        };
+        // Encode prompt directly (no chat template)
+        let promptIds = match tokenizerState.tokenizer.encode(&*compReq.prompt, true) {
+            Ok(encoded) => encoded.get_ids().to_vec(),
+            Err(e) => {
+                let body = Body::from(format!("tokenization error: {}", e));
+                let resp = Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(body)
+                    .unwrap();
+                return Ok(resp);
+            }
+        };
 
-    // Encode via tokenizer
-    let promptIds = match tokenizerState.tokenizer.encode(&*formattedText, true) {
-        Ok(encoded) => encoded.get_ids().to_vec(),
-        Err(e) => {
-            let body = Body::from(format!("tokenization error: {}", e));
-            let resp = Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(body)
-                .unwrap();
-            return Ok(resp);
-        }
-    };
+        info!(
+            "tokenized prompt length {} -> {} tokens (completion endpoint)",
+            compReq.prompt.len(),
+            promptIds.len()
+        );
 
-    info!(
-        "tokenized {} messages -> {} tokens",
-        chatReq.messages.len(),
-        promptIds.len()
-    );
-
-    // Build VllmCompletionRequest with camelCase field names
-    let vllmReq = VllmCompletionRequest {
-        model: chatReq.model.clone(),
-        prompt: promptIds,
-        maxTokens: chatReq.maxTokens,
-        temperature: if (chatReq.temperature - 1.0).abs() > f32::EPSILON {
-            Some(chatReq.temperature)
-        } else {
-            None
-        },
-        topP: if (chatReq.topP - 1.0).abs() > f32::EPSILON {
-            Some(chatReq.topP)
-        } else {
-            None
-        },
-        stream: chatReq.stream,
-        skipSpecialTokens: true,
-    };
-
-    // let vllm_req_json = serde_json::to_string_pretty(&vllmReq).unwrap_or_default();
-    // error!("vLLM vllm_req_json: {}", vllm_req_json);
+        vllmReq = VllmCompletionRequest {
+            model: compReq.model.clone(),
+            prompt: promptIds,
+            maxTokens: compReq.maxTokens,
+            temperature: compReq.temperature,
+            topP: compReq.topP,
+            stream: compReq.stream,
+            skipSpecialTokens: true,
+        };
+    }
+    targetPath = "/v1/completions".to_string();
 
     // Create new request and call FuncCall1 directly (no HTTP forward)
     let new_body = serde_json::to_vec(&vllmReq).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let remainPath = "/v1/completions";
     let new_req = axum::http::Request::builder()
         .method(axum::http::Method::POST)
         .uri(format!(
             "/funccall/{}/{}/{}{}",
-            tenant, namespace, funcname, remainPath
+            tenant, namespace, funcname, targetPath
         ))
         .header("content-type", "application/json")
         .body(Body::from(new_body))
