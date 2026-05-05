@@ -13,8 +13,8 @@
 // limitations under the License
 
 use axum::body::Body;
-use axum::extract::State;
-use axum::http::StatusCode;
+use axum::extract::{Request, State};
+use axum::http::{StatusCode, Uri};
 use axum::response::Response;
 use axum::Extension;
 use dashmap::DashMap;
@@ -23,6 +23,7 @@ use std::path::Path;
 use std::result::Result as SResult;
 use std::sync::Arc;
 use tokenizers::Tokenizer;
+use hyper::header::HeaderValue;
 
 use crate::gateway::auth_layer::AccessToken;
 use crate::gateway::http_gateway::FuncCall1;
@@ -165,9 +166,113 @@ async fn GetOrLoadTokenizer(modelPath: &str) -> SResult<Arc<TokenizerState>, Sta
     Ok(state)
 }
 
+
 // ==================================================================
 // TokenizerRoute handler
 // ==================================================================
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PromptReq {
+    pub tenant: String,
+    pub namespace: String,
+    pub funcname: String,
+    pub prompt: String,
+    pub image: Option<String>,
+}
+
+pub async fn ModelsFuncCall(
+    Extension(token): Extension<Arc<AccessToken>>,
+    State(gw): State<HttpGateway>,
+    req: Request,
+) -> SResult<Response, StatusCode> {
+    let path = req.uri().path().to_string();
+    let parts = path.split('/').collect::<Vec<&str>>();
+    if parts.len() < 4 {
+        return Ok(Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body(Body::from("Invalid path"))
+            .unwrap());
+    }
+
+    let tenant = parts[2].to_owned();
+    let namespace = parts[3].to_owned();
+
+    let mut remainPath = "".to_string();
+    if parts.len() > 4 {
+        for i in 4..parts.len() {
+            remainPath = remainPath + "/" + parts[i];
+        }
+    }
+
+    if remainPath == "/v1/models" && req.method() == axum::http::Method::GET {
+        let functions = match gw.objRepo.ListFunc(&tenant, &namespace) {
+            Ok(funcs) => funcs,
+            Err(e) => {
+                return Ok(Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::from(format!("service failure: list models failed {:?}", e)))
+                    .unwrap());
+            }
+        };
+
+        let model_data: Vec<serde_json::Value> = functions
+            .into_iter()
+            .map(|f| {
+                serde_json::json!({
+                    "id": f.func.name,
+                    "object": "model",
+                })
+            })
+            .collect();
+
+        let response_body = serde_json::json!({
+            "object": "list",
+            "data": model_data
+        });
+
+        let bytes = serde_json::to_vec(&response_body).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/json")
+            .body(Body::from(bytes))
+            .unwrap());
+    }
+
+    let (mut reqParts, body) = req.into_parts();
+    reqParts.headers.remove(hyper::header::CONTENT_LENGTH);
+    let bytes = match axum::body::to_bytes(body, FUNCCALL_MAX_BODY_BYTES).await {
+        Ok(b) => b,
+        Err(_) => return Err(StatusCode::BAD_REQUEST),
+    };
+
+    let mut jsonReq: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let modelName = jsonReq
+        .as_object_mut()
+        .and_then(|obj| obj.remove("model"))
+        .and_then(|val| val.as_str().map(|s| s.to_string()))
+        .ok_or(StatusCode::BAD_REQUEST)?;
+
+    let bytes = serde_json::to_vec(&jsonReq).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let finalPath = format!(
+        "/funccall/{}/{}/{}{}",
+        tenant, namespace, modelName, remainPath
+    );
+
+    let mut newReq = Request::from_parts(reqParts, Body::from(bytes));
+    *newReq.uri_mut() = Uri::try_from(finalPath).unwrap();
+    newReq
+        .headers_mut()
+        .insert("X-Inferx-Model", HeaderValue::from_str(&modelName).unwrap());
+    newReq.headers_mut().insert(
+        "X-Inferx-Model-Call", 
+        HeaderValue::from_static("true")
+    );
+
+    FuncCall1(&token, &gw, newReq).await
+}
 
 pub async fn TokenizerRoute(
     Extension(token): Extension<Arc<AccessToken>>,
@@ -365,3 +470,4 @@ pub async fn TokenizerRoute(
 
     FuncCall1(&token, &gw, new_req).await
 }
+
