@@ -872,7 +872,12 @@ impl FuncAgent {
 
     pub fn SendWorkerStatusUpdate(&self, update: WorkerUpdate) {
         let statusUpdateTx = self.workerStateUpdateTx.clone();
-        statusUpdateTx.try_send(update).unwrap();
+        if let Err(e) = statusUpdateTx.try_send(update) {
+            trace!(
+                "SendWorkerStatusUpdate: {}/{}/{} channel closed or full, dropping update: {:?}",
+                self.tenant, self.namespace, self.funcName, e
+            );
+        }
     }
 
     pub fn spawn_return_worker_retry(worker: FuncWorker, failworker: bool) {

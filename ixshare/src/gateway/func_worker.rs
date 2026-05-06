@@ -416,6 +416,7 @@ impl FuncWorker {
                 // fail 3 times
                 error!("Pod failed 3 times: {:?}", self.WorkerName());
                 self.FinishWorker().await;
+                self.funcAgent.RemoveWorker(self);
                 self.funcAgent
                     .SendWorkerStatusUpdate(WorkerUpdate::WorkerFail((
                         self.clone(),
@@ -465,6 +466,7 @@ impl FuncWorker {
                 self.funcAgent
                     .startingSlot
                     .fetch_sub(self.parallelLevel, Ordering::SeqCst);
+                self.funcAgent.RemoveWorker(self);
                 match &e {
                     Error::SchedulerErr(s) => {
                         self.funcAgent
@@ -677,11 +679,12 @@ impl FuncWorker {
                                 Err(e) => {
                                     error!("Funcworker connect fail with error {:?}", &e);
                                     let err = Error::CommonError(format!(
-                                        "Funcworker connect fail with error {:?}",
+                                "Funcworker connect fail with error {:?}",
                                         &e
                                     ));
                                     req.Send(Err(err));
                                     self.FinishWorker().await;
+                                    self.funcAgent.RemoveWorker(self);
                                     self.funcAgent.SendWorkerStatusUpdate(
                                         WorkerUpdate::WorkerFail((self.clone(), e)),
                                     );
