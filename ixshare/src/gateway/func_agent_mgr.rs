@@ -873,7 +873,7 @@ impl FuncAgent {
     pub fn SendWorkerStatusUpdate(&self, update: WorkerUpdate) {
         let statusUpdateTx = self.workerStateUpdateTx.clone();
         if let Err(e) = statusUpdateTx.try_send(update) {
-            trace!(
+            error!(
                 "SendWorkerStatusUpdate: {}/{}/{} channel closed or full, dropping update: {:?}",
                 self.tenant, self.namespace, self.funcName, e
             );

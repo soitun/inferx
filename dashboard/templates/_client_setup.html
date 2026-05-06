@@ -129,6 +129,30 @@
     .client-setup-guidance-body {
         padding: 0 12px 12px 12px;
     }
+    .client-setup-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin: 0 0 12px 0;
+    }
+    .client-setup-download-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 36px;
+        padding: 0 12px;
+        border: 1px solid #cbd5e1;
+        border-radius: 4px;
+        background: #f8fafc;
+        color: #0f172a;
+        font-size: 13px;
+        font-weight: 600;
+        text-decoration: none;
+    }
+    .client-setup-download-btn:hover {
+        border-color: #afc2db;
+        background: #f6faff;
+    }
 </style>
 {% macro client_setup_value_field(label, display_value, copy_value, tooltip='Copy', value_class='') -%}
 <div>
@@ -156,6 +180,11 @@
     <p style="margin: 0 0 12px 0; color: #475569; font-size: var(--ix-font-size-subtle);">
         Use these values in Dify, OpenWebUI, Continue, OpenCode, or any OpenAI-compatible client that asks for a base URL, API key, and model name.
     </p>
+    {% if opencode_download_href and client_setup.api_base_url %}
+    <div class="client-setup-actions">
+        <a class="client-setup-download-btn" href="{{ opencode_download_href }}">Download OpenCode config</a>
+    </div>
+    {% endif %}
     <details class="client-setup-guidance">
         <summary></summary>
         <div class="client-setup-guidance-body">

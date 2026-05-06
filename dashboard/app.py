@@ -21,6 +21,7 @@ import re
 import socket
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import quote, urlencode, urljoin, urlparse
 import pytz
 
@@ -190,6 +191,7 @@ ONBOARD_BACKOFF_BASE_SEC = float(os.getenv('ONBOARD_BACKOFF_BASE_SEC', '0.5'))
 ONBOARD_TIMEOUT_SEC = float(os.getenv('ONBOARD_TIMEOUT_SEC', '10'))
 MAX_GPU_VRAM_MB_ENV = "INFERX_MAX_GPU_VRAM_MB"
 MAX_GPU_COUNT_ENV = "INFERX_MAX_GPU_COUNT"
+OPEN_CODE_CONFIG_TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "integration" / "opencode.json"
 
 
 def load_max_gpu_vram_mb_override():
@@ -5946,6 +5948,144 @@ def build_client_setup_for_ui(tenant: str, namespace: str, funcname: str, sample
     }
 
 
+def load_opencode_config_template_text():
+    try:
+        return OPEN_CODE_CONFIG_TEMPLATE_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def parse_positive_int_or_none(value):
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    raw = str(value or "").strip()
+    if raw == "":
+        return None
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def resolve_opencode_context_length(spec=None, entry=None, fallback: int = 8192):
+    entry_obj = entry if isinstance(entry, dict) else {}
+    spec_obj = spec if isinstance(spec, dict) else {}
+    context_length = parse_positive_int_or_none(entry_obj.get("context_length"))
+    if context_length is None:
+        commands = spec_obj.get("commands")
+        if not isinstance(commands, list):
+            commands = []
+        context_length = parse_positive_int_or_none(parse_named_command_arg(commands, "--max-model-len"))
+    return context_length if context_length is not None else fallback
+
+
+def resolve_opencode_limit_split(spec=None, entry=None, *, context_fallback: int = 8192, output_fallback: int = 16384):
+    max_model_len = resolve_opencode_context_length(spec=spec, entry=entry, fallback=context_fallback)
+    max_model_len = parse_positive_int_or_none(max_model_len)
+    if max_model_len is None:
+        return {
+            "context": int(context_fallback),
+            "output": int(output_fallback),
+        }
+
+    return {
+        "context": int(max_model_len),
+        "output": int(output_fallback),
+    }
+
+
+def resolve_opencode_output_length(sample_query=None, fallback: int = 4096):
+    sample_query_obj = sample_query if isinstance(sample_query, dict) else {}
+    body = sample_query_obj.get("body")
+    if not isinstance(body, dict):
+        body = {}
+    for field_name in ("max_completion_tokens", "max_output_tokens", "max_tokens"):
+        output_length = parse_positive_int_or_none(body.get(field_name))
+        if output_length is not None:
+            return output_length
+    return fallback
+
+
+def sanitize_download_stem(value: str, fallback: str = "config") -> str:
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "").strip()).strip("._-")
+    return normalized or fallback
+
+
+def build_opencode_config_payload(*, api_base_url: str, api_key: str, model_name: str, context_length: int, output_length: int):
+    normalized_api_base_url = str(api_base_url or "").strip()
+    normalized_api_key = str(api_key or "").strip()
+    normalized_model_name = str(model_name or "").strip()
+    normalized_context_length = int(context_length)
+    normalized_output_length = int(output_length)
+
+    payload = {
+        "$schema": "https://opencode.ai/config.json",
+        "provider": {
+            "inferx": {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "inferx",
+                "options": {
+                    "baseURL": normalized_api_base_url,
+                    "apiKey": normalized_api_key,
+                },
+                "models": {
+                    normalized_model_name: {
+                        "name": normalized_model_name,
+                        "limit": {
+                            "context": normalized_context_length,
+                            "output": normalized_output_length,
+                        },
+                    }
+                },
+            }
+        },
+    }
+
+    template_text = load_opencode_config_template_text()
+    if template_text != "":
+        try:
+            template_obj = json.loads(
+                template_text
+                .replace('"myprovider"', json.dumps("inferx"))
+                .replace('"{apiKey}"', json.dumps(normalized_api_key))
+                .replace('"{ModelName}"', json.dumps(normalized_model_name))
+                .replace('"{contextLength}"', json.dumps(normalized_context_length))
+                .replace('"{outputLength}"', json.dumps(normalized_output_length))
+                .replace('{contextLength}', json.dumps(normalized_context_length))
+                .replace('{outputLength}', json.dumps(normalized_output_length))
+                .replace(
+                    '"https://model.inferx.net/funccall/{tenant}/{namespace}/{funcname}/v1"',
+                    json.dumps(normalized_api_base_url),
+                )
+            )
+            if isinstance(template_obj, dict):
+                payload = template_obj
+        except Exception:
+            pass
+
+    return payload
+
+
+def build_opencode_download_response(*, filename_stem: str, api_base_url: str, api_key: str, model_name: str, context_length: int, output_length: int):
+    payload = build_opencode_config_payload(
+        api_base_url=api_base_url,
+        api_key=api_key,
+        model_name=model_name,
+        context_length=context_length,
+        output_length=output_length,
+    )
+    response = Response(
+        json.dumps(payload, indent=2) + "\n",
+        status=200,
+        mimetype="application/json",
+    )
+    response.headers["Content-Disposition"] = 'attachment; filename="opencode.json"'
+    return response
+
+
 def build_sample_rest_call_for_ui(tenant: str, namespace: str, funcname: str, sample_query, apikey: str):
     if not isinstance(sample_query, dict):
         return ""
@@ -6438,6 +6578,11 @@ def EndpointDetail(slug):
         is_authenticated=is_authenticated,
         selected_tenant=selected_tenant,
         client_setup=client_setup,
+        opencode_download_href=(
+            url_for("prefix.DownloadEndpointOpenCodeConfig", slug=slug, tenant=selected_tenant)
+            if is_authenticated and selected_tenant
+            else ""
+        ),
         sample_rest_call=sample_rest_call,
         sample_rest_call_display=sample_rest_call_display,
         interactive_enabled=runtime_context["enabled"] if is_authenticated else False,
@@ -6456,6 +6601,59 @@ def EndpointDetail(slug):
         page_keywords=f"{slug}, InferX endpoint, OpenCode, KiloCode, Dify, OpenWebUI, serverless inference, OpenAI-compatible API",
         page_robots="index, follow",
     )
+
+
+@prefix_bp.route("/integration/opencode/endpoints/<slug>.json", methods=["GET"])
+@require_login
+def DownloadEndpointOpenCodeConfig(slug):
+    try:
+        tenant_options = accessible_endpoint_tenant_names(listroles())
+        selected_tenant = str(
+            request.args.get("tenant", session.get("active_tenant_name", session.get("tenant_name", ""))) or ""
+        ).strip()
+        if selected_tenant != "" and selected_tenant not in tenant_options:
+            selected_tenant = ""
+        if selected_tenant == "":
+            selected_tenant = tenant_options[0] if tenant_options else ""
+        if selected_tenant == "":
+            return json_error("No accessible tenant is available for endpoint integration.", 403)
+
+        detail = load_tenant_endpoint_detail(slug, selected_tenant)
+        entry = detail["entry"]
+        if not detail["published"]:
+            raise LookupError(f"endpoint `{slug}` not found")
+
+        onboarding_apikey, onboarding_apikey_name = resolve_onboarding_inference_apikey_for_ui(selected_tenant)
+        client_setup = build_client_setup_for_ui(
+            tenant=selected_tenant,
+            namespace="endpoints",
+            funcname=slug,
+            sample_query=entry.get("sample_query"),
+            apikey=onboarding_apikey,
+            apikey_name=onboarding_apikey_name,
+            spec=entry.get("spec"),
+        )
+        api_base_url = str(client_setup.get("api_base_url", "") or "").strip()
+        model_name = str(client_setup.get("model_name", "") or "").strip()
+        api_key = str(client_setup.get("api_key", "") or "").strip()
+        if api_base_url == "" or model_name == "" or api_key == "":
+            return json_error("OpenCode config is unavailable for this endpoint.", 400)
+
+        limits = resolve_opencode_limit_split(spec=entry.get("spec"), entry=entry)
+        return build_opencode_download_response(
+            filename_stem=f"inferx-opencode-endpoint-{slug}",
+            api_base_url=api_base_url,
+            api_key=api_key,
+            model_name=model_name,
+            context_length=limits["context"],
+            output_length=limits["output"],
+        )
+    except LookupError:
+        return json_error(f"endpoint `{slug}` is not available for tenant `{selected_tenant}`", 404)
+    except PermissionError:
+        return json_error(f"tenant `{selected_tenant}` cannot access endpoint `{slug}`", 403)
+    except Exception as e:
+        return json_error(f"failed to build OpenCode config for endpoint `{slug}`: {e}", 500)
 
 
 @prefix_bp.route("/admin/endpoints/<slug>", methods=["GET"])
@@ -6506,8 +6704,10 @@ def EndpointAdminDetail(slug):
         "endpoint_detail.html",
         endpoint_entry=entry,
         is_admin_view=True,
+        is_authenticated=True,
         selected_tenant="",
         client_setup=client_setup,
+        opencode_download_href="",
         sample_rest_call=sample_rest_call,
         sample_rest_call_display=sample_rest_call_display,
         interactive_enabled=runtime_context["enabled"],
@@ -7889,12 +8089,73 @@ def GetFunc():
         path=sample["path"],
         initial_model_status=initial_model_status,
         client_setup=client_setup,
+        opencode_download_href=(
+            url_for(
+                "prefix.DownloadModelOpenCodeConfig",
+                tenant=tenant,
+                namespace=namespace,
+                name=name,
+            )
+            if session.get('access_token', '') != ''
+            else ""
+        ),
         func_admin_href=func_admin_href,
         func_user_href=func_user_href,
         func_edit_href=func_edit_href,
         tenant_models_href=tenant_models_href,
         models_list_href=models_list_href,
     )
+
+
+@prefix_bp.route("/integration/opencode/models/<tenant>/<namespace>/<name>.json", methods=["GET"])
+@require_login
+def DownloadModelOpenCodeConfig(tenant, namespace, name):
+    try:
+        func_resp, func = getfunc_response(tenant, namespace, name)
+        if is_upstream_resource_unavailable(func_resp, func):
+            return json_error(f"model `{tenant}/{namespace}/{name}` is not available", 404)
+        if not func_resp.ok or func is None:
+            return json_error(
+                extract_upstream_error_message(func_resp, func) or f"failed to load model `{tenant}/{namespace}/{name}`",
+                func_resp.status_code if func_resp is not None else 502,
+            )
+
+        deny_resp = deny_public_tenant_request(resource_item_tenant_name(func))
+        if deny_resp is not None:
+            return deny_resp
+
+        spec = (((func.get("func") or {}).get("object") or {}).get("spec") or {})
+        sample_query = spec.get("sample_query")
+        if not isinstance(sample_query, dict):
+            return json_error("This model does not expose integration metadata.", 400)
+
+        onboarding_apikey, onboarding_apikey_name = resolve_onboarding_inference_apikey_for_ui(tenant)
+        client_setup = build_client_setup_for_ui(
+            tenant=tenant,
+            namespace=namespace,
+            funcname=name,
+            sample_query=sample_query,
+            apikey=onboarding_apikey,
+            apikey_name=onboarding_apikey_name,
+            spec=spec,
+        )
+        api_base_url = str(client_setup.get("api_base_url", "") or "").strip()
+        model_name = str(client_setup.get("model_name", "") or "").strip()
+        api_key = str(client_setup.get("api_key", "") or "").strip()
+        if api_base_url == "" or model_name == "" or api_key == "":
+            return json_error("OpenCode config is unavailable for this model.", 400)
+
+        limits = resolve_opencode_limit_split(spec=spec)
+        return build_opencode_download_response(
+            filename_stem=f"inferx-opencode-model-{tenant}-{namespace}-{name}",
+            api_base_url=api_base_url,
+            api_key=api_key,
+            model_name=model_name,
+            context_length=limits["context"],
+            output_length=limits["output"],
+        )
+    except Exception as e:
+        return json_error(f"failed to build OpenCode config for model `{tenant}/{namespace}/{name}`: {e}", 500)
 
 
 @prefix_bp.route("/faillogs")
