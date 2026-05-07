@@ -7496,6 +7496,136 @@ def healthz():
     return ("ok", 200)
 
 
+@prefix_bp.route("/admin/usage/endpoints", methods=["GET"])
+@require_admin
+def admin_endpoint_usage():
+    """Admin cross-tenant endpoint usage API"""
+    try:
+        hours = request.args.get("hours", type=int, default=24)
+        start = request.args.get("start")
+        end = request.args.get("end")
+        limit = request.args.get("limit", type=int, default=100)
+        offset = request.args.get("offset", type=int, default=0)
+        group_by = request.args.get("group_by")
+        tenant = request.args.get("tenant")
+        
+        # Validate hours range (1-720)
+        if hours is not None and (hours < 1 or hours > 720):
+            return json_error("hours must be between 1 and 720 (30 days)", 400)
+        
+        # Build query params
+        params = {
+            "hours": hours,
+            "start": start,
+            "end": end,
+            "limit": limit,
+            "offset": offset,
+            "group_by": group_by,
+            "tenant": tenant,
+        }
+        
+        # Proxy to gateway
+        gateway_url = get_gateway_url()
+        url = f"{gateway_url}/admin/usage/endpoints?{urlencode({k: v for k, v in params.items() if v is not None}, doseq=True)}"
+        
+        response = proxy_request_to_gateway(url, method="GET")
+        return response
+        
+    except Exception as e:
+        return json_error(f"failed to get admin endpoint usage: {e}", 500)
+
+
+@prefix_bp.route("/admin/usage/endpoints/<tenant>/<endpoint_slug>", methods=["GET"])
+@require_admin
+def admin_endpoint_usage_by_period(tenant, endpoint_slug):
+    """Admin endpoint drill-down API"""
+    try:
+        hours = request.args.get("hours", type=int, default=24)
+        start = request.args.get("start")
+        end = request.args.get("end")
+        granularity = request.args.get("granularity", default="hourly")
+        
+        # Validate hours range (1-720)
+        if hours is not None and (hours < 1 or hours > 720):
+            return json_error("hours must be between 1 and 720 (30 days)", 400)
+        
+        # Validate granularity
+        if granularity not in ("hourly", "daily", "weekly"):
+            return json_error("granularity must be 'hourly', 'daily', or 'weekly'", 400)
+        
+        # Build query params
+        params = {"hours": hours, "start": start, "end": end, "granularity": granularity}
+        
+        # Proxy to gateway
+        gateway_url = get_gateway_url()
+        encoded_tenant = quote(str(tenant), safe="")
+        encoded_endpoint_slug = quote(str(endpoint_slug), safe="")
+        url = f"{gateway_url}/admin/usage/endpoints/{encoded_tenant}/{encoded_endpoint_slug}?{urlencode({k: v for k, v in params.items() if v is not None}, doseq=True)}"
+        
+        response = proxy_request_to_gateway(url, method="GET")
+        return response
+        
+    except Exception as e:
+        return json_error(f"failed to get endpoint usage by period: {e}", 500)
+
+
+def get_gateway_url():
+    """Use the same API gateway base address as the rest of the dashboard."""
+    return str(apihostaddr or "").rstrip("/")
+
+
+def proxy_request_to_gateway(url, method="GET", json_data=None):
+    """Proxy request to the gateway"""
+    headers = {}
+    
+    # Prefer an explicit Authorization header, but fall back to the dashboard session token.
+    if "Authorization" in request.headers:
+        headers["Authorization"] = request.headers["Authorization"]
+    else:
+        access_token = str(session.get("access_token", "") or "")
+        if access_token != "":
+            headers["Authorization"] = f"Bearer {access_token}"
+    
+    try:
+        if method == "GET":
+            resp = requests.get(url, headers=headers, timeout=60)
+        elif method == "POST":
+            resp = requests.post(url, headers=headers, json=json_data, timeout=60)
+        elif method == "PUT":
+            resp = requests.put(url, headers=headers, json=json_data, timeout=60)
+        elif method == "DELETE":
+            resp = requests.delete(url, headers=headers, timeout=60)
+        else:
+            return json_error(f"Unsupported method: {method}", 405)
+    except requests.exceptions.RequestException as e:
+        return json_error(f"failed to reach gateway: {e}", 502)
+    
+    excluded_headers = {
+        "connection",
+        "content-encoding",
+        "content-length",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    }
+    response_headers = [
+        (name, value)
+        for name, value in resp.headers.items()
+        if name.lower() not in excluded_headers
+    ]
+
+    return Response(resp.content, status=resp.status_code, headers=response_headers)
+
+
+def json_error(message, status=400):
+    """Return a JSON error response"""
+    return jsonify({"error": message}), status
+
+
 @prefix_bp.route("/intro")
 @require_login
 def md():
