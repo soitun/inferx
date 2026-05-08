@@ -41,6 +41,7 @@ use axum::{
 use chrono::{DateTime, Timelike, Utc};
 use hyper::header::CONTENT_TYPE;
 use inferxlib::obj_mgr::namespace_mgr::Namespace;
+use inferxlib::obj_mgr::pod_mgr::PodState;
 use inferxlib::obj_mgr::tenant_mgr::{Tenant, SYSTEM_NAMESPACE, SYSTEM_TENANT};
 use opentelemetry::Context;
 use prometheus_client::encoding::text::encode;
@@ -4409,7 +4410,45 @@ async fn GetFuncPods(
 ) -> SResult<Response, StatusCode> {
     match gw.GetFuncPods(&token, &tenant, &namespace, &funcname) {
         Ok(list) => {
-            let data = serde_json::to_string(&list).unwrap();
+            let lease_state = gw.funcAgentMgr.PodLeaseState();
+            let mut rows = Vec::with_capacity(list.len());
+
+            for pod in list {
+                let pod_key = format!(
+                    "{}/{}/{}/{}/{}",
+                    &pod.tenant,
+                    &pod.namespace,
+                    &pod.object.spec.funcname,
+                    pod.object.spec.fprevision,
+                    &pod.object.spec.id
+                );
+                let mut pod_value = serde_json::to_value(&pod).unwrap();
+
+                if pod.object.status.state == PodState::Ready {
+                    let leased = lease_state
+                        .get(&pod_key)
+                        .map(|info| info.leased)
+                        .unwrap_or(false);
+                    if let Some(obj) = pod_value.as_object_mut() {
+                        obj.insert("leased".to_owned(), Value::Bool(leased));
+                        if leased {
+                            if let Some(consumer_tenant) = lease_state
+                                .get(&pod_key)
+                                .and_then(|info| info.endpoint_consumer_tenant.clone())
+                            {
+                                obj.insert(
+                                    "endpoint_consumer_tenant".to_owned(),
+                                    Value::String(consumer_tenant),
+                                );
+                            }
+                        }
+                    }
+                }
+
+                rows.push(pod_value);
+            }
+
+            let data = serde_json::to_string(&rows).unwrap();
             let body = Body::from(format!("{}", data));
             let resp = Response::builder()
                 .status(StatusCode::OK)
