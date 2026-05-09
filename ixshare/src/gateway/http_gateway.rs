@@ -189,7 +189,10 @@ fn funccall_route_error_response(namespace: &str, err: &Error) -> (StatusCode, &
 
 #[cfg(test)]
 mod tests {
-    use super::{funccall_route_error_response, summarize_funccall_body_for_log};
+    use super::{
+        funccall_route_error_response, is_blocked_public_endpoint_inference,
+        summarize_funccall_body_for_log,
+    };
     use crate::common::Error;
     use axum::http::StatusCode;
     use hyper::body::Bytes;
@@ -227,6 +230,19 @@ mod tests {
             funccall_route_error_response("Qwen", &Error::NotExist("missing func".to_owned()));
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(message, "service failure: function not found");
+    }
+
+    #[test]
+    fn blocks_public_endpoint_inference_namespace() {
+        assert!(is_blocked_public_endpoint_inference(
+            "public",
+            super::VIRTUAL_ENDPOINTS_NAMESPACE
+        ));
+        assert!(!is_blocked_public_endpoint_inference("public", "models"));
+        assert!(!is_blocked_public_endpoint_inference(
+            "tenant-a",
+            super::VIRTUAL_ENDPOINTS_NAMESPACE
+        ));
     }
 }
 
@@ -304,6 +320,10 @@ fn quota_lookup_failed_response(tenant: &str) -> Response<Body> {
         .status(StatusCode::SERVICE_UNAVAILABLE)
         .body(body)
         .unwrap()
+}
+
+fn is_blocked_public_endpoint_inference(tenant: &str, namespace: &str) -> bool {
+    tenant == "public" && namespace == VIRTUAL_ENDPOINTS_NAMESPACE
 }
 
 fn endpoint_policy_for_request(gw: &HttpGateway, tenant: &str, slug: &str) -> FuncPolicySpec {
@@ -814,6 +834,10 @@ async fn GetSampleRestCall(
     State(gw): State<HttpGateway>,
     Path((tenant, namespace, funcname)): Path<(String, String, String)>,
 ) -> SResult<String, StatusCode> {
+    if is_blocked_public_endpoint_inference(&tenant, &namespace) {
+        return Ok("service failure: unsupported".to_owned());
+    }
+
     let func = match gw.objRepo.GetFunc(&tenant, &namespace, &funcname) {
         Err(e) => {
             return Ok(format!("service failure {:?}", e));
@@ -1153,6 +1177,15 @@ async fn DirectFuncCall(
     let tenant = parts[2].to_owned();
     let namespace = parts[3].to_owned();
 
+    if is_blocked_public_endpoint_inference(&tenant, &namespace) {
+        let body = Body::from("service failure: unsupported");
+        let resp = Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(body)
+            .unwrap();
+        return Ok(resp);
+    }
+
     if !token.CheckScope("inference") {
         let body = Body::from(format!("service failure: insufficient scope"));
         let resp = Response::builder()
@@ -1364,6 +1397,15 @@ pub async fn FuncCall1(
     let tenant = parts[2].to_owned();
     let namespace = parts[3].to_owned();
     let funcname = parts[4].to_owned();
+
+    if is_blocked_public_endpoint_inference(&tenant, &namespace) {
+        let body = Body::from("service failure: unsupported");
+        let resp = Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(body)
+            .unwrap();
+        return Ok(resp);
+    }
 
     if !token.CheckScope("inference") {
         let body = Body::from(format!("service failure: insufficient scope"));
