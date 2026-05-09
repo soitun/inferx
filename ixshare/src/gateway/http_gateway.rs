@@ -90,8 +90,9 @@ use super::metrics::Status;
 use super::metrics::GATEWAY_METRICS;
 use super::metrics::METRICS_REGISTRY;
 use super::scheduler_client::SCHEDULER_CLIENT;
-use super::tokenizer::TokenizerRoute;
 use super::secret::{EndpointMetadata, SqlSecret};
+use super::tokenizer::KnowledgeBaseRoute;
+use super::tokenizer::TokenizerRoute;
 pub static GATEWAY_ID: AtomicI64 = AtomicI64::new(-1);
 const FUNCCALL_MAX_BODY_BYTES: usize = 20 * 1024 * 1024;
 const VIRTUAL_ENDPOINTS_NAMESPACE: &str = "endpoints";
@@ -571,6 +572,9 @@ impl HttpGateway {
             .route("/tokenizer/*rest", post(TokenizerRoute))
             .route("/tokenizer/*rest", get(TokenizerRoute))
             .route("/tokenizer/*rest", head(TokenizerRoute))
+            .route("/kb/*rest", post(KnowledgeBaseRoute))
+            .route("/kb/*rest", get(KnowledgeBaseRoute))
+            .route("/kb/*rest", head(KnowledgeBaseRoute))
             .route("/prompt/", post(PostPrompt))
             .route("/debug/func_agents", get(GetFuncAgentsState))
             .route(
