@@ -967,8 +967,21 @@
 
     <!-- Tenant Selector -->
     <div style="margin-bottom: 20px;">
-        <label for="billing_tenant_select" style="font-size: 16px; font-weight: bold;">Tenant: </label>
-        <select id="billing_tenant_select" onchange="loadBillingData()" style="padding: 5px; font-size: 14px;">
+        <label for="billing_tenant_combo_input" style="font-size: 16px; font-weight: bold;">Tenant: </label>
+        <span id="billing-tenant-combo-wrap" style="position: relative; display: none;">
+            <input type="text" id="billing_tenant_combo_input" placeholder="Select or type to search..."
+                   autocomplete="off" spellcheck="false"
+                   style="padding: 5px 24px 5px 6px; font-size: 14px; min-width: 240px; cursor: pointer; border: 1px solid #ccc; border-radius: 3px;"
+                   onfocus="openBillingTenantDropdown()"
+                   oninput="filterBillingTenants()"
+                   onblur="closeBillingTenantDropdown()"
+                   onkeydown="onBillingTenantKeydown(event)">
+            <span style="position:absolute; right:6px; top:50%; transform:translateY(-50%); pointer-events:none; color:#555; font-size:11px;">▾</span>
+            <div id="billing-tenant-dropdown" onmousedown="event.preventDefault()"
+                 style="display:none; position:absolute; left:0; top:100%; background:#fff; border:1px solid #ccc; border-top:none; max-height:260px; overflow-y:auto; z-index:1000; min-width:100%; box-shadow:0 2px 6px rgba(0,0,0,.15);"></div>
+        </span>
+        <!-- hidden select holds the selected value; all existing JS reads .value from here -->
+        <select id="billing_tenant_select" style="display:none;">
             <option value="" disabled selected>Select a tenant</option>
         </select>
         <span id="billing-tenant-readonly" class="billing-tenant-readonly"></span>
@@ -1839,6 +1852,7 @@
         } else if (dropdown.options.length > 1) {
             dropdown.value = '';
         }
+        syncBillingTenantComboLabel();
 
         if (dropdown.value) {
             await loadBillingData({ historyMode });
@@ -1949,6 +1963,8 @@
     let billingTenantsPopulated = false;
     let billingTenantsLoadingPromise = null;
     let billingTenantOwnerNames = {};
+    let billingAllTenants = [];
+    let billingTenantHighlightedIndex = -1;
     let billingAdminTenantsPopulated = false;
     let billingAdminAccessReady = false;
     let billingAdminAccessPromise = null;
@@ -2011,28 +2027,30 @@
             }
 
             upsertTenantDisplayMapFromList(tenants);
-            const allowedTenants = [];
+            billingAllTenants = [];
+            dropdown.innerHTML = '<option value="" disabled selected>Select a tenant</option>';
             tenants.forEach(t => {
                 if (IsAdmin(roles, t.name, "") || IsUser(roles, t.name, "")) {
                     const label = billingTenantOptionLabel(t, billingTenantOwnerNames[t.name]);
+                    billingAllTenants.push({ value: t.name, label });
                     const option = document.createElement('option');
                     option.value = t.name;
                     option.textContent = label;
                     dropdown.appendChild(option);
-                    allowedTenants.push({ value: t.name, label });
                 }
             });
 
-            if (allowedTenants.length === 1) {
-                dropdown.value = allowedTenants[0].value;
-                dropdown.style.display = 'none';
+            const comboWrap = document.getElementById('billing-tenant-combo-wrap');
+            if (billingAllTenants.length === 1) {
+                dropdown.value = billingAllTenants[0].value;
+                if (comboWrap) comboWrap.style.display = 'none';
                 if (readonlyEl) {
-                    readonlyEl.textContent = allowedTenants[0].label;
+                    readonlyEl.textContent = billingAllTenants[0].label;
                     readonlyEl.style.display = 'inline-block';
                 }
                 await loadBillingData();
             } else {
-                dropdown.style.display = '';
+                if (comboWrap) comboWrap.style.display = 'inline-block';
                 if (readonlyEl) {
                     readonlyEl.textContent = '';
                     readonlyEl.style.display = 'none';
@@ -2049,6 +2067,112 @@
             });
 
         return billingTenantsLoadingPromise;
+    }
+
+    function setBillingTenantHighlight(items, index) {
+        items.forEach((item, i) => { item.style.background = i === index ? '#e8f0fe' : ''; });
+        billingTenantHighlightedIndex = index;
+        if (index >= 0 && items[index]) items[index].scrollIntoView({ block: 'nearest' });
+    }
+
+    function renderBillingTenantDropdownItems(search) {
+        const dropdownEl = document.getElementById('billing-tenant-dropdown');
+        if (!dropdownEl) return;
+        billingTenantHighlightedIndex = -1;
+        const matches = billingAllTenants.filter(t =>
+            !search || t.label.toLowerCase().includes(search) || t.value.toLowerCase().includes(search)
+        );
+        dropdownEl.innerHTML = '';
+        if (matches.length === 0) {
+            const noMatch = document.createElement('div');
+            noMatch.textContent = 'No matches';
+            noMatch.style.cssText = 'padding:6px 10px; color:#888; font-size:14px;';
+            dropdownEl.appendChild(noMatch);
+        } else {
+            matches.forEach(t => {
+                const item = document.createElement('div');
+                item.textContent = t.label;
+                item.dataset.comboValue = t.value;
+                item.style.cssText = 'padding:6px 10px; cursor:pointer; font-size:14px; white-space:nowrap;';
+                item.addEventListener('mouseover', () => item.style.background = '#e8f0fe');
+                item.addEventListener('mouseout', () => item.style.background = '');
+                item.addEventListener('mousedown', (e) => {
+                    e.preventDefault();
+                    selectBillingTenant(t.value, t.label);
+                });
+                dropdownEl.appendChild(item);
+            });
+        }
+        dropdownEl.style.display = '';
+    }
+
+    function openBillingTenantDropdown() {
+        const input = document.getElementById('billing_tenant_combo_input');
+        if (input) input.select();
+        renderBillingTenantDropdownItems('');
+    }
+
+    function closeBillingTenantDropdown() {
+        const el = document.getElementById('billing-tenant-dropdown');
+        if (el) el.style.display = 'none';
+        const input = document.getElementById('billing_tenant_combo_input');
+        const hiddenSelect = document.getElementById('billing_tenant_select');
+        if (input && hiddenSelect) {
+            const match = billingAllTenants.find(t => t.value === hiddenSelect.value);
+            input.value = match ? match.label : '';
+        }
+    }
+
+    function filterBillingTenants() {
+        const input = document.getElementById('billing_tenant_combo_input');
+        renderBillingTenantDropdownItems(input ? input.value.toLowerCase() : '');
+    }
+
+    function onBillingTenantKeydown(e) {
+        const dropdownEl = document.getElementById('billing-tenant-dropdown');
+        const input = document.getElementById('billing_tenant_combo_input');
+        const isOpen = dropdownEl && dropdownEl.style.display !== 'none';
+        if (!isOpen) {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); openBillingTenantDropdown(); }
+            return;
+        }
+        const items = Array.from(dropdownEl.querySelectorAll('[data-combo-value]'));
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            setBillingTenantHighlight(items, Math.min(billingTenantHighlightedIndex + 1, items.length - 1));
+        } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            setBillingTenantHighlight(items, Math.max(billingTenantHighlightedIndex - 1, 0));
+        } else if (e.key === 'Enter') {
+            e.preventDefault();
+            const highlighted = items[billingTenantHighlightedIndex];
+            if (highlighted) {
+                const t = billingAllTenants.find(o => o.value === highlighted.dataset.comboValue);
+                if (t) selectBillingTenant(t.value, t.label);
+            }
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            closeBillingTenantDropdown();
+            if (input) input.blur();
+        }
+    }
+
+    function selectBillingTenant(value, label) {
+        const input = document.getElementById('billing_tenant_combo_input');
+        const hiddenSelect = document.getElementById('billing_tenant_select');
+        if (input) input.value = label;
+        if (hiddenSelect) hiddenSelect.value = value;
+        closeBillingTenantDropdown();
+        loadBillingData();
+    }
+
+    function syncBillingTenantComboLabel() {
+        const hiddenSelect = document.getElementById('billing_tenant_select');
+        const input = document.getElementById('billing_tenant_combo_input');
+        if (!hiddenSelect || !input) return;
+        const val = hiddenSelect.value;
+        const match = billingAllTenants.find(t => t.value === val);
+        input.value = match ? match.label : '';
     }
 
     function showBillingAdminMessage(message, isError) {
@@ -2423,6 +2547,7 @@
         }
 
         dropdown.value = tenant;
+        syncBillingTenantComboLabel();
         await loadBillingData({ historyMode: 'push' });
 
         const billingTab = document.getElementById('Billing');

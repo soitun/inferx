@@ -155,9 +155,9 @@
     }
 </style>
 {% macro client_setup_value_field(label, display_value, copy_value, tooltip='Copy', value_class='') -%}
-<div>
-    <label style="display: block; margin: 0 0 6px 0;">{{ label }}</label>
-    <div class="client-setup-value-shell">
+<div style="display: flex; align-items: center; gap: 10px;">
+    <label style="flex: 0 0 110px; font-size: 13px; color: #374151;">{{ label }}</label>
+    <div class="client-setup-value-shell" style="flex: 1 1 auto; min-width: 0;">
         <span class="client-setup-value{% if value_class %} {{ value_class }}{% endif %}" data-copy-value="{{ copy_value }}">{{ display_value }}</span>
         <button
             type="button"
