@@ -27,13 +27,18 @@
     </div>
     <div class="catalog-deploy-target-controls">
         <div class="catalog-deploy-target-field" data-role="tenant-field"{% if tenant_count <= 1 %} hidden{% endif %}>
-            <label for="{{ component_id }}-tenant">Tenant</label>
-            <select id="{{ component_id }}-tenant" data-role="tenant-select">
-                <option value="">Select tenant</option>
-                {% for option in tenant_options %}
-                <option value="{{ option.value }}"{% if option.value == selected_tenant %} selected{% endif %}>{{ option.label }}</option>
-                {% endfor %}
-            </select>
+            <label for="{{ component_id }}-tenant-combo-input">Tenant</label>
+            <div data-role="tenant-combo-wrap" style="position:relative; display:inline-block;">
+                <input type="text" id="{{ component_id }}-tenant-combo-input"
+                       data-role="tenant-combo-input"
+                       placeholder="Select or type to search..."
+                       autocomplete="off" spellcheck="false"
+                       style="padding:5px 24px 5px 6px; font-size:14px; cursor:pointer; min-width:180px; border:1px solid #ccc; border-radius:3px;">
+                <span style="position:absolute; right:6px; top:50%; transform:translateY(-50%); pointer-events:none; color:#555; font-size:11px;">▾</span>
+                <div data-role="tenant-combo-dropdown"
+                     onmousedown="event.preventDefault()"
+                     style="display:none; position:absolute; left:0; top:100%; background:#fff; border:1px solid #ccc; border-top:none; max-height:260px; overflow-y:auto; z-index:1000; min-width:100%; box-shadow:0 2px 6px rgba(0,0,0,.15);"></div>
+            </div>
         </div>
 
         <div class="catalog-deploy-target-field" data-role="namespace-select-field"{% if has_single_namespace %} hidden{% endif %}>

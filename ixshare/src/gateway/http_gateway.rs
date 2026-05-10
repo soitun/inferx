@@ -680,6 +680,8 @@ impl HttpGateway {
                 get(GetTenantUsageByNamespace),
             )
             .route("/tenant/:tenant/usage/summary", get(GetTenantUsageSummary))
+            .route("/admin/usage/endpoints", get(GetAdminEndpointUsage))
+            .route("/admin/usage/endpoints/:tenant/:endpoint_slug", get(GetAdminEndpointTenantUsageByPeriod))
             .route("/metrics", get(GetMetrics))
             .route("/debug/trace_logging/:state", post(SetTraceLogging))
             .with_state(self.clone())
@@ -2660,11 +2662,79 @@ struct HourlyUsageByModelQuery {
     funcname: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct AdminEndpointUsageQuery {
+    hours: Option<i32>,
+    start: Option<String>,
+    end: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+    group_by: Option<String>,
+    tenant: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AdminEndpointUsageByPeriodQuery {
+    hours: Option<i32>,
+    start: Option<String>,
+    end: Option<String>,
+    granularity: Option<String>,
+}
+
 fn BadRequest(msg: impl Into<String>) -> Response {
     Response::builder()
         .status(StatusCode::BAD_REQUEST)
         .body(Body::from(msg.into()))
         .unwrap()
+}
+
+fn ParseAdminEndpointRange(
+    hours: Option<i32>,
+    start: Option<String>,
+    end: Option<String>,
+) -> std::result::Result<(DateTime<Utc>, DateTime<Utc>, i32), Response> {
+    if start.is_some() || end.is_some() {
+        let start_str = match start {
+            Some(s) => s,
+            None => return Err(BadRequest("Missing start parameter")),
+        };
+        let end_str = match end {
+            Some(s) => s,
+            None => return Err(BadRequest("Missing end parameter")),
+        };
+
+        let start = match DateTime::parse_from_rfc3339(&start_str) {
+            Ok(v) => v.with_timezone(&Utc),
+            Err(_) => return Err(BadRequest("Invalid start format (use RFC3339)")),
+        };
+        let end = match DateTime::parse_from_rfc3339(&end_str) {
+            Ok(v) => v.with_timezone(&Utc),
+            Err(_) => return Err(BadRequest("Invalid end format (use RFC3339)")),
+        };
+
+        if end <= start {
+            return Err(BadRequest("Invalid range: end must be after start"));
+        }
+
+        let max_range = chrono::Duration::hours(720);
+        if end - start > max_range {
+            return Err(BadRequest("Range too large (max 720 hours / 30 days)"));
+        }
+
+        let start_hour_naive = start.date_naive().and_hms_opt(start.hour(), 0, 0).unwrap();
+        let end_hour_naive = end.date_naive().and_hms_opt(end.hour(), 0, 0).unwrap();
+        let start_hour = DateTime::<Utc>::from_naive_utc_and_offset(start_hour_naive, Utc);
+        let end_hour = DateTime::<Utc>::from_naive_utc_and_offset(end_hour_naive, Utc);
+        let total_hours = ((end_hour - start_hour).num_hours() + 1).max(1) as i32;
+        return Ok((start_hour, end_hour, total_hours));
+    }
+
+    let hours = hours.unwrap_or(24).min(720).max(1);
+    let now = Utc::now();
+    let end_hour_naive = now.date_naive().and_hms_opt(now.hour(), 0, 0).unwrap();
+    let end_hour = DateTime::<Utc>::from_naive_utc_and_offset(end_hour_naive, Utc);
+    let start_hour = end_hour - chrono::Duration::hours((hours - 1) as i64);
+    Ok((start_hour, end_hour, hours))
 }
 
 fn ParseHourlyRange(
@@ -4118,6 +4188,167 @@ async fn GetTenantUsageSummary(
         }
         Err(e) => {
             let body = Body::from(format!("Failed to get usage summary: {:?}", e));
+            let resp = Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(body)
+                .unwrap();
+            return Ok(resp);
+        }
+    }
+}
+
+async fn GetAdminEndpointUsage(
+    Extension(token): Extension<Arc<AccessToken>>,
+    State(gw): State<HttpGateway>,
+    Query(params): Query<AdminEndpointUsageQuery>,
+) -> SResult<Response, StatusCode> {
+    if !token.IsInferxAdmin() {
+        let body = Body::from("Admin access required");
+        let resp = Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .body(body)
+            .unwrap();
+        return Ok(resp);
+    }
+
+    let (start_hour, end_hour, _total_hours) =
+        match ParseAdminEndpointRange(params.hours, params.start.clone(), params.end.clone()) {
+            Ok(v) => v,
+            Err(resp) => return Ok(resp),
+        };
+
+    let limit = params.limit.unwrap_or(100);
+    let offset = params.offset.unwrap_or(0);
+    let group_by = match params.group_by.as_deref() {
+        Some("tenant") => "tenant",
+        _ => "endpoint",
+    };
+
+    match gw
+        .sqlBilling
+        .GetAdminEndpointUsage(
+            start_hour,
+            end_hour,
+            limit,
+            offset,
+            group_by,
+            params.tenant.as_deref(),
+        )
+        .await
+    {
+        Ok(rows) => {
+            let total = rows.first().map(|r| r.total_count).unwrap_or(0);
+            let usage: Vec<serde_json::Value> = rows
+                .into_iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "tenant": r.tenant,
+                        "endpoint_slug": r.endpoint_slug,
+                        "endpoint_count": r.endpoint_count,
+                        "inference_ms": r.inference_ms,
+                        "inference_cents": r.inference_cents,
+                        "total_cents": r.total_cents,
+                        "last_seen_at": r.last_seen_at.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+                    })
+                })
+                .collect();
+
+            let resp_body = serde_json::json!({
+                "usage": usage,
+                "total": total,
+                "group_by": group_by,
+                "start": start_hour.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                "end": end_hour.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+            });
+            
+            let data = serde_json::to_string(&resp_body).unwrap();
+            let body = Body::from(data);
+            let resp = Response::builder()
+                .status(StatusCode::OK)
+                .body(body)
+                .unwrap();
+            return Ok(resp);
+        }
+        Err(e) => {
+            let body = Body::from(format!("Failed to get admin endpoint usage: {:?}", e));
+            let resp = Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(body)
+                .unwrap();
+            return Ok(resp);
+        }
+    }
+}
+
+async fn GetAdminEndpointTenantUsageByPeriod(
+    Extension(token): Extension<Arc<AccessToken>>,
+    State(gw): State<HttpGateway>,
+    Path((tenant, endpoint_slug)): Path<(String, String)>,
+    Query(params): Query<AdminEndpointUsageByPeriodQuery>,
+) -> SResult<Response, StatusCode> {
+    if !token.IsInferxAdmin() {
+        let body = Body::from("Admin access required");
+        let resp = Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .body(body)
+            .unwrap();
+        return Ok(resp);
+    }
+
+    let (start_hour, end_hour, total_hours) =
+        match ParseAdminEndpointRange(params.hours, params.start.clone(), params.end.clone()) {
+            Ok(v) => v,
+            Err(resp) => return Ok(resp),
+        };
+
+    let granularity = params.granularity.unwrap_or_else(|| {
+        if total_hours <= 24 {
+            "hourly".to_string()
+        } else if total_hours <= 168 {
+            "daily".to_string()
+        } else {
+            "weekly".to_string()
+        }
+    });
+
+    match gw
+        .sqlBilling
+        .GetAdminEndpointTenantUsageByPeriod(&tenant, &endpoint_slug, start_hour, end_hour, &granularity)
+        .await
+    {
+        Ok(rows) => {
+            let usage: Vec<serde_json::Value> = rows
+                .into_iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "period_start": r.period_start.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                        "period_end": r.period_end.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                        "inference_ms": r.inference_ms,
+                        "inference_cents": r.inference_cents,
+                        "total_cents": r.total_cents
+                    })
+                })
+                .collect();
+
+            let resp_body = serde_json::json!({
+                "tenant": tenant,
+                "endpoint_slug": endpoint_slug,
+                "granularity": granularity,
+                "usage": usage,
+                "start": start_hour.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                "end": end_hour.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+            });
+            
+            let data = serde_json::to_string(&resp_body).unwrap();
+            let body = Body::from(data);
+            let resp = Response::builder()
+                .status(StatusCode::OK)
+                .body(body)
+                .unwrap();
+            return Ok(resp);
+        }
+        Err(e) => {
+            let body = Body::from(format!("Failed to get endpoint usage by period: {:?}", e));
             let resp = Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .body(body)
