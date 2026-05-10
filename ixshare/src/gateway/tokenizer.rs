@@ -375,6 +375,9 @@ async fn ResolveRouteContext(
     let kbPrompt = match apiType {
         ApiType::KnowledageBase => {
             let funcname = func.Id().replace("/", ".");
+            // todo: delete this
+            let parts: Vec<&str> = funcname.split('.').collect();
+            let funcname = parts[..parts.len() - 1].join(".");
             let promptfilename = format!("{}/{}.data", KB_PROMPT_DIR, funcname);
             match std::fs::read_to_string(&promptfilename) {
                 Ok(p) => Some(p),
@@ -616,7 +619,11 @@ async fn ForwardNonPostToFunc(
     if !token.IsNamespaceInferenceUser(tenant, namespace) {
         return Err(StatusCode::UNAUTHORIZED);
     }
-    let _ = gw.funcAgentMgr.objRepo.GetFunc(tenant, namespace, funcName).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let _ = gw
+        .funcAgentMgr
+        .objRepo
+        .GetFunc(tenant, namespace, funcName)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let mut remainPath = String::new();
     for i in 5..pathParts.len() {
