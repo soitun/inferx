@@ -1,4 +1,4 @@
-FROM inferx/vllm-openai:v0.16.0
+FROM inferx/vllm-openai-sound:v0.19.0
 
 # Install Nginx and Supervisor
 RUN apt-get update && apt-get install -y nginx supervisor curl && rm -rf /var/lib/apt/lists/*
