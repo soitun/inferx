@@ -41,6 +41,7 @@ use axum::{
 use chrono::{DateTime, Timelike, Utc};
 use hyper::header::CONTENT_TYPE;
 use inferxlib::obj_mgr::namespace_mgr::Namespace;
+use inferxlib::obj_mgr::pod_mgr::PodState;
 use inferxlib::obj_mgr::tenant_mgr::{Tenant, SYSTEM_NAMESPACE, SYSTEM_TENANT};
 use opentelemetry::Context;
 use prometheus_client::encoding::text::encode;
@@ -90,8 +91,9 @@ use super::metrics::Status;
 use super::metrics::GATEWAY_METRICS;
 use super::metrics::METRICS_REGISTRY;
 use super::scheduler_client::SCHEDULER_CLIENT;
-use super::tokenizer::TokenizerRoute;
 use super::secret::{EndpointMetadata, SqlSecret};
+use super::tokenizer::KnowledgeBaseRoute;
+use super::tokenizer::TokenizerRoute;
 pub static GATEWAY_ID: AtomicI64 = AtomicI64::new(-1);
 const FUNCCALL_MAX_BODY_BYTES: usize = 20 * 1024 * 1024;
 const VIRTUAL_ENDPOINTS_NAMESPACE: &str = "endpoints";
@@ -188,7 +190,10 @@ fn funccall_route_error_response(namespace: &str, err: &Error) -> (StatusCode, &
 
 #[cfg(test)]
 mod tests {
-    use super::{funccall_route_error_response, summarize_funccall_body_for_log};
+    use super::{
+        funccall_route_error_response, is_blocked_public_endpoint_inference,
+        summarize_funccall_body_for_log,
+    };
     use crate::common::Error;
     use axum::http::StatusCode;
     use hyper::body::Bytes;
@@ -226,6 +231,19 @@ mod tests {
             funccall_route_error_response("Qwen", &Error::NotExist("missing func".to_owned()));
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(message, "service failure: function not found");
+    }
+
+    #[test]
+    fn blocks_public_endpoint_inference_namespace() {
+        assert!(is_blocked_public_endpoint_inference(
+            "public",
+            super::VIRTUAL_ENDPOINTS_NAMESPACE
+        ));
+        assert!(!is_blocked_public_endpoint_inference("public", "models"));
+        assert!(!is_blocked_public_endpoint_inference(
+            "tenant-a",
+            super::VIRTUAL_ENDPOINTS_NAMESPACE
+        ));
     }
 }
 
@@ -303,6 +321,10 @@ fn quota_lookup_failed_response(tenant: &str) -> Response<Body> {
         .status(StatusCode::SERVICE_UNAVAILABLE)
         .body(body)
         .unwrap()
+}
+
+fn is_blocked_public_endpoint_inference(tenant: &str, namespace: &str) -> bool {
+    tenant == "public" && namespace == VIRTUAL_ENDPOINTS_NAMESPACE
 }
 
 fn endpoint_policy_for_request(gw: &HttpGateway, tenant: &str, slug: &str) -> FuncPolicySpec {
@@ -571,6 +593,9 @@ impl HttpGateway {
             .route("/tokenizer/*rest", post(TokenizerRoute))
             .route("/tokenizer/*rest", get(TokenizerRoute))
             .route("/tokenizer/*rest", head(TokenizerRoute))
+            .route("/kb/*rest", post(KnowledgeBaseRoute))
+            .route("/kb/*rest", get(KnowledgeBaseRoute))
+            .route("/kb/*rest", head(KnowledgeBaseRoute))
             .route("/prompt/", post(PostPrompt))
             .route("/debug/func_agents", get(GetFuncAgentsState))
             .route(
@@ -815,6 +840,10 @@ async fn GetSampleRestCall(
     State(gw): State<HttpGateway>,
     Path((tenant, namespace, funcname)): Path<(String, String, String)>,
 ) -> SResult<String, StatusCode> {
+    if is_blocked_public_endpoint_inference(&tenant, &namespace) {
+        return Ok("service failure: unsupported".to_owned());
+    }
+
     let func = match gw.objRepo.GetFunc(&tenant, &namespace, &funcname) {
         Err(e) => {
             return Ok(format!("service failure {:?}", e));
@@ -1154,6 +1183,15 @@ async fn DirectFuncCall(
     let tenant = parts[2].to_owned();
     let namespace = parts[3].to_owned();
 
+    if is_blocked_public_endpoint_inference(&tenant, &namespace) {
+        let body = Body::from("service failure: unsupported");
+        let resp = Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(body)
+            .unwrap();
+        return Ok(resp);
+    }
+
     if !token.CheckScope("inference") {
         let body = Body::from(format!("service failure: insufficient scope"));
         let resp = Response::builder()
@@ -1365,6 +1403,15 @@ pub async fn FuncCall1(
     let tenant = parts[2].to_owned();
     let namespace = parts[3].to_owned();
     let funcname = parts[4].to_owned();
+
+    if is_blocked_public_endpoint_inference(&tenant, &namespace) {
+        let body = Body::from("service failure: unsupported");
+        let resp = Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(body)
+            .unwrap();
+        return Ok(resp);
+    }
 
     if !token.CheckScope("inference") {
         let body = Body::from(format!("service failure: insufficient scope"));
@@ -4640,7 +4687,45 @@ async fn GetFuncPods(
 ) -> SResult<Response, StatusCode> {
     match gw.GetFuncPods(&token, &tenant, &namespace, &funcname) {
         Ok(list) => {
-            let data = serde_json::to_string(&list).unwrap();
+            let lease_state = gw.funcAgentMgr.PodLeaseState();
+            let mut rows = Vec::with_capacity(list.len());
+
+            for pod in list {
+                let pod_key = format!(
+                    "{}/{}/{}/{}/{}",
+                    &pod.tenant,
+                    &pod.namespace,
+                    &pod.object.spec.funcname,
+                    pod.object.spec.fprevision,
+                    &pod.object.spec.id
+                );
+                let mut pod_value = serde_json::to_value(&pod).unwrap();
+
+                if pod.object.status.state == PodState::Ready {
+                    let leased = lease_state
+                        .get(&pod_key)
+                        .map(|info| info.leased)
+                        .unwrap_or(false);
+                    if let Some(obj) = pod_value.as_object_mut() {
+                        obj.insert("leased".to_owned(), Value::Bool(leased));
+                        if leased {
+                            if let Some(consumer_tenant) = lease_state
+                                .get(&pod_key)
+                                .and_then(|info| info.endpoint_consumer_tenant.clone())
+                            {
+                                obj.insert(
+                                    "endpoint_consumer_tenant".to_owned(),
+                                    Value::String(consumer_tenant),
+                                );
+                            }
+                        }
+                    }
+                }
+
+                rows.push(pod_value);
+            }
+
+            let data = serde_json::to_string(&rows).unwrap();
             let body = Body::from(format!("{}", data));
             let resp = Response::builder()
                 .status(StatusCode::OK)

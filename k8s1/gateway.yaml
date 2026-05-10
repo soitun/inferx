@@ -65,11 +65,21 @@ spec:
           volumeMounts:
             - mountPath: /opt/inferx/log
               name: opt-inferx-log
+            - mountPath: /opt/inferx/cache
+              name: opt-inferx-cache
+            - mountPath: /opt/inferx/kbprompt
+              name: opt-inferx-kbprompt
           command: ["./svc", "/opt/inferx/config/node.json"]
       volumes:
         - name: opt-inferx-log
           hostPath:
             path: /opt/inferx/log      
+        - name: opt-inferx-cache
+          hostPath:
+            path: /opt/inferx/cache
+        - name: opt-inferx-kbprompt
+          hostPath:
+            path: /opt/inferx/kbprompt
 ---
 apiVersion: v1
 kind: Service
