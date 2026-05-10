@@ -29,6 +29,7 @@ use std::collections::BTreeSet;
 use std::num::ParseIntError;
 
 pub const SNAPSHOT_DIR: &str = "/opt/inferx/snapshot";
+pub const KB_PROMPT_DIR: &str = "/opt/inferx/kbprompt";
 
 fn default_endpoints_policy() -> EndpointGatewayPolicySpec {
     EndpointGatewayPolicySpec::default()
@@ -88,9 +89,7 @@ fn resolve_endpoints_default_policy(config: &NodeConfig) -> EndpointGatewayPolic
     }
 }
 
-fn resolve_inferx_endpoint_func_default_policy(
-    config: &NodeConfig,
-) -> FuncPolicySchedulerDefaults {
+fn resolve_inferx_endpoint_func_default_policy(config: &NodeConfig) -> FuncPolicySchedulerDefaults {
     match std::env::var("INFERX_ENDPOINT_FUNC_DEFAULT_POLICY") {
         Ok(raw) => {
             let mut base = serde_json::to_value(&config.inferx_endpoint_func_default_policy)
@@ -115,9 +114,8 @@ fn resolve_inferx_tenant_policy(config: &NodeConfig) -> InferxTenantPolicy {
         Ok(raw) => {
             let mut base = serde_json::to_value(&config.inferx_tenant_policy)
                 .expect("inferx_tenant_policy should serialize");
-            let overlay = serde_json::from_str::<serde_json::Value>(&raw).unwrap_or_else(|e| {
-                panic!("invalid INFERX_TENANT_POLICY JSON '{}': {:?}", raw, e)
-            });
+            let overlay = serde_json::from_str::<serde_json::Value>(&raw)
+                .unwrap_or_else(|e| panic!("invalid INFERX_TENANT_POLICY JSON '{}': {:?}", raw, e));
             merge_json_value(&mut base, overlay);
             serde_json::from_value(base)
                 .expect("INFERX_TENANT_POLICY merge produced invalid InferxTenantPolicy")
@@ -498,8 +496,7 @@ impl SchedulerConfig {
             Err(_) => config.enableSnapshotBilling,
         };
 
-        let inferxEndpointFuncDefaultPolicy =
-            resolve_inferx_endpoint_func_default_policy(config);
+        let inferxEndpointFuncDefaultPolicy = resolve_inferx_endpoint_func_default_policy(config);
 
         let ret = Self {
             etcdAddrs: etcdAddrs,
@@ -1183,7 +1180,10 @@ mod tests {
     fn default_inferx_endpoint_scheduler_policy_uses_platform_baseline() {
         let policy = default_inferx_endpoint_func_default_policy();
         assert_eq!(policy.minReplica, Some(0));
-        assert_eq!(policy.maxReplica, Some(DEFAULT_PLATFORM_ENDPOINT_MAX_REPLICA));
+        assert_eq!(
+            policy.maxReplica,
+            Some(DEFAULT_PLATFORM_ENDPOINT_MAX_REPLICA)
+        );
         assert_eq!(policy.standbyPerNode, Some(0));
     }
 

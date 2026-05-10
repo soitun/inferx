@@ -198,7 +198,7 @@ pub fn DefaultLoadingTimeout() -> u64 {
     return 90;
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Copy)]
 pub enum ApiType {
     #[serde(rename = "unknown")]
     Unknown,
@@ -214,6 +214,8 @@ pub enum ApiType {
     Text2Image,
     #[serde(rename = "text2audio")]
     Text2Audio,
+    #[serde(rename = "knowledagebase")]
+    KnowledageBase,
 }
 
 impl Default for ApiType {
@@ -329,6 +331,10 @@ impl FuncSpec {
             Some(path) => Some(path),
             None => None,
         }
+    }
+
+    pub fn SampleCallType(&self) -> ApiType {
+        return self.sampleCall.apiType;
     }
 }
 
