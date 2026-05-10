@@ -1893,6 +1893,12 @@
         if (tabName === 'EndpointUsage') {
             maybeLoadEndpointUsageData();
         }
+
+        if (['Apikeys', 'Roles', 'Namespaces', 'Tenants'].includes(tabName)) {
+            ensureAdminTabData(tabName).catch(error => {
+                console.error(`Failed to load ${tabName} tab data:`, error);
+            });
+        }
     }
 
     window.onload = async function () {
@@ -6424,66 +6430,46 @@
         }
     }
 
-    async function fetchItems() {
-        const apikeys_resp = await fetchWithAuth('/generate_apikeys');
-        const apikeys = await apikeys_resp.json();
-        const apikey_tbody = document.querySelector('#items-table tbody');
-        apikey_tbody.innerHTML = '';
-        apikeys.forEach(key => {
-            const row = document.createElement('tr');
-            const created = formatLocalDateTime(key.createtime);
-            const expires = formatLocalDateTime(key.expires_at);
-            const rawKey = key.apikey || '';
-            const maskedRawKey = maskApikey(rawKey);
-            const rawKeyCell = rawKey
-                ? `<span class="apikey-raw-value" data-apikey="${rawKey}">${maskedRawKey}</span><button type="button" class="apikey-copy-cell-btn" data-tooltip="Copy key" aria-label="Copy key" onclick="copyApikeyFromRow(this)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="10" height="10"></rect><rect x="5" y="5" width="10" height="10"></rect></svg></button>`
-                : '';
-            row.innerHTML = `
-                <td style="text-align: center;"><input type="checkbox" data-keyname="${key.keyname}" data-username="${key.username}" onchange="updateDeleteApikeyButtonState()"></td>
-                <td style="text-align: center;">${key.keyname}</td>
-                <td style="text-align: center;">${key.username}</td>
-                <td style="text-align: center;">${rawKeyCell}</td>
-                <td style="text-align: center;">${key.access_level || key.scope || ''}</td>
-                <td style="text-align: center;">${key.restrict_tenant || ''}</td>
-                <td style="text-align: center;">${key.restrict_namespace || ''}</td>
-                <td style="text-align: center;">${created}</td>
-                <td style="text-align: center;">${expires}</td>
-            `;
-            apikey_tbody.appendChild(row);
-        });
-        updateDeleteApikeyButtonState();
+    const adminTabDataState = {
+        roles: null,
+        rolesPromise: null,
+        apikeysPromise: null,
+        apikeyChoicesPromise: null,
+        rolesRendered: false,
+        apikeyChoicesLoaded: false,
+        namespacesLoaded: false,
+        tenantsLoaded: false,
+    };
 
-        const tenant_dropdown = document.getElementById("tenant_dropdown");
-        const namespace_dropdown = document.getElementById("namespace_dropdown");
-        const namespaceCreateCard = document.getElementById("namespace-create-card");
-        const namespaceTenantSelectField = document.getElementById("namespace-tenant-select-field");
-        const namespaceTenantReadonlyField = document.getElementById("namespace-tenant-readonly-field");
-        const namespaceTenantReadonlyValue = document.getElementById("namespace-tenant-readonly-value");
-        const apikeyRestrictTenantSelect = document.getElementById("apikey_restrict_tenant");
-        const apikeyRestrictNamespaceSelect = document.getElementById("apikey_restrict_namespace");
-        const apikeyTenantChoices = new Set();
-        const apikeyNamespaceChoices = {};
-        const namespaceCreateTenantChoices = [];
-
-        if (tenant_dropdown) {
-            tenant_dropdown.innerHTML = '';
-            const placeholderOption = document.createElement("option");
-            placeholderOption.disabled = true;
-            placeholderOption.selected = true;
-            placeholderOption.textContent = "Select a tenant";
-            tenant_dropdown.appendChild(placeholderOption);
+    async function getAdminRoles(force = false) {
+        if (!force && Array.isArray(adminTabDataState.roles)) {
+            return adminTabDataState.roles;
+        }
+        if (!force && adminTabDataState.rolesPromise) {
+            return adminTabDataState.rolesPromise;
         }
 
-        const roles_resp = await fetchWithAuth('/generate_roles');
-        const roles = await roles_resp.json();
+        adminTabDataState.rolesPromise = (async () => {
+            const roles_resp = await fetchWithAuth('/generate_roles');
+            const roles = await roles_resp.json();
+            adminTabDataState.roles = Array.isArray(roles) ? roles : [];
+            return adminTabDataState.roles;
+        })();
 
-        // Target both table bodies
+        try {
+            return await adminTabDataState.rolesPromise;
+        } finally {
+            adminTabDataState.rolesPromise = null;
+        }
+    }
+
+    function renderRoleTables(roles) {
         const tenant_tbody = document.querySelector('#tenant-roles-table tbody');
         const namespace_tbody = document.querySelector('#namespace-roles-table tbody');
+        if (!tenant_tbody || !namespace_tbody) return;
 
         const consolidated = roles.reduce((acc, curr) => {
             const type = String(curr.objType).toLowerCase();
-            // Create a unique key for grouping
             const key = type === 'tenant' ? curr.tenant : `${curr.tenant}/${curr.namespace}`;
 
             if (!acc[key]) {
@@ -6497,15 +6483,12 @@
             return acc;
         }, {});
 
-        // Clear existing content
         tenant_tbody.innerHTML = '';
         namespace_tbody.innerHTML = '';
 
         Object.values(consolidated).forEach(item => {
             const type = String(item.objType).toLowerCase();
             const row = document.createElement('tr');
-
-            // helper to render a checkmark or dash
             const check = (val) => val ? '<span style="color: green; font-weight: bold;">✓</span>' : '<span style="color: #ccc;">-</span>';
 
             if (type === 'tenant') {
@@ -6526,65 +6509,67 @@
             }
         });
 
-        const funcs_tbody = document.querySelector('#models-table tbody');
-        if (funcs_tbody) {
-            const funcs_resp = await fetchWithAuth('/generate_funcs');
-            const funcs = await funcs_resp.json();
-            funcs_tbody.innerHTML = '';
-            funcs.forEach(key => {
-                const isAdmin = IsAdmin(roles, key.func.tenant, key.func.namespace);
-                const isUser = IsUser(roles, key.func.tenant, key.func.namespace);
+        adminTabDataState.rolesRendered = true;
+    }
 
-                if (isAdmin || isUser) {
-                    const row = document.createElement('tr');
-                    row.innerHTML = `
-                    <td style="text-align: center;">
-                        <input type="checkbox" 
-                            data-id="${key.tenant}/system/${key.name}"
-                            ${!isAdmin ? 'disabled' : ''} 
-                            style="${!isAdmin ? 'cursor: not-allowed; opacity: 0.5;' : 'cursor: pointer;'}">
-                    </td>
-                    <td style="text-align: center;">
-                        <a href="{{ hosturl }}listfunc?tenant=${key.func.tenant}">
-                            ${tenantLinkLabelHtml(key.func.tenant)}
-                        </a>
-                    </td>
-                    <td style="text-align: center;">
-                        <a
-                            href="{{ hosturl }}listfunc?tenant=${key.func.tenant}&&namespace=${key.func.namespace}">
-                            ${key.func.namespace}
-                        </a>
-                    </td>
-                    <td style="text-align: center;">
-                        <a
-                            href="{{ hosturl }}func?tenant=${key.func.tenant}&&namespace=${key.func.namespace}&&name=${key.func.name}">
-                            ${key.func.name}
-                        </a>
-                    </td>
-                    <td style="text-align: center;">${isAdmin
-                            ? '<span style="color: green; font-weight: bold;">✓</span>'
-                            : '<span style="color: #666;">-</span>'}
-                    </td>
-                    <td style="text-align: center;">${isUser
-                            ? '<span style="color: green; font-weight: bold;">✓</span>'
-                            : '<span style="color: #666;">-</span>'}
-                    </td>
-                `;
-                    funcs_tbody.appendChild(row);
-                }
-            });
+    function populateNamespaceCreateTenantChoices(tenantChoices) {
+        const tenant_dropdown = document.getElementById("tenant_dropdown");
+        const namespaceCreateCard = document.getElementById("namespace-create-card");
+        const namespaceTenantSelectField = document.getElementById("namespace-tenant-select-field");
+        const namespaceTenantReadonlyField = document.getElementById("namespace-tenant-readonly-field");
+        const namespaceTenantReadonlyValue = document.getElementById("namespace-tenant-readonly-value");
+        if (!tenant_dropdown || !namespaceCreateCard) return;
+
+        tenant_dropdown.innerHTML = '';
+        const placeholderOption = document.createElement("option");
+        placeholderOption.disabled = true;
+        placeholderOption.selected = true;
+        placeholderOption.textContent = "Select a tenant";
+        tenant_dropdown.appendChild(placeholderOption);
+
+        tenantChoices.forEach(tenant => {
+            const option = document.createElement("option");
+            option.value = tenant;
+            option.textContent = tenantDisplayLabel(tenant);
+            tenant_dropdown.appendChild(option);
+        });
+
+        if (tenantChoices.length === 0) {
+            namespaceCreateCard.style.display = "none";
+            return;
         }
 
+        if (tenantChoices.length === 1) {
+            const onlyTenant = tenantChoices[0];
+            tenant_dropdown.value = onlyTenant;
+            namespaceCreateCard.style.display = "";
+            if (namespaceTenantSelectField) namespaceTenantSelectField.style.display = "none";
+            if (namespaceTenantReadonlyField) namespaceTenantReadonlyField.style.display = "";
+            if (namespaceTenantReadonlyValue) {
+                namespaceTenantReadonlyValue.textContent = tenantDisplayLabel(onlyTenant);
+            }
+            return;
+        }
 
-        const namespaces_resp = await fetchWithAuth('/generate_namespaces');
-        const namespaces = await namespaces_resp.json();
-        const namespaces_tbody = document.querySelector('#namespaces-table tbody');
-        namespaces_tbody.innerHTML = '';
-        for (const key of namespaces) {
-            const row = document.createElement('tr');
+        namespaceCreateCard.style.display = "";
+        tenant_dropdown.selectedIndex = 0;
+        if (namespaceTenantSelectField) namespaceTenantSelectField.style.display = "";
+        if (namespaceTenantReadonlyField) namespaceTenantReadonlyField.style.display = "none";
+        if (namespaceTenantReadonlyValue) namespaceTenantReadonlyValue.textContent = "";
+    }
+
+    function populateApikeyRestrictionChoices({ roles, namespaces, tenants }) {
+        const apikeyRestrictTenantSelect = document.getElementById("apikey_restrict_tenant");
+        const apikeyRestrictNamespaceSelect = document.getElementById("apikey_restrict_namespace");
+        if (!apikeyRestrictTenantSelect || !apikeyRestrictNamespaceSelect) return;
+
+        const apikeyTenantChoices = new Set();
+        const apikeyNamespaceChoices = {};
+        const namespaceCreateTenantChoices = [];
+
+        namespaces.forEach((key) => {
             const isAdmin = IsAdmin(roles, key.tenant, key.name);
             const isUser = IsUser(roles, key.tenant, key.name);
-
             if (isAdmin || isUser) {
                 apikeyTenantChoices.add(key.tenant);
                 if (!apikeyNamespaceChoices[key.tenant]) {
@@ -6592,9 +6577,182 @@
                 }
                 apikeyNamespaceChoices[key.tenant].add(key.name);
             }
+        });
 
-            const adminList = await getNamespaceUsers("admin", key.tenant, key.name);
-            const userList = await getNamespaceUsers("user", key.tenant, key.name);
+        upsertTenantDisplayMapFromList(tenants);
+        tenants.forEach((key) => {
+            const isAdmin = IsAdmin(roles, key.name, "");
+            const isUser = IsUser(roles, key.name, "");
+            if (isAdmin || isUser) {
+                apikeyTenantChoices.add(key.name);
+            }
+            if (isAdmin) {
+                namespaceCreateTenantChoices.push(key.name);
+            }
+        });
+
+        const prevTenant = apikeyRestrictTenantSelect.value;
+        setSelectDefaultOption(apikeyRestrictTenantSelect, 'Select tenant');
+
+        const tenantList = Array.from(apikeyTenantChoices).sort((a, b) => a.localeCompare(b));
+        tenantList.forEach(tenant => {
+            const option = document.createElement('option');
+            option.value = tenant;
+            option.textContent = tenantDisplayLabel(tenant);
+            apikeyRestrictTenantSelect.appendChild(option);
+        });
+
+        apikeyRestrictNamespacesByTenant = {};
+        Object.keys(apikeyNamespaceChoices).forEach(tenant => {
+            apikeyRestrictNamespacesByTenant[tenant] = Array.from(apikeyNamespaceChoices[tenant])
+                .sort((a, b) => a.localeCompare(b));
+        });
+
+        if (prevTenant && tenantList.includes(prevTenant)) {
+            apikeyRestrictTenantSelect.value = prevTenant;
+        }
+
+        onApikeyRestrictTenantChange();
+        populateNamespaceCreateTenantChoices(namespaceCreateTenantChoices);
+        adminTabDataState.apikeyChoicesLoaded = true;
+    }
+
+    async function ensureApikeyRestrictionChoices(force = false, roles = null, prefetchedData = null) {
+        if (!force && adminTabDataState.apikeyChoicesLoaded) {
+            return;
+        }
+        if (!force && adminTabDataState.apikeyChoicesPromise) {
+            return adminTabDataState.apikeyChoicesPromise;
+        }
+
+        adminTabDataState.apikeyChoicesPromise = (async () => {
+            const resolvedRoles = Array.isArray(roles) ? roles : await getAdminRoles();
+            let namespaces = prefetchedData?.namespaces;
+            let tenants = prefetchedData?.tenants;
+
+            if (!Array.isArray(namespaces) && !Array.isArray(tenants)) {
+                const [namespaces_resp, tenants_resp] = await Promise.all([
+                    fetchWithAuth('/generate_namespaces'),
+                    fetchWithAuth('/generate_tenants'),
+                ]);
+                [namespaces, tenants] = await Promise.all([
+                    namespaces_resp.json(),
+                    tenants_resp.json(),
+                ]);
+            } else {
+                if (!Array.isArray(namespaces)) {
+                    const namespaces_resp = await fetchWithAuth('/generate_namespaces');
+                    namespaces = await namespaces_resp.json();
+                }
+                if (!Array.isArray(tenants)) {
+                    const tenants_resp = await fetchWithAuth('/generate_tenants');
+                    tenants = await tenants_resp.json();
+                }
+            }
+
+            populateApikeyRestrictionChoices({
+                roles: resolvedRoles,
+                namespaces: Array.isArray(namespaces) ? namespaces : [],
+                tenants: Array.isArray(tenants) ? tenants : [],
+            });
+        })();
+
+        try {
+            return await adminTabDataState.apikeyChoicesPromise;
+        } finally {
+            adminTabDataState.apikeyChoicesPromise = null;
+        }
+    }
+
+    async function loadApikeyTab(force = false) {
+        const roles = await getAdminRoles(force);
+        configureApikeyCreateForm(roles);
+        ensureApikeyRestrictionChoices(force, roles).catch(error => {
+            console.error('Failed to populate API key restriction choices:', error);
+        });
+
+        if (!force && adminTabDataState.apikeysPromise) {
+            return adminTabDataState.apikeysPromise;
+        }
+
+        adminTabDataState.apikeysPromise = (async () => {
+            const apikeys_resp = await fetchWithAuth('/generate_apikeys');
+            const apikeys = await apikeys_resp.json();
+            const apikey_tbody = document.querySelector('#items-table tbody');
+            if (!apikey_tbody) return;
+
+            apikey_tbody.innerHTML = '';
+            apikeys.forEach(key => {
+                const row = document.createElement('tr');
+                const created = formatLocalDateTime(key.createtime);
+                const expires = formatLocalDateTime(key.expires_at);
+                const rawKey = key.apikey || '';
+                const maskedRawKey = maskApikey(rawKey);
+                const rawKeyCell = rawKey
+                    ? `<span class="apikey-raw-value" data-apikey="${rawKey}">${maskedRawKey}</span><button type="button" class="apikey-copy-cell-btn" data-tooltip="Copy key" aria-label="Copy key" onclick="copyApikeyFromRow(this)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="10" height="10"></rect><rect x="5" y="5" width="10" height="10"></rect></svg></button>`
+                    : '';
+                row.innerHTML = `
+                <td style="text-align: center;"><input type="checkbox" data-keyname="${key.keyname}" data-username="${key.username}" onchange="updateDeleteApikeyButtonState()"></td>
+                <td style="text-align: center;">${key.keyname}</td>
+                <td style="text-align: center;">${key.username}</td>
+                <td style="text-align: center;">${rawKeyCell}</td>
+                <td style="text-align: center;">${key.access_level || key.scope || ''}</td>
+                <td style="text-align: center;">${key.restrict_tenant || ''}</td>
+                <td style="text-align: center;">${key.restrict_namespace || ''}</td>
+                <td style="text-align: center;">${created}</td>
+                <td style="text-align: center;">${expires}</td>
+            `;
+                apikey_tbody.appendChild(row);
+            });
+            updateDeleteApikeyButtonState();
+
+            if (window.applyTenantDisplayNames) {
+                window.applyTenantDisplayNames(document);
+            }
+        })();
+
+        try {
+            return await adminTabDataState.apikeysPromise;
+        } finally {
+            adminTabDataState.apikeysPromise = null;
+        }
+    }
+
+    async function loadRolesTab(force = false) {
+        if (!force && adminTabDataState.rolesRendered) {
+            return;
+        }
+
+        const roles = await getAdminRoles(force);
+        renderRoleTables(roles);
+    }
+
+    async function loadNamespacesTab(force = false) {
+        if (!force && adminTabDataState.namespacesLoaded) {
+            return;
+        }
+
+        const roles = await getAdminRoles(force);
+        const namespaces_resp = await fetchWithAuth('/generate_namespaces');
+        const namespaces = await namespaces_resp.json();
+        await ensureApikeyRestrictionChoices(force, roles, { namespaces });
+        const namespaces_tbody = document.querySelector('#namespaces-table tbody');
+        const namespace_dropdown = document.getElementById("namespace_dropdown");
+        if (!namespaces_tbody || !Array.isArray(namespaces)) return;
+
+        namespaces_tbody.innerHTML = '';
+        if (namespace_dropdown) {
+            namespace_dropdown.innerHTML = '';
+        }
+
+        for (const key of namespaces) {
+            const row = document.createElement('tr');
+            const isAdmin = IsAdmin(roles, key.tenant, key.name);
+            const isUser = IsUser(roles, key.tenant, key.name);
+            const [adminList, userList] = await Promise.all([
+                getNamespaceUsers("admin", key.tenant, key.name),
+                getNamespaceUsers("user", key.tenant, key.name),
+            ]);
 
             const adminNames = adminList.length > 0 ? adminList.join(', ') : '-';
             const userNames = userList.length > 0 ? userList.join(', ') : '-';
@@ -6636,25 +6794,33 @@
                 option.textContent = `${tenantDisplayLabel(key.tenant)}/${key.name}`;
                 namespace_dropdown.appendChild(option);
             }
+        }
 
-        };
+        adminTabDataState.namespacesLoaded = true;
+    }
 
+    async function loadTenantsTab(force = false) {
+        if (!force && adminTabDataState.tenantsLoaded) {
+            return;
+        }
+
+        const roles = await getAdminRoles(force);
         const tenants_resp = await fetchWithAuth('/generate_tenants');
         const tenants = await tenants_resp.json();
-        upsertTenantDisplayMapFromList(tenants);
         const tenants_tbody = document.querySelector('#tenants-table tbody');
+        if (!tenants_tbody || !Array.isArray(tenants)) return;
+
+        upsertTenantDisplayMapFromList(tenants);
         tenants_tbody.innerHTML = '';
+
         for (const key of tenants) {
             const row = document.createElement('tr');
             const isAdmin = IsAdmin(roles, key.name, "");
             const isUser = IsUser(roles, key.name, "");
-
-            if (isAdmin || isUser) {
-                apikeyTenantChoices.add(key.name);
-            }
-
-            const adminList = await getTenantUsers("admin", key.name);
-            const userList = await getTenantUsers("user", key.name);
+            const [adminList, userList] = await Promise.all([
+                getTenantUsers("admin", key.name),
+                getTenantUsers("user", key.name),
+            ]);
 
             const adminNames = adminList.length > 0 ? adminList.join(', ') : '-';
             const userNames = userList.length > 0 ? userList.join(', ') : '-';
@@ -6679,65 +6845,60 @@
                 
             `;
             tenants_tbody.appendChild(row);
-
-            if (isAdmin) {
-                namespaceCreateTenantChoices.push(key.name);
-                const option = document.createElement("option");
-                option.value = key.name;
-                option.textContent = tenantDisplayLabel(key.name);
-                tenant_dropdown.appendChild(option);
-            }
-        };
-
-        if (namespaceCreateCard && tenant_dropdown) {
-            if (namespaceCreateTenantChoices.length === 0) {
-                namespaceCreateCard.style.display = "none";
-            } else if (namespaceCreateTenantChoices.length === 1) {
-                const onlyTenant = namespaceCreateTenantChoices[0];
-                tenant_dropdown.value = onlyTenant;
-                namespaceCreateCard.style.display = "";
-                if (namespaceTenantSelectField) namespaceTenantSelectField.style.display = "none";
-                if (namespaceTenantReadonlyField) namespaceTenantReadonlyField.style.display = "";
-                if (namespaceTenantReadonlyValue) {
-                    namespaceTenantReadonlyValue.textContent = tenantDisplayLabel(onlyTenant);
-                }
-            } else {
-                namespaceCreateCard.style.display = "";
-                tenant_dropdown.selectedIndex = 0;
-                if (namespaceTenantSelectField) namespaceTenantSelectField.style.display = "";
-                if (namespaceTenantReadonlyField) namespaceTenantReadonlyField.style.display = "none";
-                if (namespaceTenantReadonlyValue) namespaceTenantReadonlyValue.textContent = "";
-            }
         }
 
-        // Populate API key restriction tenant/namespace dropdowns.
-        if (apikeyRestrictTenantSelect && apikeyRestrictNamespaceSelect) {
-            const prevTenant = apikeyRestrictTenantSelect.value;
-            setSelectDefaultOption(apikeyRestrictTenantSelect, 'Select tenant');
+        adminTabDataState.tenantsLoaded = true;
+    }
 
-            const tenantList = Array.from(apikeyTenantChoices).sort((a, b) => a.localeCompare(b));
-            tenantList.forEach(tenant => {
-                const option = document.createElement('option');
-                option.value = tenant;
-                option.textContent = tenantDisplayLabel(tenant);
-                apikeyRestrictTenantSelect.appendChild(option);
-            });
-
-            apikeyRestrictNamespacesByTenant = {};
-            Object.keys(apikeyNamespaceChoices).forEach(tenant => {
-                apikeyRestrictNamespacesByTenant[tenant] = Array.from(apikeyNamespaceChoices[tenant])
-                    .sort((a, b) => a.localeCompare(b));
-            });
-
-            if (prevTenant && tenantList.includes(prevTenant)) {
-                apikeyRestrictTenantSelect.value = prevTenant;
-            }
-
-            onApikeyRestrictTenantChange();
+    async function ensureAdminTabData(tabName, force = false) {
+        switch (tabName) {
+            case 'Apikeys':
+                await loadApikeyTab(force);
+                break;
+            case 'Roles':
+                await loadRolesTab(force);
+                break;
+            case 'Namespaces':
+                await Promise.all([
+                    loadRolesTab(force),
+                    loadNamespacesTab(force),
+                ]);
+                break;
+            case 'Tenants':
+                await loadTenantsTab(force);
+                break;
+            default:
+                break;
         }
-        configureApikeyCreateForm(roles);
-        if (window.applyTenantDisplayNames) {
-            window.applyTenantDisplayNames(document);
+    }
+
+    async function fetchItems() {
+        return ensureAdminTabData('Apikeys', true);
+    }
+
+    async function loadCurrentAdminTabData(force = false) {
+        const activeTab = getCurrentActiveAdminTab() || 'Apikeys';
+        await ensureAdminTabData(activeTab, force);
+    }
+
+    function invalidateAdminTabData(...keys) {
+        const resetAll = keys.length === 0;
+        if (resetAll || keys.includes('roles')) {
+            adminTabDataState.roles = null;
+            adminTabDataState.rolesRendered = false;
+        }
+        if (resetAll || keys.includes('apikeys')) {
+            adminTabDataState.apikeysPromise = null;
+        }
+        if (resetAll || keys.includes('choices')) {
+            adminTabDataState.apikeyChoicesLoaded = false;
+            adminTabDataState.apikeyChoicesPromise = null;
+        }
+        if (resetAll || keys.includes('namespaces')) {
+            adminTabDataState.namespacesLoaded = false;
+        }
+        if (resetAll || keys.includes('tenants')) {
+            adminTabDataState.tenantsLoaded = false;
         }
     }
 
@@ -6814,7 +6975,7 @@
             const keys = Array.from(checkboxes).map(cb => cb.getAttribute('data-id'));
             if (keys.length > 0) {
                 await Promise.all(keys.map(key => {
-                    fetchWithAuth('/proxy/object/function/' + key + "/", {
+                    return fetchWithAuth('/proxy/object/function/' + key + "/", {
                         method: 'DELETE'
                     });
                 }));
@@ -6876,6 +7037,8 @@
 
             if (apikeys_resp.status === 200) {
                 alert("Create Namespace successfully! ");
+                invalidateAdminTabData('choices', 'namespaces');
+                await loadCurrentAdminTabData(true);
             } else {
                 alert("Create Namespace fail with error" + text);
             }
@@ -6892,10 +7055,12 @@
             const keys = Array.from(checkboxes).map(cb => cb.getAttribute('data-id'));
             if (keys.length > 0) {
                 await Promise.all(keys.map(key => {
-                    fetchWithAuth('/proxy/object/namespace/' + key + "/", {
+                    return fetchWithAuth('/proxy/object/namespace/' + key + "/", {
                         method: 'DELETE'
                     });
                 }));
+                invalidateAdminTabData('choices', 'namespaces');
+                await loadCurrentAdminTabData(true);
             }
         } catch (error) {
             alert("get error " + error);
@@ -6941,6 +7106,8 @@
 
             if (resp.status === 200) {
                 alert("Create Tenant successfully! ");
+                invalidateAdminTabData('choices', 'tenants', 'namespaces');
+                await loadCurrentAdminTabData(true);
             } else {
                 alert("Create Tenant fail with error" + text);
             }
@@ -6957,10 +7124,12 @@
             const keys = Array.from(checkboxes).map(cb => cb.getAttribute('data-id'));
             if (keys.length > 0) {
                 await Promise.all(keys.map(key => {
-                    fetchWithAuth('/proxy/object/tenant/' + key + "/", {
+                    return fetchWithAuth('/proxy/object/tenant/' + key + "/", {
                         method: 'DELETE'
                     });
                 }));
+                invalidateAdminTabData('choices', 'tenants', 'namespaces');
+                await loadCurrentAdminTabData(true);
             }
         } catch (error) {
             alert("get error " + error);
@@ -7109,8 +7278,6 @@
         }
     }
 
-    // Initial fetch
-    fetchItems();
 </script>
 
 {% endblock %}
