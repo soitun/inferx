@@ -721,6 +721,32 @@
         box-sizing: border-box;
     }
 
+    #Billing .billing-tenant-combo-wrap {
+        position: relative;
+        display: none;
+    }
+
+    #Billing .billing-tenant-combo-input {
+        padding: 7px 34px 7px 8px;
+        font-size: 14px;
+        min-width: 240px;
+        cursor: pointer;
+        border: 1px solid #ccc;
+        border-radius: 3px;
+    }
+
+    #Billing .billing-tenant-combo-caret {
+        position: absolute;
+        right: 8px;
+        top: 50%;
+        transform: translateY(-50%);
+        pointer-events: none;
+        color: #475569;
+        font-size: 16px;
+        line-height: 1;
+        font-weight: 700;
+    }
+
     .billing-admin-tenant-link {
         border: 0;
         padding: 0;
@@ -968,15 +994,15 @@
     <!-- Tenant Selector -->
     <div style="margin-bottom: 20px;">
         <label for="billing_tenant_combo_input" style="font-size: 16px; font-weight: bold;">Tenant: </label>
-        <span id="billing-tenant-combo-wrap" style="position: relative; display: none;">
+        <span id="billing-tenant-combo-wrap" class="billing-tenant-combo-wrap">
             <input type="text" id="billing_tenant_combo_input" placeholder="Select or type to search..."
                    autocomplete="off" spellcheck="false"
-                   style="padding: 5px 24px 5px 6px; font-size: 14px; min-width: 240px; cursor: pointer; border: 1px solid #ccc; border-radius: 3px;"
+                   class="billing-tenant-combo-input"
                    onfocus="openBillingTenantDropdown()"
                    oninput="filterBillingTenants()"
                    onblur="closeBillingTenantDropdown()"
                    onkeydown="onBillingTenantKeydown(event)">
-            <span style="position:absolute; right:6px; top:50%; transform:translateY(-50%); pointer-events:none; color:#555; font-size:11px;">▾</span>
+            <span class="billing-tenant-combo-caret">▾</span>
             <div id="billing-tenant-dropdown" onmousedown="event.preventDefault()"
                  style="display:none; position:absolute; left:0; top:100%; background:#fff; border:1px solid #ccc; border-top:none; max-height:260px; overflow-y:auto; z-index:1000; min-width:100%; box-shadow:0 2px 6px rgba(0,0,0,.15);"></div>
         </span>
@@ -1969,6 +1995,7 @@
     let billingTenantsPopulated = false;
     let billingTenantsLoadingPromise = null;
     let billingTenantOwnerNames = {};
+    let billingTenantOwnerNamesLoadingPromise = null;
     let billingAllTenants = [];
     let billingTenantHighlightedIndex = -1;
     let billingAdminTenantsPopulated = false;
@@ -1996,6 +2023,44 @@
     let apikeyRestrictNamespacesByTenant = {};
     let apikeyCreatorIsInferxAdmin = false;
 
+    async function loadBillingTenantOwnerNames(roles) {
+        if (!IsInferxAdmin(roles)) {
+            return billingTenantOwnerNames;
+        }
+        if (Object.keys(billingTenantOwnerNames).length > 0) {
+            return billingTenantOwnerNames;
+        }
+        if (billingTenantOwnerNamesLoadingPromise) {
+            return billingTenantOwnerNamesLoadingPromise;
+        }
+
+        billingTenantOwnerNamesLoadingPromise = (async () => {
+            try {
+                const ownerResp = await fetchWithAuth('/proxy1/admin/tenants');
+                if (ownerResp.ok) {
+                    const ownerRows = await ownerResp.json();
+                    if (Array.isArray(ownerRows)) {
+                        ownerRows.forEach((row) => {
+                            const tenantName = String(row?.tenant_name || '').trim();
+                            const ownerName = String(row?.display_name || '').trim();
+                            if (tenantName !== '' && ownerName !== '') {
+                                billingTenantOwnerNames[tenantName] = ownerName;
+                            }
+                        });
+                    }
+                }
+            } catch (error) {
+                console.warn('Failed to load Billing tenant owner names:', error);
+            } finally {
+                billingTenantOwnerNamesLoadingPromise = null;
+            }
+
+            return billingTenantOwnerNames;
+        })();
+
+        return billingTenantOwnerNamesLoadingPromise;
+    }
+
     // Called when Billing tab is opened
     async function populateBillingTenants() {
         if (billingTenantsPopulated) return;
@@ -2011,26 +2076,7 @@
                 fetchWithAuth('/generate_tenants').then(r => r.json())
             ]);
             billingTenantOwnerNames = {};
-
-            if (IsInferxAdmin(roles)) {
-                try {
-                    const ownerResp = await fetchWithAuth('/proxy1/admin/tenants');
-                    if (ownerResp.ok) {
-                        const ownerRows = await ownerResp.json();
-                        if (Array.isArray(ownerRows)) {
-                            ownerRows.forEach((row) => {
-                                const tenantName = String(row?.tenant_name || '').trim();
-                                const ownerName = String(row?.display_name || '').trim();
-                                if (tenantName !== '' && ownerName !== '') {
-                                    billingTenantOwnerNames[tenantName] = ownerName;
-                                }
-                            });
-                        }
-                    }
-                } catch (error) {
-                    console.warn('Failed to load Billing tenant owner names:', error);
-                }
-            }
+            await loadBillingTenantOwnerNames(roles);
 
             upsertTenantDisplayMapFromList(tenants);
             billingAllTenants = [];
@@ -2525,18 +2571,28 @@
     }
 
     async function billingAdminOpenTenantBilling(tenantName) {
+        await openBillingForTenant(tenantName, {
+            showError: (message) => showBillingAdminMessage(message, true),
+        });
+    }
+
+    async function openBillingForTenant(tenantName, { showError = null } = {}) {
         const tenant = String(tenantName || '').trim();
         if (!tenant) return;
 
         await initBillingAdminAccess();
         if (!billingAdminIsInferxAdmin) {
-            showBillingAdminMessage('Permission denied. Only Inferx administrators can open tenant billing from Billing Admin.', true);
+            if (showError) {
+                showError('Permission denied. Only Inferx administrators can open tenant billing.');
+            }
             return;
         }
 
         const billingTabBtn = document.querySelector(`button[onclick*="'Billing'"]`);
         if (!billingTabBtn) {
-            showBillingAdminMessage('Billing tab is unavailable.', true);
+            if (showError) {
+                showError('Billing tab is unavailable.');
+            }
             return;
         }
 
@@ -2548,7 +2604,9 @@
 
         const exists = Array.from(dropdown.options || []).some((opt) => opt.value === tenant);
         if (!exists) {
-            showBillingAdminMessage(`Tenant '${tenant}' is not available in the Billing tab.`, true);
+            if (showError) {
+                showError(`Tenant '${tenant}' is not available in the Billing tab.`);
+            }
             return;
         }
 
@@ -2875,7 +2933,78 @@
     let endpointUsageCurrentTotal = 0;
     let endpointUsageData = [];
     let endpointUsageRawRows = [];
+    let endpointUsageSortColumn = 'last_seen_at';
+    let endpointUsageSortDirection = 'desc';
+    let endpointUsageTenantDetailTenant = '';
+    let endpointUsageTenantDetailRows = [];
+    let endpointUsageTenantDetailSortColumn = 'total_cents';
+    let endpointUsageTenantDetailSortDirection = 'desc';
+    let endpointUsageDrilldownData = null;
+    let endpointUsageDrilldownSortColumn = 'period_start';
+    let endpointUsageDrilldownSortDirection = 'desc';
     let endpointUsageInitialized = false;
+
+    function getEndpointUsageColumns() {
+        if (endpointUsageViewMode === 'by-endpoint') {
+            return [
+                { key: 'tenant', label: 'Tenant', sortable: true, type: 'string' },
+                { key: 'endpoint_slug', label: 'Endpoint', sortable: true, type: 'string' },
+                { key: 'inference_ms', label: 'Inference GPU time', sortable: true, format: 'gpuTime', type: 'number' },
+                { key: 'inference_cents', label: 'Inference cost', sortable: true, format: 'currency', type: 'number' },
+                { key: 'total_cents', label: 'Total cost', sortable: true, format: 'currency', type: 'number' },
+                { key: 'last_seen_at', label: 'Last seen', sortable: true, format: 'datetime', type: 'datetime' }
+            ];
+        }
+
+        return [
+            { key: 'tenant', label: 'Tenant', sortable: true, type: 'string' },
+            { key: 'endpoint_count', label: 'Endpoints', sortable: true, type: 'number' },
+            { key: 'inference_ms', label: 'Inference GPU time', sortable: true, format: 'gpuTime', type: 'number' },
+            { key: 'inference_cents', label: 'Inference cost', sortable: true, format: 'currency', type: 'number' },
+            { key: 'total_cents', label: 'Total cost', sortable: true, format: 'currency', type: 'number' },
+            { key: 'last_seen_at', label: 'Last seen', sortable: true, format: 'datetime', type: 'datetime' }
+        ];
+    }
+
+    function getEndpointUsageSortValue(row, column) {
+        if (!row || !column) return '';
+        const value = row[column.key];
+        if (column.key === 'tenant') {
+            return billingAnalyticsTenantLabel(value).toLowerCase();
+        }
+        if (column.type === 'datetime') {
+            const ts = Date.parse(value || '');
+            return Number.isNaN(ts) ? 0 : ts;
+        }
+        if (column.type === 'number') {
+            return Number(value || 0);
+        }
+        return String(value || '').toLowerCase();
+    }
+
+    function sortRowsByColumn(rows, columns, sortColumn, sortDirection) {
+        const column = Array.isArray(columns) ? columns.find((col) => col.key === sortColumn) : null;
+        if (!column) return Array.isArray(rows) ? rows.slice() : [];
+
+        const dir = sortDirection === 'asc' ? 1 : -1;
+        return (Array.isArray(rows) ? rows.slice() : []).sort((a, b) => {
+            const aValue = getEndpointUsageSortValue(a, column);
+            const bValue = getEndpointUsageSortValue(b, column);
+
+            if (typeof aValue === 'number' && typeof bValue === 'number') {
+                if (aValue === bValue) return 0;
+                return aValue > bValue ? dir : -dir;
+            }
+
+            const cmp = String(aValue).localeCompare(String(bValue), undefined, { numeric: true, sensitivity: 'base' });
+            return cmp * dir;
+        });
+    }
+
+    function getSortIcon(activeColumn, activeDirection, columnKey) {
+        if (activeColumn !== columnKey) return '';
+        return activeDirection === 'asc' ? '▲' : '▼';
+    }
 
     function maybeLoadEndpointUsageData(force = false) {
         if (!endpointUsageAccessReady) return;
@@ -3118,6 +3247,12 @@
                 messageEl.className = '';
             }
 
+            const rolesResp = await fetchWithAuth('/generate_roles');
+            if (rolesResp.ok) {
+                const roles = await rolesResp.json();
+                await loadBillingTenantOwnerNames(roles);
+            }
+
             let params = new URLSearchParams();
             if (endpointUsageRange.mode === 'hours') {
                 params.set('hours', endpointUsageRange.hours);
@@ -3137,7 +3272,12 @@
             }
 
             const data = await resp.json();
-            endpointUsageData = data.usage || [];
+            endpointUsageData = sortRowsByColumn(
+                data.usage || [],
+                getEndpointUsageColumns(),
+                endpointUsageSortColumn,
+                endpointUsageSortDirection
+            );
             endpointUsageRawRows = data;
             endpointUsageCurrentTotal = data.total || 0;
             const totalPages = Math.max(1, Math.ceil(endpointUsageCurrentTotal / endpointUsagePageSize));
@@ -3168,32 +3308,12 @@
 
         if (!tbody || !thead || !tfoot) return;
 
-        // Determine columns based on view mode
-        let columns;
-        if (endpointUsageViewMode === 'by-endpoint') {
-            columns = [
-                { key: 'tenant', label: 'Tenant', sortable: true },
-                { key: 'endpoint_slug', label: 'Endpoint', sortable: true },
-                { key: 'inference_ms', label: 'Inference GPU time', sortable: true, format: 'gpuTime' },
-                { key: 'inference_cents', label: 'Inference cost', sortable: true, format: 'currency' },
-                { key: 'total_cents', label: 'Total cost', sortable: true, format: 'currency' },
-                { key: 'last_seen_at', label: 'Last seen', sortable: true, format: 'datetime' }
-            ];
-        } else {
-            columns = [
-                { key: 'tenant', label: 'Tenant', sortable: true },
-                { key: 'endpoint_count', label: 'Endpoints', sortable: true },
-                { key: 'inference_ms', label: 'Inference GPU time', sortable: true, format: 'gpuTime' },
-                { key: 'inference_cents', label: 'Inference cost', sortable: true, format: 'currency' },
-                { key: 'total_cents', label: 'Total cost', sortable: true, format: 'currency' },
-                { key: 'last_seen_at', label: 'Last seen', sortable: true, format: 'datetime' }
-            ];
-        }
+        const columns = getEndpointUsageColumns();
 
         // Render header
         thead.innerHTML = columns.map(col => 
             `<th style="cursor: pointer;" onclick="endpointUsageSort('${col.key}')">
-                ${col.label} <span id="endpoint-usage-sort-${col.key}-icon"></span>
+                ${col.label} <span id="endpoint-usage-sort-${col.key}-icon">${getSortIcon(endpointUsageSortColumn, endpointUsageSortDirection, col.key)}</span>
             </th>`
         ).join('');
 
@@ -3211,21 +3331,41 @@
             tr.style.cursor = 'pointer';
             tr.onclick = () => endpointUsageRowClick(row);
             
-            const cells = columns.map(col => {
+            columns.forEach((col) => {
+                const td = document.createElement('td');
                 let value = row[col.key];
-                if (col.format === 'gpuTime') {
+                if (col.key === 'tenant') {
+                    value = billingAnalyticsTenantLabel(value);
+                    const tenantName = String(row[col.key] || '').trim();
+                    if (tenantName !== '') {
+                        const tenantLink = document.createElement('button');
+                        tenantLink.type = 'button';
+                        tenantLink.className = 'billing-admin-tenant-link';
+                        tenantLink.textContent = value;
+                        tenantLink.addEventListener('click', async (event) => {
+                            event.stopPropagation();
+                            await openBillingForTenant(tenantName);
+                        });
+                        td.appendChild(tenantLink);
+                    } else {
+                        td.textContent = '--';
+                    }
+                } else if (col.format === 'gpuTime') {
                     value = formatGpuTimeMs(value);
+                    td.textContent = value;
                 } else if (col.format === 'currency') {
                     value = '$' + (value / 100).toFixed(2);
+                    td.textContent = value;
                 } else if (col.format === 'datetime') {
                     value = formatLocalDateTime(value);
+                    td.textContent = value;
                 } else if (value === null || value === undefined || value === '') {
-                    value = '--';
+                    td.textContent = '--';
+                } else {
+                    td.textContent = value;
                 }
-                return `<td>${value}</td>`;
+                tr.appendChild(td);
             });
-            
-            tr.innerHTML = cells.join('');
             tbody.appendChild(tr);
         });
 
@@ -3357,15 +3497,32 @@
     }
 
     function renderEndpointUsageTenantEndpointList(tenant, usageRows) {
+        endpointUsageTenantDetailTenant = tenant;
+        endpointUsageTenantDetailRows = Array.isArray(usageRows) ? usageRows.slice() : [];
+
         const content = showEndpointUsageDetailArea(`Breakdown: ${tenant}`, { showGranularity: false, loading: false });
         if (!content) return;
 
-        if (!Array.isArray(usageRows) || usageRows.length === 0) {
+        if (!Array.isArray(endpointUsageTenantDetailRows) || endpointUsageTenantDetailRows.length === 0) {
             content.innerHTML = '<p style="color: #888; padding: 20px;">No endpoint usage data for this tenant in the selected period</p>';
             return;
         }
 
-        const rowsHtml = usageRows.map(row => `
+        const columns = [
+            { key: 'endpoint_slug', label: 'Endpoint', type: 'string' },
+            { key: 'inference_ms', label: 'Inference GPU time', type: 'number' },
+            { key: 'inference_cents', label: 'Inference cost', type: 'number' },
+            { key: 'total_cents', label: 'Total cost', type: 'number' },
+            { key: 'last_seen_at', label: 'Last seen', type: 'datetime' }
+        ];
+        const sortedRows = sortRowsByColumn(
+            endpointUsageTenantDetailRows,
+            columns,
+            endpointUsageTenantDetailSortColumn,
+            endpointUsageTenantDetailSortDirection
+        );
+
+        const rowsHtml = sortedRows.map(row => `
             <tr data-tenant="${tenant}" data-endpoint="${row.endpoint_slug || ''}" style="cursor: pointer;">
                 <td>${row.endpoint_slug || '--'}</td>
                 <td>${formatGpuTimeMs(row.inference_ms || 0)}</td>
@@ -3380,11 +3537,11 @@
             <table class="ix-table billing-analytics-table" style="width:100%">
                 <thead>
                     <tr>
-                        <th>Endpoint</th>
-                        <th>Inference GPU time</th>
-                        <th>Inference cost</th>
-                        <th>Total cost</th>
-                        <th>Last seen</th>
+                        <th style="cursor: pointer;" onclick="endpointUsageTenantDetailSort('endpoint_slug')">Endpoint <span>${getSortIcon(endpointUsageTenantDetailSortColumn, endpointUsageTenantDetailSortDirection, 'endpoint_slug')}</span></th>
+                        <th style="cursor: pointer;" onclick="endpointUsageTenantDetailSort('inference_ms')">Inference GPU time <span>${getSortIcon(endpointUsageTenantDetailSortColumn, endpointUsageTenantDetailSortDirection, 'inference_ms')}</span></th>
+                        <th style="cursor: pointer;" onclick="endpointUsageTenantDetailSort('inference_cents')">Inference cost <span>${getSortIcon(endpointUsageTenantDetailSortColumn, endpointUsageTenantDetailSortDirection, 'inference_cents')}</span></th>
+                        <th style="cursor: pointer;" onclick="endpointUsageTenantDetailSort('total_cents')">Total cost <span>${getSortIcon(endpointUsageTenantDetailSortColumn, endpointUsageTenantDetailSortDirection, 'total_cents')}</span></th>
+                        <th style="cursor: pointer;" onclick="endpointUsageTenantDetailSort('last_seen_at')">Last seen <span>${getSortIcon(endpointUsageTenantDetailSortColumn, endpointUsageTenantDetailSortDirection, 'last_seen_at')}</span></th>
                     </tr>
                 </thead>
                 <tbody>${rowsHtml}</tbody>
@@ -3403,6 +3560,8 @@
     }
 
     function renderEndpointUsageDrilldown(data) {
+        endpointUsageDrilldownData = data;
+
         const content = showEndpointUsageDetailArea(
             `Breakdown: ${data.tenant} / ${data.endpoint_slug} (${getEndpointUsageGranularityLabel(data.granularity)})`,
             { showGranularity: true, loading: false }
@@ -3413,14 +3572,27 @@
         if (usage.length === 0) {
             content.innerHTML = '<p style="color: #888; padding: 20px;">No usage data for this period</p>';
         } else {
+            const columns = [
+                { key: 'period_start', label: 'Period Start (Local)', type: 'datetime' },
+                { key: 'period_end', label: 'Period End (Local)', type: 'datetime' },
+                { key: 'inference_ms', label: 'Inference GPU time', type: 'number' },
+                { key: 'inference_cents', label: 'Inference cost', type: 'number' },
+                { key: 'total_cents', label: 'Total cost', type: 'number' }
+            ];
+            const sortedUsage = sortRowsByColumn(
+                usage,
+                columns,
+                endpointUsageDrilldownSortColumn,
+                endpointUsageDrilldownSortDirection
+            );
             let html = `<table id="endpoint-usage-drilldown-table" class="ix-table billing-analytics-table" style="width:100%">
                 <thead>
                     <tr>
-                        <th>Period Start (Local)</th>
-                        <th>Period End (Local)</th>
-                        <th>Inference GPU time</th>
-                        <th>Inference cost</th>
-                        <th>Total cost</th>
+                        <th style="cursor: pointer;" onclick="endpointUsageDrilldownSort('period_start')">Period Start (Local) <span>${getSortIcon(endpointUsageDrilldownSortColumn, endpointUsageDrilldownSortDirection, 'period_start')}</span></th>
+                        <th style="cursor: pointer;" onclick="endpointUsageDrilldownSort('period_end')">Period End (Local) <span>${getSortIcon(endpointUsageDrilldownSortColumn, endpointUsageDrilldownSortDirection, 'period_end')}</span></th>
+                        <th style="cursor: pointer;" onclick="endpointUsageDrilldownSort('inference_ms')">Inference GPU time <span>${getSortIcon(endpointUsageDrilldownSortColumn, endpointUsageDrilldownSortDirection, 'inference_ms')}</span></th>
+                        <th style="cursor: pointer;" onclick="endpointUsageDrilldownSort('inference_cents')">Inference cost <span>${getSortIcon(endpointUsageDrilldownSortColumn, endpointUsageDrilldownSortDirection, 'inference_cents')}</span></th>
+                        <th style="cursor: pointer;" onclick="endpointUsageDrilldownSort('total_cents')">Total cost <span>${getSortIcon(endpointUsageDrilldownSortColumn, endpointUsageDrilldownSortDirection, 'total_cents')}</span></th>
                     </tr>
                 </thead>
                 <tbody>`;
@@ -3429,7 +3601,7 @@
             let totalInferenceCents = 0;
             let totalCents = 0;
             
-            usage.forEach(row => {
+            sortedUsage.forEach(row => {
                 totalMs += row.inference_ms || 0;
                 totalInferenceCents += row.inference_cents || 0;
                 totalCents += row.total_cents || 0;
@@ -3503,17 +3675,41 @@
     }
 
     function endpointUsageSort(key) {
-        // Simple implementation - in production, implement proper sorting
-        const sortedData = [...endpointUsageData].sort((a, b) => {
-            const valA = a[key];
-            const valB = b[key];
-            if (typeof valA === 'string') {
-                return valA.localeCompare(valB);
-            }
-            return valA - valB;
-        });
-        endpointUsageData = sortedData;
+        if (endpointUsageSortColumn === key) {
+            endpointUsageSortDirection = endpointUsageSortDirection === 'asc' ? 'desc' : 'asc';
+        } else {
+            endpointUsageSortColumn = key;
+            endpointUsageSortDirection = 'asc';
+        }
+        endpointUsageData = sortRowsByColumn(
+            endpointUsageData,
+            getEndpointUsageColumns(),
+            endpointUsageSortColumn,
+            endpointUsageSortDirection
+        );
         renderEndpointUsageTable();
+    }
+
+    function endpointUsageTenantDetailSort(key) {
+        if (endpointUsageTenantDetailSortColumn === key) {
+            endpointUsageTenantDetailSortDirection = endpointUsageTenantDetailSortDirection === 'asc' ? 'desc' : 'asc';
+        } else {
+            endpointUsageTenantDetailSortColumn = key;
+            endpointUsageTenantDetailSortDirection = 'asc';
+        }
+        renderEndpointUsageTenantEndpointList(endpointUsageTenantDetailTenant, endpointUsageTenantDetailRows);
+    }
+
+    function endpointUsageDrilldownSort(key) {
+        if (endpointUsageDrilldownSortColumn === key) {
+            endpointUsageDrilldownSortDirection = endpointUsageDrilldownSortDirection === 'asc' ? 'desc' : 'asc';
+        } else {
+            endpointUsageDrilldownSortColumn = key;
+            endpointUsageDrilldownSortDirection = 'asc';
+        }
+        if (endpointUsageDrilldownData) {
+            renderEndpointUsageDrilldown(endpointUsageDrilldownData);
+        }
     }
 
     function updateUsageGranularityButtons() {
