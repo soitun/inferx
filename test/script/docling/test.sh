@@ -7,10 +7,11 @@
 # API key from environment variable (set API_KEY in host shell first)
 
 sudo docker run --rm \
-  -v ~/test:/input \
-  -v /home/brad:/output \
+  -v /home/brad/test/input:/input \
+  -v /home/brad/test/output:/output \
   docling-pdf2md \
-    --base-url=https://model.inferx.net/funccall/tn-a3t79iogb2/endpoints/gemma-4-31B-it-fp8 \
-    --api-key=$API_KEY \
-    --model=google/gemma-4-31B-it
+    base_url=https://model.inferx.net/funccall/tn-a3t79iogb2/endpoints/Qwen3.6-35B-A3B-FP8/v1 \
+    api_key=$API_KEY \
+    model=Qwen/Qwen3.6-35B-A3B-FP8
 
+where

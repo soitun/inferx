@@ -20,13 +20,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir docling onnxruntime
+RUN pip install --no-cache-dir docling onnxruntime dspy-ai
 
 COPY convert.py ./convert.py
-COPY config.json /app/config.json
 
 RUN mkdir -p /input /output
 
 RUN python -c "from rapidocr import RapidOCR; ocr = RapidOCR(); print('Pre-downloaded OCR models')" 2>&1
 
-ENTRYPOINT ["python", "-u", "convert.py"]
+COPY test_dspy.py ./test_dspy.py
+
+RUN printf '#!/bin/bash\nexec python -u /app/convert.py "$@"' > /entrypoint.sh && chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

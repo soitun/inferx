@@ -4,9 +4,8 @@ import os
 from docling.document_converter import DocumentConverter
 from pathlib import Path
 from datetime import datetime
-
-
-
+from typing import Optional
+import time
 
 def get_input_files(input_dir: Path):
     """Get all compatible files from input directory and subdirectories."""
@@ -79,8 +78,6 @@ def build_markdown(docs: list[dict]) -> str:
     
     return markdown
 
-import os
-
 def parse_args():
     """Parse key=value arguments for config."""
     config = {}
@@ -101,9 +98,9 @@ def use_info():
     print("Usage: docling-pdf2md base_url=... api_key=... model=...", file=sys.stderr)
     print("", file=sys.stderr)
     print("Required config arguments:", file=sys.stderr)
-    print("  base_url   - LLM endpoint URL", file=sys.stderr)
+    print("  base_url   - LLM endpoint URL (e.g., https://model.inferx.net/.../v1)", file=sys.stderr)
     print("  api_key    - API key for authentication", file=sys.stderr)
-    print("  model      - Model name (e.g., google/gemma-4-31B-it)", file=sys.stderr)
+    print("  model      - Model name without provider (e.g., Qwen3-Coder-Next-FP8)", file=sys.stderr)
     print("", file=sys.stderr)
     print("Or set API_KEY environment variable.", file=sys.stderr)
     sys.exit(1)
@@ -111,14 +108,15 @@ def use_info():
 def main():
     input_dir = Path("/input")
     output_dir = Path("/output")
-    output_file = output_dir / "merged.md"
+    docling_output = output_dir / "merged.md"
+    dspy_output = output_dir / "optimized.md"
 
     config = parse_args()
 
-    base_url = config.get("base_url")
+    base_url = config.get("base_url", "https://model.inferx.net/funccall/tn-a3t79iogb2/endpoints/Qwen3.6-35B-A3B-FP8/v1")
     api_key_arg = config.get("api_key")
     api_key = get_api_key() if api_key_arg is None or api_key_arg == "" else api_key_arg
-    model = config.get("model")
+    model = config.get("model", "Qwen/Qwen3.6-35B-A3B-FP8")
 
     if not base_url or not api_key or not model:
         use_info()
@@ -138,19 +136,85 @@ def main():
     print(f"Using model: {model}")
     print(f"Base URL: {base_url}")
     
+    # Docling processing
+    docling_start = time.time()
     docs = convert_files(files, base_url, api_key, model)
-
+    docling_end = time.time()
+    
     if not docs:
         print("ERROR: No files were successfully converted", file=sys.stderr)
         sys.exit(1)
 
     markdown = build_markdown(docs)
 
-    with open(output_file, "w", encoding="utf-8") as f:
+    with open(docling_output, "w", encoding="utf-8") as f:
         f.write(markdown)
 
-    total_chars = len(markdown)
-    print(f"\nSuccessfully created {output_file} ({total_chars} chars, {total_chars/1024:.1f} KB)")
+    docling_chars = len(markdown)
+    print(f"\nDocling: Created {docling_output} ({docling_chars} chars, {docling_chars/1024:.1f} KB)")
+    print(f"Docling processing time: {docling_end - docling_start:.2f} seconds")
+
+    # DSPy optimization
+    dspy_start = time.time()
+    print("\nOptimizing with DSPy...")
+    try:
+        import dspy
+        from dspy.signatures import Signature
+        
+        lm = dspy.LM(f"openai/{model}", 
+                     api_base=base_url, 
+                     api_key=api_key, 
+                     max_tokens=20000, 
+                     stop=None, 
+                     temperature=0,
+                     cache=False)
+        dspy.configure(lm=lm)
+        
+        print(f"  DSPy {dspy.__version__} using LLM backend: {model}")
+        
+        class OptimizeMarkdown(Signature):
+            """Optimize markdown content for KV caching by reducing redundancy while preserving structure."""
+            raw_markdown: str = dspy.InputField(desc="Original markdown content to optimize")
+            optimized_markdown: str = dspy.OutputField(desc="Optimized markdown with reduced redundancy")
+        
+        optimizer = dspy.Predict(OptimizeMarkdown)
+        
+        print(f"  Optimizing {len(markdown)} chars of markdown...")
+        result = optimizer(raw_markdown=markdown)
+        optimized = result.optimized_markdown
+        
+        dspy_end = time.time()
+        optimized_chars = len(optimized)
+        reduction = (1 - optimized_chars / len(markdown)) * 100 if len(markdown) > 0 else 0
+        
+        with open(dspy_output, "w", encoding="utf-8") as f:
+            f.write(optimized)
+        
+        print(f"  DSPy: Created {dspy_output}")
+        print(f"    Original: {len(markdown)} chars ({len(markdown)/1024:.1f} KB)")
+        print(f"    Optimized: {optimized_chars} chars ({optimized_chars/1024:.1f} KB)")
+        print(f"    Reduction: {reduction:.1f}%")
+        print(f"    Processing time: {dspy_end - dspy_start:.2f} seconds")
+        
+    except ImportError:
+        print("WARNING: DSPy not available. Skipping optimization.")
+    except Exception as e:
+        print(f"ERROR in DSPy optimization: {e}")
+        import traceback
+        traceback.print_exc()
+
+    print(f"\n{'='*60}")
+    print("PROCESSING SUMMARY")
+    print(f"{'='*60}")
+    print(f"Docling processing time: {docling_end - docling_start:.2f} seconds")
+    print(f"  Input files: {len(files)}")
+    print(f"  Docling output: {docling_chars} chars")
+    if 'dspy_end' in locals():
+        print(f"\nDSPy processing time: {dspy_end - dspy_start:.2f} seconds")
+        print(f"  Optimized output: {optimized_chars} chars")
+    print(f"\nOutput files:")
+    print(f"  - {docling_output} (original merged content)")
+    print(f"  - {dspy_output} (optimized for KV caching)")
 
 if __name__ == "__main__":
     main()
