@@ -33,6 +33,10 @@ def convert_files(files: list[Path], base_url: str, api_key: str, model: str) ->
         try:
             result = converter.convert(file_path)
             content = result.document.export_to_markdown()
+            
+            # Post-process formulas
+            content = post_process_formulas(content)
+            
             converted_docs.append({
                 "name": file_path.name,
                 "content": content,
@@ -78,6 +82,20 @@ def build_markdown(docs: list[dict]) -> str:
         markdown += "\n\n" + "=" * 72 + "\n\n"
     
     return markdown
+
+def post_process_formulas(content: str) -> str:
+    """Convert formula placeholders to proper LaTeX."""
+    formula_patterns = [
+        (r'probability\s+(\w+)\s+=\s+(\d+(?:\.\d+)?)', '$$P(\\1) = \\2$$'),
+        (r'q\s*=\s*probability.*?attacker.*?finds', '$$q = P(\\\\text{attacker finds block})$$'),
+        (r'p\s*=\s*probability.*?honest.*?finds', '$$p = P(\\\\text{honest node finds block})$$'),
+        (r'q_z\s*=\s*(?:probability|\(q/p\)\^z)', '$$q_z = \\\\begin{cases} 1 & \\\\text{if } p \\\\leq q \\\\\\\\ (q/p)^z & \\\\text{if } p > q \\\\end{cases}$$'),
+    ]
+    for pattern, replacement in formula_patterns:
+        content = re.sub(pattern, replacement, content, flags=re.IGNORECASE | re.DOTALL)
+    content = re.sub(r'`([^`]+)`\s*[=]\s*([^=\n]+)', '$$\\1 = \\2$$', content)
+    return content
+
 
 def lossless_compress(markdown: str) -> str:
     """Apply safe, lossless compression to markdown."""
@@ -160,10 +178,10 @@ def main():
 
     config = parse_args()
 
-    base_url = config.get("base_url", "https://model.inferx.net/funccall/tn-a3t79iogb2/endpoints/Qwen3.6-35B-A3B-FP8/v1")
+    base_url = config.get("base_url", "https://model.inferx.net/funccall/tn-a3t79iogb2/endpoints/Qwen3-Coder-Next-FP8/v1")
     api_key_arg = config.get("api_key")
     api_key = get_api_key() if api_key_arg is None or api_key_arg == "" else api_key_arg
-    model = config.get("model", "Qwen/Qwen3.6-35B-A3B-FP8")
+    model = config.get("model", "Qwen/Qwen3-Coder-Next-FP8")
     
     use_dspy = os.environ.get("USE_DSPY", "false").lower() == "true"
 
@@ -222,7 +240,7 @@ def main():
             lm = dspy.LM(f"openai/{model}", 
                          api_base=base_url, 
                          api_key=api_key, 
-                         max_tokens=20000, 
+                         max_tokens=60000, 
                          stop=None, 
                          temperature=0.0,
                          cache=False)
