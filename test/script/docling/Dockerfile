@@ -1,8 +1,7 @@
-# Docling PDF-to-Markdown container
-# Input: /input/*.pdf  ->  Output: /output/merged.md
+# PDF-to-Markdown container using Docling with LLM backend
+# Input: /input/*.pdf, *.html, etc.  ->  Output: /output/merged.md
 FROM python:3.11-slim
 
-# System dependencies for PDF rendering
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     gcc \
@@ -21,13 +20,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install docling (includes PDF processing backends)
-RUN pip install --no-cache-dir docling
+RUN pip install --no-cache-dir docling onnxruntime
 
-# Copy processing script
 COPY convert.py ./convert.py
+COPY config.json /app/config.json
 
-# Create mount points
 RUN mkdir -p /input /output
+
+RUN python -c "from rapidocr import RapidOCR; ocr = RapidOCR(); print('Pre-downloaded OCR models')" 2>&1
 
 ENTRYPOINT ["python", "-u", "convert.py"]
