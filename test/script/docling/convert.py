@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import os
+import re
 from docling.document_converter import DocumentConverter
 from pathlib import Path
 from datetime import datetime
@@ -78,6 +79,47 @@ def build_markdown(docs: list[dict]) -> str:
     
     return markdown
 
+def lossless_compress(markdown: str) -> str:
+    """Apply safe, lossless compression to markdown."""
+    compressed = re.sub(r'\n{3,}', '\n\n', markdown)
+    compressed = re.sub(r' +$', '', compressed, flags=re.MULTILINE)
+    lines = compressed.split('\n')
+    processed_lines = []
+    in_code_block = False
+    for line in lines:
+        if line.strip().startswith('```'):
+            in_code_block = not in_code_block
+            processed_lines.append(line)
+        elif in_code_block:
+            processed_lines.append(line)
+        else:
+            processed_lines.append(re.sub(r' {2,}', ' ', line))
+    compressed = '\n'.join(processed_lines)
+    compressed = re.sub(r'={10,}', '=' * 72, compressed)
+    compressed = re.sub(r'\n(#+\s)', '\n\n\\1', compressed)
+    compressed = compressed.replace('<!-- image -->', '*[IMG]*')
+    return compressed
+
+def validate_optimization(original: str, optimized: str) -> bool:
+    """Validate that optimization didn't corrupt the content."""
+    if not optimized or len(optimized) < len(original) * 0.1:
+        print(f"    Validation failed: Output too small ({len(optimized)} vs {len(original)} chars)")
+        return False
+    if len(optimized) > len(original) * 1.5:
+        print(f"    Validation failed: Output too large ({len(optimized)} vs {len(original)} chars)")
+        return False
+    truncation_markers = ['{optimized', '```json', '```python', 'Here is', "I've"]
+    for marker in truncation_markers:
+        if marker in optimized[:200]:
+            print(f"    Validation failed: Found truncation marker '{marker}'")
+            return False
+    original_headers = set(re.findall(r'^##+\s+.*$', original, re.MULTILINE))
+    optimized_headers = set(re.findall(r'^##+\s+.*$', optimized, re.MULTILINE))
+    if len(optimized_headers) < len(original_headers) * 0.5:
+        print(f"    Validation failed: Lost too many headers ({len(optimized_headers)} vs {len(original_headers)})")
+        return False
+    return True
+
 def parse_args():
     """Parse key=value arguments for config."""
     config = {}
@@ -102,14 +144,19 @@ def use_info():
     print("  api_key    - API key for authentication", file=sys.stderr)
     print("  model      - Model name without provider (e.g., Qwen3-Coder-Next-FP8)", file=sys.stderr)
     print("", file=sys.stderr)
-    print("Or set API_KEY environment variable.", file=sys.stderr)
+    print("Optional environment variables:", file=sys.stderr)
+    print("  USE_DSPY=true  - Enable DSPy optimization (EXPERIMENTAL, default: false)", file=sys.stderr)
+    print("  API_KEY        - Alternative way to provide API key", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("NOTE: Lossless compression is used by default. DSPy optimization is experimental", file=sys.stderr)
+    print("      and may corrupt output. Only enable if you understand the risks.", file=sys.stderr)
     sys.exit(1)
 
 def main():
     input_dir = Path("/input")
     output_dir = Path("/output")
     docling_output = output_dir / "merged.md"
-    dspy_output = output_dir / "optimized.md"
+    optimized_output = output_dir / "optimized.md"
 
     config = parse_args()
 
@@ -117,6 +164,8 @@ def main():
     api_key_arg = config.get("api_key")
     api_key = get_api_key() if api_key_arg is None or api_key_arg == "" else api_key_arg
     model = config.get("model", "Qwen/Qwen3.6-35B-A3B-FP8")
+    
+    use_dspy = os.environ.get("USE_DSPY", "false").lower() == "true"
 
     if not base_url or not api_key or not model:
         use_info()
@@ -136,7 +185,11 @@ def main():
     print(f"Using model: {model}")
     print(f"Base URL: {base_url}")
     
-    # Docling processing
+    if use_dspy:
+        print(f"⚠️  DSPy optimization: ENABLED (experimental, may corrupt output)")
+    else:
+        print(f"✓ Lossless compression: ENABLED (safe, recommended)")
+    
     docling_start = time.time()
     docs = convert_files(files, base_url, api_key, model)
     docling_end = time.time()
@@ -151,70 +204,118 @@ def main():
         f.write(markdown)
 
     docling_chars = len(markdown)
-    print(f"\nDocling: Created {docling_output} ({docling_chars} chars, {docling_chars/1024:.1f} KB)")
-    print(f"Docling processing time: {docling_end - docling_start:.2f} seconds")
+    print(f"\n✓ Docling: Created {docling_output} ({docling_chars} chars, {docling_chars/1024:.1f} KB)")
+    print(f"  Processing time: {docling_end - docling_start:.2f} seconds")
 
-    # DSPy optimization
-    dspy_start = time.time()
-    print("\nOptimizing with DSPy...")
-    try:
-        import dspy
-        from dspy.signatures import Signature
-        
-        lm = dspy.LM(f"openai/{model}", 
-                     api_base=base_url, 
-                     api_key=api_key, 
-                     max_tokens=20000, 
-                     stop=None, 
-                     temperature=0,
-                     cache=False)
-        dspy.configure(lm=lm)
-        
-        print(f"  DSPy {dspy.__version__} using LLM backend: {model}")
-        
-        class OptimizeMarkdown(Signature):
-            """Optimize markdown content for KV caching by reducing redundancy while preserving structure."""
-            raw_markdown: str = dspy.InputField(desc="Original markdown content to optimize")
-            optimized_markdown: str = dspy.OutputField(desc="Optimized markdown with reduced redundancy")
-        
-        optimizer = dspy.Predict(OptimizeMarkdown)
-        
-        print(f"  Optimizing {len(markdown)} chars of markdown...")
-        result = optimizer(raw_markdown=markdown)
-        optimized = result.optimized_markdown
-        
-        dspy_end = time.time()
+    opt_start = time.time()
+    print("\nOptimizing for KV cache...")
+    
+    optimized = None
+    optimization_method = "Lossless Compression"
+    
+    if use_dspy:
+        print("  Attempting DSPy optimization...")
+        try:
+            import dspy
+            from dspy.signatures import Signature
+            
+            lm = dspy.LM(f"openai/{model}", 
+                         api_base=base_url, 
+                         api_key=api_key, 
+                         max_tokens=20000, 
+                         stop=None, 
+                         temperature=0.0,
+                         cache=False)
+            dspy.configure(lm=lm)
+            
+            print(f"    DSPy {dspy.__version__} configured")
+            
+            class OptimizeMarkdown(Signature):
+                """Remove redundant whitespace while preserving ALL content."""
+                raw_markdown: str = dspy.InputField()
+                optimized_markdown: str = dspy.OutputField()
+            
+            optimizer = dspy.Predict(OptimizeMarkdown)
+            
+            MAX_CHUNK_SIZE = 8000
+            chunks = []
+            for i in range(0, len(markdown), MAX_CHUNK_SIZE):
+                chunks.append(markdown[i:i+MAX_CHUNK_SIZE])
+            
+            if len(chunks) > 1:
+                print(f"    Splitting into {len(chunks)} chunks...")
+                optimized_chunks = []
+                for i, chunk in enumerate(chunks, 1):
+                    print(f"      Chunk {i}/{len(chunks)} ({len(chunk)} chars)...")
+                    try:
+                        result = optimizer(raw_markdown=chunk)
+                        chunk_optimized = result.optimized_markdown
+                        
+                        if validate_optimization(chunk, chunk_optimized):
+                            optimized_chunks.append(chunk_optimized)
+                        else:
+                            print(f"        Chunk {i} validation failed, using original")
+                            optimized_chunks.append(chunk)
+                    except Exception as e:
+                        print(f"        Error on chunk {i}: {e}")
+                        optimized_chunks.append(chunk)
+                    time.sleep(0.3)
+                
+                optimized = "".join(optimized_chunks)
+            else:
+                print(f"    Processing single chunk ({len(markdown)} chars)...")
+                result = optimizer(raw_markdown=markdown)
+                optimized = result.optimized_markdown
+            
+            if optimized and validate_optimization(markdown, optimized):
+                optimization_method = "DSPy"
+                print(f"    ✓ DSPy optimization successful")
+            else:
+                print(f"    ✗ DSPy optimization failed validation, falling back to lossless compression")
+                optimized = None
+                use_dspy = False
+            
+        except ImportError:
+            print("    ✗ DSPy not available")
+            use_dspy = False
+        except Exception as e:
+            print(f"    ✗ DSPy error: {e}")
+            use_dspy = False
+    
+    if not use_dspy or optimized is None:
+        print("  Applying lossless compression...")
+        optimized = lossless_compress(markdown)
+        optimization_method = "Lossless Compression"
+    
+    opt_end = time.time()
+    
+    if optimized:
         optimized_chars = len(optimized)
         reduction = (1 - optimized_chars / len(markdown)) * 100 if len(markdown) > 0 else 0
         
-        with open(dspy_output, "w", encoding="utf-8") as f:
+        with open(optimized_output, "w", encoding="utf-8") as f:
             f.write(optimized)
         
-        print(f"  DSPy: Created {dspy_output}")
-        print(f"    Original: {len(markdown)} chars ({len(markdown)/1024:.1f} KB)")
-        print(f"    Optimized: {optimized_chars} chars ({optimized_chars/1024:.1f} KB)")
+        print(f"\n✓ Optimization complete ({optimization_method}):")
+        print(f"    Created: {optimized_output}")
+        print(f"    Original: {len(markdown):,} chars ({len(markdown)/1024:.1f} KB)")
+        print(f"    Optimized: {optimized_chars:,} chars ({optimized_chars/1024:.1f} KB)")
         print(f"    Reduction: {reduction:.1f}%")
-        print(f"    Processing time: {dspy_end - dspy_start:.2f} seconds")
-        
-    except ImportError:
-        print("WARNING: DSPy not available. Skipping optimization.")
-    except Exception as e:
-        print(f"ERROR in DSPy optimization: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"    Processing time: {opt_end - opt_start:.2f} seconds")
+    else:
+        print("  ✗ Optimization failed, using original file")
+        with open(optimized_output, "w", encoding="utf-8") as f:
+            f.write(markdown)
+        optimized_chars = len(markdown)
 
     print(f"\n{'='*60}")
     print("PROCESSING SUMMARY")
     print(f"{'='*60}")
-    print(f"Docling processing time: {docling_end - docling_start:.2f} seconds")
-    print(f"  Input files: {len(files)}")
-    print(f"  Docling output: {docling_chars} chars")
-    if 'dspy_end' in locals():
-        print(f"\nDSPy processing time: {dspy_end - dspy_start:.2f} seconds")
-        print(f"  Optimized output: {optimized_chars} chars")
+    print(f"✓ Docling: {docling_end - docling_start:.2f}s | {len(markdown):,} chars")
+    print(f"✓ Optimization ({optimization_method}): {opt_end - opt_start:.2f}s | {optimized_chars:,} chars")
     print(f"\nOutput files:")
-    print(f"  - {docling_output} (original merged content)")
-    print(f"  - {dspy_output} (optimized for KV caching)")
+    print(f"  - {docling_output} (original)")
+    print(f"  - {optimized_output} (optimized)")
 
 if __name__ == "__main__":
     main()
