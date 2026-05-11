@@ -83,6 +83,70 @@ def build_markdown(docs: list[dict]) -> str:
     
     return markdown
 
+
+def build_llm_optimized_markdown(docs: list[dict]) -> str:
+    """Build markdown specifically optimized for LLM prompts."""
+    output = []
+    
+    # System instruction
+    output.append("## SYSTEM INSTRUCTION\n")
+    output.append("You are analyzing technical documents. Follow these rules:\n")
+    output.append("\n")
+    output.append("1. **Grounding**: Only use information from the documents below\n")
+    output.append("2. **Missing content**: If formulas appear as placeholders, infer meaning from surrounding text\n")
+    output.append("3. **Images**: Treat diagram descriptions as contextual hints\n")
+    output.append("4. **Code**: Explain code blocks when relevant\n")
+    output.append("5. **Citations**: Always cite both filename AND section number\n")
+    output.append("\n")
+    output.append("   **Correct examples:**\n")
+    output.append("   - `[bitcoin.pdf, Section 4 - Proof-of-Work]`\n")
+    output.append("   - `[bitcoin.pdf, Section 11]`\n")
+    output.append("   - `[bitcoin.pdf, Section 5, Step 3]`\n")
+    output.append("\n")
+    output.append("   **Incorrect examples:**\n")
+    output.append("   - `[bitcoin.pdf]` (missing section)\n")
+    output.append("   - `Section 4` (missing filename)\n")
+    output.append("\n")
+    output.append("## DOCUMENTS\n\n")
+    
+    # Document content with LLM enhancements
+    llm_optimized = build_llm_enhanced_content(docs)
+    output.append(llm_optimized)
+    
+    # Add QUESTION placeholder for user
+    output.append("\n## QUESTION\n")
+    
+    return "".join(output)
+
+
+def build_llm_enhanced_content(docs: list[dict]) -> str:
+    """Build document content with LLM-specific processing."""
+    output = []
+    
+    for doc in docs:
+        output.append(f"## Document: {doc['name']}\n\n")
+        
+        content = doc['content']
+        
+        # Fix missing formulas
+        content = re.sub(
+            r'<!-- formula-not-decoded -->',
+            '[Mathematical formula from original document]',
+            content
+        )
+        
+        # Add context for images
+        content = re.sub(
+            r'<!-- image -->',
+            '[Diagram: See original document for visual representation]',
+            content
+        )
+        
+        output.append(content)
+        output.append("\n---\n\n")
+    
+    return "".join(output)
+
 def post_process_formulas(content: str) -> str:
     """Convert formula placeholders to proper LaTeX."""
     formula_patterns = [
@@ -218,11 +282,19 @@ def main():
 
     markdown = build_markdown(docs)
 
+    llm_optimized = build_llm_optimized_markdown(docs)
+    
     with open(docling_output, "w", encoding="utf-8") as f:
         f.write(markdown)
-
+    
+    llm_output = output_dir / "llm.md"
+    with open(llm_output, "w", encoding="utf-8") as f:
+        f.write(llm_optimized)
+    
     docling_chars = len(markdown)
+    llm_chars = len(llm_optimized)
     print(f"\n✓ Docling: Created {docling_output} ({docling_chars} chars, {docling_chars/1024:.1f} KB)")
+    print(f"  LLM-optimized: {llm_output} ({llm_chars} chars, {llm_chars/1024:.1f} KB)")
     print(f"  Processing time: {docling_end - docling_start:.2f} seconds")
 
     opt_start = time.time()
@@ -330,10 +402,12 @@ def main():
     print("PROCESSING SUMMARY")
     print(f"{'='*60}")
     print(f"✓ Docling: {docling_end - docling_start:.2f}s | {len(markdown):,} chars")
+    print(f"✓ LLM-optimized: {len(llm_optimized):,} chars")
     print(f"✓ Optimization ({optimization_method}): {opt_end - opt_start:.2f}s | {optimized_chars:,} chars")
     print(f"\nOutput files:")
     print(f"  - {docling_output} (original)")
     print(f"  - {optimized_output} (optimized)")
+    print(f"  - {llm_output} (LLM-optimized)")
 
 if __name__ == "__main__":
     main()
