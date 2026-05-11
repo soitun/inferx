@@ -7,9 +7,10 @@ Convert PDF, DOCX, PPTX, HTML, MD, and TXT files to optimized markdown using Doc
 This tool converts document files to markdown format using Docling's remote VLM backend, then optimizes the output for KV cache efficiency in LLM processing. It supports:
 
 1. **Docling LLM processing**: Uses remote Qwen3-Coder-Next-FP8 model instead of local CPU
-2. **DSPy optimization** (optional): Compresses markdown using LLM-based whitespace optimization
-3. **Lossless compression** (default/fallback): Safe whitespace normalization without content changes
-4. **Batch processing**: Recursively processes all files in an input directory
+2. **LLM-optimized format**: System instructions integrated for direct LLM prompt usage
+3. **DSPy optimization** (optional): Compresses markdown using LLM-based whitespace optimization
+4. **Lossless compression** (default/fallback): Safe whitespace normalization without content changes
+5. **Batch processing**: Recursively processes all files in an input directory
 
 ## When to Use
 
@@ -17,6 +18,7 @@ This tool converts document files to markdown format using Docling's remote VLM 
 - Prepare documents for RAG/KV cache optimization
 - Merge multiple documents into a single knowledge base
 - Reduce token count for downstream LLM processing
+- Create LLM-ready prompts with system instructions
 
 ## Setup
 
@@ -64,7 +66,44 @@ sudo docker run --rm \
 ## Output Files
 
 - `/home/brad/test/output/merged.md`: Original Docling output with summary and document boundaries
-- `/home/brad/test/output/optimized.md`: DSPy or lossless compressed version
+- `/home/brad/test/output/optimized.md`: DSPy or lossless compressed version (KV cache optimized)
+- `/home/brad/test/output/llm.md`: LLM-ready format with system instructions for LLM prompts
+
+### LLM-Optimized Output Format (`llm.md`)
+
+```
+## SYSTEM INSTRUCTION
+You are analyzing technical documents. Follow these rules:
+
+1. **Grounding**: Only use information from the documents below
+2. **Missing content**: If formulas appear as placeholders, infer meaning from surrounding text
+3. **Images**: Treat diagram descriptions as contextual hints
+4. **Code**: Explain code blocks when relevant
+5. **Citations**: Always cite both filename AND section number
+
+   **Correct examples:**
+   - `[bitcoin.pdf, Section 4 - Proof-of-Work]`
+   - `[bitcoin.pdf, Section 11]`
+   - `[bitcoin.pdf, Section 5, Step 3]`
+
+   **Incorrect examples:**
+   - `[bitcoin.pdf]` (missing section)
+   - `Section 4` (missing filename)
+
+## DOCUMENTS
+
+## Document: [filename]
+[document content]
+
+## QUESTION
+[User's question here]
+```
+
+**Features:**
+- Ready-to-use system instruction for LLM prompts
+- Citation format guidance with examples
+- Diagrams replaced with contextual descriptions
+- Section headers preserved for easy reference
 
 ## Configuration
 
@@ -95,6 +134,7 @@ All files in `/input` and subdirectories are processed recursively.
 - **Docling**: ~10 seconds per file (uses remote LLM + OCR)
 - **Lossless compression**: ~0.00 seconds (fast)
 - **DSPy optimization**: ~40-150 seconds (chunked, depends on file size)
+- **LLM optimization**: Built-in (no extra time - part of Docling output)
 
 ## Notes
 
