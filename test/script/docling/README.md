@@ -1,38 +1,52 @@
-# Docling PDF to Markdown Converter
+# Docling PDF to Markdown Converter & Web Crawler
 
-Convert PDF, DOCX, PPTX, HTML, MD, and TXT files to optimized markdown using Docling with remote LLM (Qwen3-Coder-Next-FP8 via inferx).
+Tools for converting documents and documentation sites to optimized markdown.
 
-## Purpose
+- **convert.py** - Convert PDF, DOCX, PPTX, HTML files to markdown using Docling with remote LLM
+- **crawl2md.py** - Crawl a documentation website (e.g. vLLM docs) and merge all pages into a single markdown file
+- **count_tokens.py** - Count tokens in markdown files using the Qwen3.6-35B-A3B-FP8 tokenizer
 
-This tool converts document files to markdown format using Docling's remote VLM backend, then optimizes the output for KV cache efficiency in LLM processing. It supports:
+## Web Crawler (crawl2md.py)
 
-1. **Docling LLM processing**: Uses remote Qwen3-Coder-Next-FP8 model instead of local CPU
-2. **LLM-optimized format**: System instructions integrated for direct LLM prompt usage
-3. **DSPy optimization** (optional): Compresses markdown using LLM-based whitespace optimization
-4. **Lossless compression** (default/fallback): Safe whitespace normalization without content changes
-5. **Batch processing**: Recursively processes all files in an input directory
+Crawl documentation websites and merge all pages into `merged.md` for RAG/KV cache usage.
 
-## When to Use
-
-- Convert scanned PDFs to searchable markdown
-- Prepare documents for RAG/KV cache optimization
-- Merge multiple documents into a single knowledge base
-- Reduce token count for downstream LLM processing
-- Create LLM-ready prompts with system instructions
-
-## Setup
-
-### Prerequisites
-
-- Docker (with sudo access or user in docker group)
-- Input files in `/home/brad/test/input/` directory
-
-### Build Docker Image
+### Usage
 
 ```bash
-cd /home/brad/rust/inferx/test/script/docling
-sudo docker build -t docling-test .
+# Basic: crawl entire site (up to 200 pages, depth 5)
+sudo docker run --rm \
+  -v /home/brad/test/output:/output \
+  docling-test \
+    crawl2md.py https://docs.vllm.ai/en/latest/usage/
+
+# Limit to 50 pages, max depth 2
+sudo docker run --rm \
+  -v /home/brad/test/output:/output \
+  docling-test \
+    crawl2md.py https://docs.vllm.ai/en/latest/ --max-pages 50 --max-depth 2
+
+# Only crawl specific sections
+sudo docker run --rm \
+  -v /home/brad/test/output:/output \
+  docling-test \
+    crawl2md.py https://docs.vllm.ai/en/latest/ --include-paths /api-docs,/cli
 ```
+
+### Options
+
+- `--max-pages N`       Max pages to crawl (default: 200)
+- `--max-depth N`       Max link depth from start URL (default: 5)
+- `--exclude PATTERN`   Regex pattern to skip URLs
+- `--include-paths X,Y` Only crawl these URL paths
+- `--timeout N`         HTTP timeout in seconds (default: 30)
+
+### Features
+
+- Recursive crawling within the same domain
+- Respects max depth and page limits
+- Rate limiting (0.5s between requests)
+- Individual pages saved as `page_XXXX_page-title.md`
+- Merged into `merged.md` (full), `llm.md` (LLM-optimized), `merged_compressed.md` (lossless)
 
 ## Usage
 
@@ -142,3 +156,33 @@ All files in `/input` and subdirectories are processed recursively.
 - Lossless compression is **safe and deterministic** but provides minimal token savings (~1-2%)
 - DSPy can achieve ~10-20% reduction with the same content
 - OCR models are pre-downloaded in Docker image
+
+## Token Counter (count_tokens.py)
+
+Count tokens in one or more markdown files using the Qwen3.6-35B-A3B-FP8 tokenizer (same as the inferx LLM).
+
+### Usage
+
+```bash
+# Single file
+sudo docker run --rm \
+  -v /home/brad/test/output:/output \
+  docling-test \
+    count_tokens.py /output/llm.md
+
+# Multiple files (merged before counting)
+sudo docker run --rm \
+  -v /home/brad/test/output:/output \
+  docling-test \
+    count_tokens.py /output/page_*.md --verbose
+
+# After crawling
+sudo docker run --rm \
+  -v /home/brad/test/output:/output \
+  docling-test \
+    count_tokens.py /output/merged.md
+```
+
+### Output
+
+Shows per-file token counts, total tokens, estimated cost, and context window usage percentage.
