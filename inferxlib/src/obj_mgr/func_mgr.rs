@@ -214,7 +214,7 @@ pub enum ApiType {
     Text2Image,
     #[serde(rename = "text2audio")]
     Text2Audio,
-    #[serde(rename = "knowledagebase")]
+    #[serde(rename = "knowledgebase", alias = "knowledagebase")]
     KnowledageBase,
 }
 

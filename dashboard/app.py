@@ -192,6 +192,7 @@ ONBOARD_TIMEOUT_SEC = float(os.getenv('ONBOARD_TIMEOUT_SEC', '10'))
 MAX_GPU_VRAM_MB_ENV = "INFERX_MAX_GPU_VRAM_MB"
 MAX_GPU_COUNT_ENV = "INFERX_MAX_GPU_COUNT"
 OPEN_CODE_CONFIG_TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "integration" / "opencode.json"
+KNOWLEDGEBASE_DIR = Path("/opt/inferx/kb")
 
 
 def load_max_gpu_vram_mb_override():
@@ -3298,7 +3299,13 @@ def normalize_catalog_api_type(api_type):
     normalized = str(api_type or "").strip()
     if normalized.lower() == "openai":
         return "text2text"
+    if normalized.lower() == "knowledgebase":
+        return "knowledgebase"
     return normalized
+
+
+def knowledgebase_stage_file_path(tenant: str, namespace: str, name: str) -> Path:
+    return KNOWLEDGEBASE_DIR / f"{tenant}.{namespace}.{name}" / "kb.data"
 
 
 def infer_catalog_modality_from_sample_query(sample_query):
@@ -7962,6 +7969,57 @@ def func_save():
         resp.status_code,
         {"Content-Type": resp.headers.get("Content-Type", "application/json")},
     )
+
+
+@prefix_bp.route("/api/funcs/<tenant>/<namespace>/<name>", methods=["GET"])
+@require_login
+def api_get_func(tenant, namespace, name):
+    deny_resp = deny_public_tenant_request(tenant)
+    if deny_resp is not None:
+        return deny_resp
+
+    resp, payload = getfunc_response(tenant, namespace, name)
+    if is_upstream_resource_unavailable(resp, payload):
+        return jsonify({"exists": False}), 404
+    if not resp.ok:
+        return json_error(
+            extract_upstream_error_message(resp, payload) or "failed to load function",
+            resp.status_code,
+        )
+    return jsonify({"exists": True}), 200
+
+
+@prefix_bp.route("/kb/upload/<tenant>/<namespace>/<name>", methods=["POST"])
+@require_login
+def upload_knowledgebase_file(tenant, namespace, name):
+    deny_resp = deny_public_tenant_request(tenant)
+    if deny_resp is not None:
+        return deny_resp
+
+    try:
+        roles = listroles()
+    except Exception as e:
+        return json_error(f"failed to load roles: {e}", 502)
+
+    if not has_admin_role_for_model(roles, tenant, namespace):
+        return Response("No permission", status=403)
+
+    uploaded = request.files.get("file")
+    if uploaded is None:
+        return json_error("missing `file` upload", 400)
+
+    filename = str(getattr(uploaded, "filename", "") or "").strip()
+    if filename == "":
+        return json_error("no file selected", 400)
+
+    try:
+        stage_file = knowledgebase_stage_file_path(tenant, namespace, name)
+        stage_file.parent.mkdir(parents=True, exist_ok=True)
+        uploaded.save(stage_file)
+    except Exception as e:
+        return json_error(f"failed to store KB file: {e}", 500)
+
+    return jsonify({"ok": True, "path": str(stage_file)})
 
 
 @prefix_bp.route("/")

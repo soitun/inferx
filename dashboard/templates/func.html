@@ -442,6 +442,22 @@
 <h2>Model Spec</h2>
 <br />
 <textarea id="spec" rows="50" cols="120">{{ funcspec }}</textarea>
+<div style="margin: 10px 0 16px;">
+    <button id="update-spec-btn" type="button" onclick="updateSpec()">Update Model Spec</button>
+    <button id="delete-func-btn" type="button" onclick="deleteFunc()">Delete Model</button>
+</div>
+
+{% if func["func"]["object"]["spec"]["sample_query"]["apiType"] == "knowledgebase" %}
+<h2>Knowledge Base</h2>
+<div style="margin: 8px 0 12px;">
+    <input id="kb-file-input" type="file" style="display:block; width: 100%; max-width: 720px; margin-bottom: 10px;">
+    <div style="margin-bottom: 10px; color: #475467;">
+        Upload a replacement KB file before saving the updated model spec. Leave it empty to keep the existing KB.
+    </div>
+    <button id="kb-upload-btn" type="button" onclick="uploadKbFile()">Upload KB File</button>
+    <div id="kb-upload-status" style="margin-top: 8px; min-height: 1.4em; color: #475467;"></div>
+</div>
+{% endif %}
 
 {% if is_inferx_admin %}
 <h2>Model Full Spec</h2>
@@ -461,6 +477,11 @@
     const sampleQueryPath = {{ path | tojson }};
     const funcconfig = {{ func | tojson }};
     const funcEditData = {{ func_edit_data | tojson }};
+    const updateSpecBtn = document.getElementById('update-spec-btn');
+    const deleteFuncBtn = document.getElementById('delete-func-btn');
+    const kbFileInput = document.getElementById('kb-file-input');
+    const kbUploadBtn = document.getElementById('kb-upload-btn');
+    const kbUploadStatus = document.getElementById('kb-upload-status');
     const inferenceController = window.createInferxInferenceController({
         tenant: tenant,
         namespace: namespace,
@@ -481,10 +502,70 @@
     window.streamOutput = inferenceController.streamOutput;
     window.cancel = inferenceController.cancel;
 
+    function setKbStatus(message, isError = false) {
+        if (!kbUploadStatus) {
+            return;
+        }
+        kbUploadStatus.textContent = message || '';
+        kbUploadStatus.style.color = isError ? '#b91c1c' : '#475467';
+    }
+
+    function setKbBusy(busy) {
+        if (kbUploadBtn) {
+            kbUploadBtn.disabled = busy;
+        }
+        if (updateSpecBtn) {
+            updateSpecBtn.disabled = busy;
+        }
+    }
+
+    async function uploadKbFileIfSelected(required) {
+        if (String(apiType || '').toLowerCase() !== 'knowledgebase') {
+            return false;
+        }
+
+        const selectedFile = kbFileInput?.files && kbFileInput.files.length > 0 ? kbFileInput.files[0] : null;
+        if (!selectedFile) {
+            if (required) {
+                throw new Error('Select a KB file to upload.');
+            }
+            return false;
+        }
+
+        const formData = new FormData();
+        formData.append('file', selectedFile);
+
+        setKbStatus('Uploading KB file...');
+        const response = await fetch(`/kb/upload/${encodeURIComponent(tenant)}/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`, {
+            method: 'POST',
+            body: formData
+        });
+        const text = await response.text();
+        if (!response.ok) {
+            throw new Error(text || `KB upload failed (HTTP ${response.status})`);
+        }
+
+        setKbStatus(`Uploaded ${selectedFile.name} as kb.data.`);
+        return true;
+    }
+
+    async function uploadKbFile() {
+        try {
+            setKbBusy(true);
+            await uploadKbFileIfSelected(true);
+        } catch (err) {
+            setKbStatus(err.message || String(err), true);
+        } finally {
+            setKbBusy(false);
+        }
+    }
+
     async function updateSpec() {
         const debugDiv = document.getElementById('debug');
         const spec = document.getElementById('spec').value;
         try {
+            setKbBusy(true);
+            await uploadKbFileIfSelected(false);
             let response;
             if (funcEditData == null || typeof funcEditData !== 'object') {
                 // Legacy fallback: update raw full spec directly.
@@ -533,6 +614,8 @@
         } catch (err) {
             alert("Update Model Spec fail with error: " + err);
             debugDiv.innerHTML += 'Update Model Spec fail with error:' + err + "\n\n";
+        } finally {
+            setKbBusy(false);
         }
     }
 
