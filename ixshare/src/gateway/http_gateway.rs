@@ -94,6 +94,7 @@ use super::scheduler_client::SCHEDULER_CLIENT;
 use super::secret::{EndpointMetadata, SqlSecret};
 use super::tokenizer::KnowledgeBaseRoute;
 use super::tokenizer::TokenizerRoute;
+use super::tokenizer::NormalizeFuncRequest;
 pub static GATEWAY_ID: AtomicI64 = AtomicI64::new(-1);
 const FUNCCALL_MAX_BODY_BYTES: usize = 20 * 1024 * 1024;
 const VIRTUAL_ENDPOINTS_NAMESPACE: &str = "endpoints";
@@ -1477,10 +1478,10 @@ pub async fn FuncCall1(
 
     let mut res;
 
-    let (parts, body) = req.into_parts();
+    let (mut parts, body) = req.into_parts();
 
     // Collect the body bytes
-    let bytes = match axum::body::to_bytes(body, FUNCCALL_MAX_BODY_BYTES).await {
+    let mut bytes = match axum::body::to_bytes(body, FUNCCALL_MAX_BODY_BYTES).await {
         Err(_e) => {
             let resp = FailureResponse(
                 Error::BAD_REQUEST(StatusCode::BAD_REQUEST),
@@ -1492,6 +1493,30 @@ pub async fn FuncCall1(
         }
         Ok(b) => b,
     };
+
+    // Normalize the request once before the retry loop (KB: chat→completions rewrite)
+    if parts.method == axum::http::Method::POST {
+        match NormalizeFuncRequest(&gw, &route, &remainPath, &bytes).await {
+            Err(status) => {
+                let resp = Response::builder()
+                    .status(status)
+                    .body(Body::from("service failure: normalization failed"))
+                    .unwrap();
+                return Ok(resp);
+            }
+            Ok(None) => {}
+            Ok(Some(norm)) => {
+                parts.uri = Uri::try_from(norm.target_path.as_str())
+                    .unwrap_or(parts.uri);
+                bytes = Bytes::from(norm.body_bytes);
+                parts.headers.remove(hyper::header::CONTENT_LENGTH);
+                parts.headers.insert(
+                    CONTENT_TYPE,
+                    HeaderValue::from_static(norm.content_type),
+                );
+            }
+        }
+    }
 
     let trace_enabled = trace_logging_enabled();
     let redacted_json_req = summarize_funccall_body_for_log(&bytes, trace_enabled);

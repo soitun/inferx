@@ -29,7 +29,7 @@ use std::collections::BTreeSet;
 use std::num::ParseIntError;
 
 pub const SNAPSHOT_DIR: &str = "/opt/inferx/snapshot";
-pub const KB_PROMPT_DIR: &str = "/opt/inferx/kbprompt";
+pub const KB_DIR: &str = "/opt/inferx/kb";
 
 fn default_endpoints_policy() -> EndpointGatewayPolicySpec {
     EndpointGatewayPolicySpec::default()

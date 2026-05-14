@@ -656,6 +656,16 @@
         </div>
     </div>
 
+    <div id="kb-upload-panel" class="panel" style="display:none;">
+        <h3>Knowledge Base File</h3>
+        <input id="kb-file-input" type="file">
+        <div class="hint">Upload a single file. The dashboard stores it as <code>kb.data</code> in shared staging before deploy/update.</div>
+        <div class="inline-row" style="margin-top: 10px;">
+            <button id="kb-upload-btn" type="button" class="ix-btn secondary">Upload KB File</button>
+            <span id="kb-upload-status" class="hint"></span>
+        </div>
+    </div>
+
     <div class="actions-footer">
         <a
             class="ix-btn secondary"
@@ -761,6 +771,10 @@
         const errorBanner = document.getElementById('error-banner');
         const successBanner = document.getElementById('success-banner');
         const saveBtn = document.getElementById('save-model-btn');
+        const kbUploadPanel = document.getElementById('kb-upload-panel');
+        const kbFileInput = document.getElementById('kb-file-input');
+        const kbUploadBtn = document.getElementById('kb-upload-btn');
+        const kbUploadStatus = document.getElementById('kb-upload-status');
         const modelSaveModal = document.getElementById('model-save-modal');
         const modelSaveModalTitle = document.getElementById('model-save-modal-title');
         const modelSaveModalSummary = document.getElementById('model-save-modal-summary');
@@ -786,6 +800,133 @@
         const HF_MODEL_BASIC_TOOLTIP = 'Hugging Face model ID (for example namespace/model). Required in Basic mode. Used to build the runtime model target.';
         const HF_MODEL_ADVANCED_TOOLTIP = 'Hugging Face model ID (for example namespace/model). Optional in Advanced mode if the submitted spec already encodes the runtime model target.';
         const HF_MODEL_READONLY_TOOLTIP = 'Runtime model target for this existing or catalog-backed model.';
+
+        function setKbStatus(message, isError = false) {
+            if (!kbUploadStatus) {
+                return;
+            }
+            kbUploadStatus.textContent = message || '';
+            kbUploadStatus.style.color = isError ? '#b91c1c' : '#475569';
+        }
+
+        function setKbUiBusy(busy) {
+            if (kbUploadBtn) {
+                kbUploadBtn.disabled = busy;
+            }
+            if (saveBtn) {
+                saveBtn.disabled = busy;
+            }
+        }
+
+        function getCurrentKbSpec() {
+            try {
+                return activeTab === 'basic' ? buildBasicSpecFromUi() : parseAdvancedSpec();
+            } catch (_err) {
+                return null;
+            }
+        }
+
+        function isKnowledgebaseSpec(spec) {
+            return !!(
+                spec
+                && typeof spec === 'object'
+                && !Array.isArray(spec)
+                && spec.sample_query
+                && typeof spec.sample_query === 'object'
+                && String(spec.sample_query.apiType || '').trim().toLowerCase() === 'knowledgebase'
+            );
+        }
+
+        function updateKbUploadVisibility() {
+            if (!kbUploadPanel) {
+                return;
+            }
+            const visible = isKnowledgebaseSpec(getCurrentKbSpec());
+            kbUploadPanel.style.display = visible ? 'block' : 'none';
+            if (!visible) {
+                setKbStatus('');
+            }
+        }
+
+        async function ensureCreateKbTargetDoesNotExist(payload) {
+            if (PAGE_MODE !== 'create') {
+                return;
+            }
+
+            const resp = await fetch(`/api/funcs/${encodeURIComponent(payload.tenant)}/${encodeURIComponent(payload.namespace)}/${encodeURIComponent(payload.name)}`, {
+                method: 'GET',
+                headers: { 'Accept': 'application/json' }
+            });
+
+            if (resp.status === 404) {
+                return;
+            }
+
+            if (resp.ok) {
+                throw new Error('This function already exists. Use the update flow instead.');
+            }
+
+            let detail = `Function existence check failed (HTTP ${resp.status})`;
+            try {
+                const parsed = await resp.json();
+                if (parsed && parsed.error) {
+                    detail = parsed.error;
+                }
+            } catch (_err) {
+                const text = await resp.text();
+                if (text) {
+                    detail = text;
+                }
+            }
+            throw new Error(detail);
+        }
+
+        async function uploadKnowledgebaseFile(payload, required) {
+            if (!isKnowledgebaseSpec(payload?.spec)) {
+                return false;
+            }
+
+            const selectedFile = kbFileInput?.files && kbFileInput.files.length > 0 ? kbFileInput.files[0] : null;
+            if (!selectedFile) {
+                if (required) {
+                    throw new Error('Knowledge base file is required for knowledgebase deployments.');
+                }
+                return false;
+            }
+
+            if (PAGE_MODE === 'create') {
+                await ensureCreateKbTargetDoesNotExist(payload);
+            }
+
+            const formData = new FormData();
+            formData.append('file', selectedFile);
+
+            setKbStatus('Uploading KB file...');
+            const resp = await fetch(`/kb/upload/${encodeURIComponent(payload.tenant)}/${encodeURIComponent(payload.namespace)}/${encodeURIComponent(payload.name)}`, {
+                method: 'POST',
+                body: formData
+            });
+            const text = await resp.text();
+            if (!resp.ok) {
+                let detail = `KB upload failed (HTTP ${resp.status})`;
+                try {
+                    const parsed = JSON.parse(text);
+                    if (parsed && parsed.error) {
+                        detail = parsed.error;
+                    } else if (text) {
+                        detail = `${detail}: ${text}`;
+                    }
+                } catch (_err) {
+                    if (text) {
+                        detail = `${detail}: ${text}`;
+                    }
+                }
+                throw new Error(detail);
+            }
+
+            setKbStatus(`Uploaded ${selectedFile.name} as kb.data.`);
+            return true;
+        }
 
         function updateHfModelFieldRequirementUi() {
             const manualCreate = PAGE_MODE === 'create' && !IS_CATALOG_MODE;
@@ -1566,6 +1707,7 @@
             panelBasic.classList.toggle('active', basicActive);
             panelAdvanced.classList.toggle('active', !basicActive);
             updateHfModelFieldRequirementUi();
+            updateKbUploadVisibility();
         }
 
         function parseAdvancedSpec() {
@@ -1639,10 +1781,12 @@
                 return;
             }
 
-            saveBtn.disabled = true;
+            setKbUiBusy(true);
             showSuccess(payload.mode === 'update' ? 'Updating model...' : 'Deploying model...');
 
             try {
+                await uploadKnowledgebaseFile(payload, PAGE_MODE === 'create');
+
                 console.log('[func_create] submit payload', {
                     activeTab,
                     mode: payload.mode,
@@ -1685,9 +1829,10 @@
                 return;
             } catch (err) {
                 showSuccess('');
+                setKbStatus(err.message || String(err), true);
                 showError(err.message || String(err));
             } finally {
-                saveBtn.disabled = false;
+                setKbUiBusy(false);
             }
         }
 
@@ -1898,6 +2043,23 @@
                     return;
                 }
                 _advancedSpecUserEdited = true;
+                updateKbUploadVisibility();
+            });
+            kbUploadBtn?.addEventListener('click', async () => {
+                clearMessages();
+                let payload;
+                try {
+                    payload = buildTopLevelPayload();
+                    payload.editor_mode = activeTab;
+                    payload.spec = activeTab === 'basic' ? buildBasicSpecFromUi() : parseAdvancedSpec();
+                    setKbUiBusy(true);
+                    await uploadKnowledgebaseFile(payload, true);
+                } catch (err) {
+                    setKbStatus(err.message || String(err), true);
+                    showError(err.message || String(err));
+                } finally {
+                    setKbUiBusy(false);
+                }
             });
             imageSelect?.addEventListener('change', markBasicSpecDirty);
             commandsJson.addEventListener('input', markBasicSpecDirty);
@@ -1935,6 +2097,7 @@
             applyInitialModelIfPresent();
             updateHfModelFieldRequirementUi();
             applyBasicCompatibilityState();
+            updateKbUploadVisibility();
 
             const resolvedInitialTab = (PAGE_MODE === 'update' && !BASIC_MODE_SUPPORTED)
                 ? 'advanced'
@@ -1969,6 +2132,7 @@
                     // Keep empty and validate on submit.
                 }
             }
+            updateKbUploadVisibility();
         }
 
         init();
