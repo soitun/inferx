@@ -32,7 +32,7 @@ use inferxlib::data_obj::*;
 
 use async_trait::async_trait;
 
-pub const DEFAULT_CACHE_COUNT: usize = 2000;
+pub const DEFAULT_CACHE_COUNT: usize = 32768;
 
 #[async_trait]
 pub trait BackendStore: Sync + Send + Debug {

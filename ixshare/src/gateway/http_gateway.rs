@@ -817,9 +817,9 @@ fn tenant_from_path(path: &str) -> Option<&str> {
     }
 }
 
-fn tenant_quota_state(gw: &HttpGateway, tenant: &str) -> Result<(bool, bool)> {
+fn tenant_quota_state(gw: &HttpGateway, tenant: &str) -> Result<(bool, bool, bool)> {
     if tenant.is_empty() {
-        return Ok((false, false));
+        return Ok((false, false, false));
     }
 
     match gw
@@ -827,7 +827,11 @@ fn tenant_quota_state(gw: &HttpGateway, tenant: &str) -> Result<(bool, bool)> {
         .tenantMgr
         .Get(SYSTEM_TENANT, SYSTEM_NAMESPACE, tenant)
     {
-        Ok(t) => Ok((t.object.spec.quota_exempt, t.object.status.quota_exceeded)),
+        Ok(t) => Ok((
+            t.object.spec.quota_exempt,
+            t.object.status.quota_exceeded,
+            t.object.status.disable,
+        )),
         Err(e) => Err(e.into()),
     }
 }
@@ -836,6 +840,14 @@ fn quota_exceeded_response(tenant: &str) -> Response<Body> {
     let body = Body::from(format!("service failure: tenant {} quota exceeded", tenant));
     Response::builder()
         .status(StatusCode::TOO_MANY_REQUESTS)
+        .body(body)
+        .unwrap()
+}
+
+fn tenant_blocked_response(tenant: &str) -> Response<Body> {
+    let body = Body::from(format!("service failure: tenant {} is blocked", tenant));
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
         .body(body)
         .unwrap()
 }
@@ -969,9 +981,17 @@ fn enforce_tenant_quota_for_write(
     }
 
     match tenant_quota_state(gw, tenant) {
-        Ok((true, _)) => return None,
-        Ok((false, true)) => return Some(quota_exceeded_response(tenant)),
-        Ok((false, false)) => {}
+        Ok((quota_exempt, quota_exceeded, disable)) => {
+            if disable && tenant != SYSTEM_TENANT {
+                return Some(tenant_blocked_response(tenant));
+            }
+            if quota_exempt {
+                return None;
+            }
+            if quota_exceeded {
+                return Some(quota_exceeded_response(tenant));
+            }
+        }
         Err(e) => {
             error!("tenant quota lookup failed for {}: {:?}", tenant, e);
             return Some(quota_lookup_failed_response(tenant));
@@ -999,22 +1019,28 @@ fn enforce_tenant_quota_for_request(
     }
 
     match tenant_quota_state(gw, tenant) {
-        Ok((true, _)) => return None,
-        Ok((false, true)) => {
-            if is_funccall_path(path) {
-                return Some(quota_exceeded_response(tenant));
+        Ok((quota_exempt, quota_exceeded, disable)) => {
+            if disable && tenant != SYSTEM_TENANT {
+                return Some(tenant_blocked_response(tenant));
             }
-
-            if *method == axum::http::Method::GET
-                || *method == axum::http::Method::HEAD
-                || *method == axum::http::Method::OPTIONS
-            {
+            if quota_exempt {
                 return None;
             }
+            if quota_exceeded {
+                if is_funccall_path(path) {
+                    return Some(quota_exceeded_response(tenant));
+                }
 
-            return Some(quota_exceeded_response(tenant));
+                if *method == axum::http::Method::GET
+                    || *method == axum::http::Method::HEAD
+                    || *method == axum::http::Method::OPTIONS
+                {
+                    return None;
+                }
+
+                return Some(quota_exceeded_response(tenant));
+            }
         }
-        Ok((false, false)) => {}
         Err(e) => {
             error!("tenant quota lookup failed for {}: {:?}", tenant, e);
             return Some(quota_lookup_failed_response(tenant));
@@ -1356,6 +1382,7 @@ impl HttpGateway {
                 "/tenant/:tenant/quota-exceeded",
                 post(SetTenantQuotaExceeded),
             )
+            .route("/tenant/:tenant/disable", post(SetTenantDisable))
             .route("/billing/rates", post(AddBillingRate))
             .route("/billing/rates", get(GetBillingRateHistory))
             .route("/billing/token-rates", post(AddTokenRate))
@@ -3484,9 +3511,14 @@ async fn SkillCall(
             calling_tenant.as_str()
         };
         match tenant_quota_state(&gw, payer) {
-            Ok((true, _)) => {}
-            Ok((false, true)) => return Ok(quota_exceeded_response(payer)),
-            Ok((false, false)) => {}
+            Ok((quota_exempt, quota_exceeded, disable)) => {
+                if disable && payer != SYSTEM_TENANT {
+                    return Ok(tenant_blocked_response(payer));
+                }
+                if !quota_exempt && quota_exceeded {
+                    return Ok(quota_exceeded_response(payer));
+                }
+            }
             Err(e) => {
                 error!("skill quota lookup failed for {}: {:?}", payer, e);
                 return Ok(quota_lookup_failed_response(payer));
@@ -5019,6 +5051,11 @@ struct SetTenantQuotaExceededRequest {
 }
 
 #[derive(Deserialize)]
+struct SetTenantDisableRequest {
+    disable: bool,
+}
+
+#[derive(Deserialize)]
 struct CreditHistoryQuery {
     limit: Option<i64>,
     offset: Option<i64>,
@@ -5643,6 +5680,144 @@ async fn SetTenantQuotaExceeded(
             }
             Err(e) => {
                 let body = Body::from(format!("Failed to update tenant quota_exceeded: {:?}", e));
+                let resp = Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(body)
+                    .unwrap();
+                return Ok(resp);
+            }
+        }
+    }
+
+    let body = Body::from("tenant update retried but was not applied");
+    let resp = Response::builder()
+        .status(StatusCode::CONFLICT)
+        .body(body)
+        .unwrap();
+    Ok(resp)
+}
+
+#[derive(Serialize)]
+struct SetTenantDisableResponse {
+    success: bool,
+    tenant: String,
+    disable: bool,
+    revision: i64,
+}
+
+async fn SetTenantDisable(
+    Extension(token): Extension<Arc<AccessToken>>,
+    State(gw): State<HttpGateway>,
+    Path(tenant): Path<String>,
+    Json(req): Json<SetTenantDisableRequest>,
+) -> SResult<Response, StatusCode> {
+    if !token.IsInferxAdmin() {
+        let body = Body::from("Permission denied: Only InferxAdmin can update tenant disable");
+        let resp = Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .body(body)
+            .unwrap();
+        return Ok(resp);
+    }
+
+    for attempt in 0..TENANT_QUOTA_UPDATE_MAX_RETRIES {
+        let tenant_obj = match gw
+            .client
+            .Get(Tenant::KEY, SYSTEM_TENANT, SYSTEM_NAMESPACE, &tenant, 0)
+            .await
+        {
+            Ok(Some(obj)) => obj,
+            Ok(None) => {
+                let body = Body::from(format!("Tenant {} not found", tenant));
+                let resp = Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(body)
+                    .unwrap();
+                return Ok(resp);
+            }
+            Err(e) => {
+                let body = Body::from(format!("Failed to read tenant object: {:?}", e));
+                let resp = Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(body)
+                    .unwrap();
+                return Ok(resp);
+            }
+        };
+
+        let mut tenant_obj: Tenant = match Tenant::FromDataObject(tenant_obj) {
+            Ok(obj) => obj,
+            Err(e) => {
+                let body = Body::from(format!("Failed to parse tenant object: {:?}", e));
+                let resp = Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(body)
+                    .unwrap();
+                return Ok(resp);
+            }
+        };
+
+        if tenant_obj.object.status.disable == req.disable {
+            let resp_body = SetTenantDisableResponse {
+                success: true,
+                tenant: tenant.clone(),
+                disable: req.disable,
+                revision: tenant_obj.revision,
+            };
+            let data = serde_json::to_string(&resp_body).unwrap();
+            let body = Body::from(data);
+            let resp = Response::builder()
+                .status(StatusCode::OK)
+                .body(body)
+                .unwrap();
+            return Ok(resp);
+        }
+
+        let expect_rev = tenant_obj.revision;
+        if expect_rev <= 0 {
+            let body = Body::from(format!(
+                "invalid tenant revision {} for {}",
+                expect_rev, tenant
+            ));
+            let resp = Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(body)
+                .unwrap();
+            return Ok(resp);
+        }
+
+        tenant_obj.object.status.disable = req.disable;
+        match gw.client.Update(&tenant_obj.DataObject(), expect_rev).await {
+            Ok(version) => {
+                let resp_body = SetTenantDisableResponse {
+                    success: true,
+                    tenant: tenant.clone(),
+                    disable: req.disable,
+                    revision: version,
+                };
+                let data = serde_json::to_string(&resp_body).unwrap();
+                let body = Body::from(data);
+                let resp = Response::builder()
+                    .status(StatusCode::OK)
+                    .body(body)
+                    .unwrap();
+                return Ok(resp);
+            }
+            Err(Error::UpdateRevNotMatchErr(e)) => {
+                if attempt + 1 == TENANT_QUOTA_UPDATE_MAX_RETRIES {
+                    let body = Body::from(format!(
+                        "tenant {} update conflicted after {} retries (expected_rev={}, actual_rev={})",
+                        tenant, TENANT_QUOTA_UPDATE_MAX_RETRIES, e.expectRv, e.actualRv
+                    ));
+                    let resp = Response::builder()
+                        .status(StatusCode::CONFLICT)
+                        .body(body)
+                        .unwrap();
+                    return Ok(resp);
+                }
+            }
+            Err(e) => {
+                let body = Body::from(format!("Failed to update tenant disable: {:?}", e));
                 let resp = Response::builder()
                     .status(StatusCode::BAD_REQUEST)
                     .body(body)
