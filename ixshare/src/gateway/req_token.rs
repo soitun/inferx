@@ -18,6 +18,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::audit::{TokenUsageEvent, TOKEN_USAGE_AGENT};
 use crate::gateway::auth_layer::AccessToken;
 use crate::gateway::http_gateway::{GatewayId, HttpGateway};
+use crate::gateway::throttle;
 
 use super::http_gateway::FuncCall1;
 
@@ -96,6 +97,19 @@ fn record_usage(meter: &Option<TokenMeterCtx>, usage: &UsageInfo, streaming: boo
                 ts: ctx.request_ts,
                 gateway_id: Some(GatewayId()),
             });
+
+            // Throttle route scope is `/endpoints/v1/completions` (Direct) only —
+            // not OpenRouter. Token counts are only known here, post-hoc, so the
+            // weighted-token buckets are charged now rather than at admission time
+            // (see throttle.rs).
+            if ctx.source == "direct" {
+                let weighted = throttle::weighted_tokens(
+                    usage.promptTokens as i64,
+                    usage.cachedTokens as i64,
+                    usage.completionTokens as i64,
+                );
+                throttle::THROTTLE.record_weighted_tokens(&ctx.caller_tenant, weighted);
+            }
         }
         None => {
             let kind = if streaming { "stream" } else { "non-streaming" };

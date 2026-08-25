@@ -89,6 +89,21 @@ pub struct FunccallLabels {
     pub status: u16, // track success/failure
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelValue)]
+pub enum ThrottleResult {
+    Allowed,
+    DeniedMinuteReq,
+    DeniedHourReq,
+    DeniedMinuteTok,
+    DeniedHourTok,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct ThrottleLabels {
+    pub tenant: String,
+    pub result: ThrottleResult,
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct GpuCountLabels {
     pub tenant: String,
@@ -110,6 +125,12 @@ pub struct GatewayMetrics {
     pub funccallTtft: Family<FunccallLabels, Histogram>,
     pub requests: Family<MethodLabels, Counter>,
     pub gpuCount: Family<GpuCountLabels, Gauge>,
+    // Per-tenant throttle decision outcomes.
+    pub throttle_checks: Family<ThrottleLabels, Counter>,
+    // 1 while the gateway has a valid throttle config loaded, 0 during cold-start fail-open.
+    pub throttle_config_state: Gauge,
+    // Age of the last successfully loaded throttle config, in seconds.
+    pub throttle_config_age_seconds: Gauge,
 }
 
 impl GatewayMetrics {
@@ -124,6 +145,9 @@ impl GatewayMetrics {
             funccallTtft: Family::new_with_constructor(ttftHg),
             requests: Family::default(),
             gpuCount: Family::default(),
+            throttle_checks: Family::default(),
+            throttle_config_state: Gauge::default(),
+            throttle_config_age_seconds: Gauge::default(),
         };
 
         return ret;
@@ -164,6 +188,24 @@ impl GatewayMetrics {
             "gpu_count",
             "leased gpu count by logical workload and pod",
             self.gpuCount.clone(),
+        );
+
+        METRICS_REGISTRY.lock().await.register(
+            "throttle_checks",
+            "per-tenant throttle decision outcomes",
+            self.throttle_checks.clone(),
+        );
+
+        METRICS_REGISTRY.lock().await.register(
+            "throttle_config_state",
+            "1 if a valid throttle config is loaded, 0 during cold-start fail-open",
+            self.throttle_config_state.clone(),
+        );
+
+        METRICS_REGISTRY.lock().await.register(
+            "throttle_config_age_seconds",
+            "age of the last successfully loaded throttle config, in seconds",
+            self.throttle_config_age_seconds.clone(),
         );
     }
 }
