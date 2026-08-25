@@ -98,8 +98,11 @@ use super::log_admin::{
 };
 use super::metrics::FunccallLabels;
 use super::metrics::Status;
+use super::metrics::ThrottleLabels;
+use super::metrics::ThrottleResult;
 use super::metrics::GATEWAY_METRICS;
 use super::metrics::METRICS_REGISTRY;
+use super::throttle::{ThrottleBranch, THROTTLE};
 use super::scheduler_client::SCHEDULER_CLIENT;
 use super::http_gw::{BuildProviderModelEntry, ProviderModelsAdapter};
 use super::req_token::{inject_usage_options, process_usage_response, TokenMeterCtx};
@@ -849,6 +852,58 @@ fn quota_lookup_failed_response(tenant: &str) -> Response<Body> {
         .status(StatusCode::SERVICE_UNAVAILABLE)
         .body(body)
         .unwrap()
+}
+
+/// Per-branch 429 body + `Retry-After` for a throttle denial. `Retry-After`
+/// is not part of the existing gateway 429 convention but is added here since
+/// it directly enables the client backpressure behavior the throttle depends on.
+fn throttle_exceeded_response(tenant: &str, branch: ThrottleBranch) -> Response<Body> {
+    let message = match branch {
+        ThrottleBranch::MinuteReq => "exceeded request rate (per-minute)",
+        ThrottleBranch::HourReq => "exceeded request rate (per-hour)",
+        ThrottleBranch::MinuteTok => "exceeded token rate (per-minute)",
+        ThrottleBranch::HourTok => "exceeded token rate (per-hour)",
+    };
+    let body = Body::from(format!("service failure: tenant {} {}", tenant, message));
+    let retry_after = THROTTLE.retry_after_secs(tenant, branch);
+    Response::builder()
+        .status(StatusCode::TOO_MANY_REQUESTS)
+        .header("Retry-After", retry_after.to_string())
+        .body(body)
+        .unwrap()
+}
+
+fn throttle_result_for_branch(branch: Option<ThrottleBranch>) -> ThrottleResult {
+    match branch {
+        None => ThrottleResult::Allowed,
+        Some(ThrottleBranch::MinuteReq) => ThrottleResult::DeniedMinuteReq,
+        Some(ThrottleBranch::HourReq) => ThrottleResult::DeniedHourReq,
+        Some(ThrottleBranch::MinuteTok) => ThrottleResult::DeniedMinuteTok,
+        Some(ThrottleBranch::HourTok) => ThrottleResult::DeniedHourTok,
+    }
+}
+
+/// Enforce the per-tenant throttle on the shared-endpoint Direct path
+/// (`/endpoints/v1/completions` only — proposal §1, §7). Not applied to
+/// OpenRouter (`/v1/*`) or `/funccall/*` and friends.
+async fn enforce_tenant_throttle(tenant: &str) -> Option<Response<Body>> {
+    if !GATEWAY_CONFIG.enforceThrottle {
+        return None;
+    }
+
+    let result = THROTTLE.check_request(tenant);
+    let label_result = throttle_result_for_branch(result.err());
+    GATEWAY_METRICS
+        .lock()
+        .await
+        .throttle_checks
+        .get_or_create(&ThrottleLabels { tenant: tenant.to_string(), result: label_result })
+        .inc();
+
+    match result {
+        Ok(()) => None,
+        Err(branch) => Some(throttle_exceeded_response(tenant, branch)),
+    }
 }
 
 fn is_blocked_public_endpoint_inference(tenant: &str, namespace: &str) -> bool {
@@ -4699,6 +4754,11 @@ async fn SharedEndpointCompletions(
     if let Some(resp) =
         enforce_tenant_quota_for_request(&token, &gw, &caller_tenant, req.method(), req.uri().path())
     {
+        return Ok(resp);
+    }
+
+    // Throttle is scoped to this Direct surface only — not OpenRouter.
+    if let Some(resp) = enforce_tenant_throttle(&caller_tenant).await {
         return Ok(resp);
     }
 

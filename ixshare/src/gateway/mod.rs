@@ -30,4 +30,5 @@ pub mod secret;
 pub mod session;
 mod skill_chain;
 mod skill_trace_sse;
+pub mod throttle;
 pub mod tokenizer;

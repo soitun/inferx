@@ -694,6 +694,18 @@ pub struct TokenRateHistoryRecord {
     pub added_by: Option<String>,
 }
 
+/// One row of `ThrottleLimit`: `tenant IS NULL` is the global default, a set
+/// `tenant` is a per-tenant override.
+#[derive(Serialize, Deserialize, Debug, Clone, FromRow)]
+pub struct ThrottleLimitRecord {
+    pub tenant: Option<String>,
+    pub req_per_min: i64,
+    pub req_per_hour: i64,
+    pub wtok_per_min: i64,
+    pub wtok_per_hour: i64,
+    pub enabled: bool,
+}
+
 impl SqlAudit {
     pub async fn New(sqlSvcAddr: &str) -> Result<Self> {
         let url_parts = url::Url::parse(sqlSvcAddr).expect("Failed to parse URL");
@@ -1167,6 +1179,22 @@ impl SqlAudit {
         .fetch_optional(&self.pool)
         .await?;
         Ok(record)
+    }
+
+    /// Load the whole enabled `ThrottleLimit` table. Called on a timer by the
+    /// gateway's in-memory throttle state; the table is tiny (one global row +
+    /// a handful of overrides), so a per-request DB call is never on this path.
+    pub async fn LoadThrottleLimits(&self) -> Result<Vec<ThrottleLimitRecord>> {
+        let records: Vec<ThrottleLimitRecord> = sqlx::query_as(
+            r#"
+            SELECT tenant, req_per_min, req_per_hour, wtok_per_min, wtok_per_hour, enabled
+            FROM ThrottleLimit
+            WHERE enabled
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(records)
     }
 
     /// List token rate history for a slug (all rows, newest first).

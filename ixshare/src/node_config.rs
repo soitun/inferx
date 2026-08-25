@@ -304,6 +304,9 @@ pub struct GatewayConfig {
     pub auditdbAddr: String,
     pub billingdbAddr: String,
     pub enforceBilling: bool,
+    pub enforceThrottle: bool,
+    // Reload period for the in-memory ThrottleLimit config.
+    pub throttleConfigReloadIntervalSecs: u64,
     pub skillEPSystemPromptConstraint: bool,
     pub secretStoreAddr: String,
     pub keycloakconfig: KeycloadConfig,
@@ -426,6 +429,23 @@ impl GatewayConfig {
             Err(_) => false,
         };
 
+        let enforceThrottle = match std::env::var("ENFORCE_THROTTLE") {
+            Ok(s) => match s.parse::<bool>() {
+                Ok(v) => v,
+                Err(_) => {
+                    warn!(
+                        "invalid ENFORCE_THROTTLE value '{}', defaulting to false",
+                        &s
+                    );
+                    false
+                }
+            },
+            Err(_) => false,
+        };
+
+        let throttleConfigReloadIntervalSecs =
+            env_u64_or("THROTTLE_CONFIG_RELOAD_INTERVAL_SECS", 30);
+
         let skillEPSystemPromptConstraint = match std::env::var("SKILL_EP_CONSTRAINT") {
             Ok(s) => match s.parse::<bool>() {
                 Ok(v) => v,
@@ -510,6 +530,8 @@ impl GatewayConfig {
             auditdbAddr: auditdbAddr,
             billingdbAddr: billingdbAddr,
             enforceBilling: enforceBilling,
+            enforceThrottle: enforceThrottle,
+            throttleConfigReloadIntervalSecs: throttleConfigReloadIntervalSecs,
             skillEPSystemPromptConstraint: skillEPSystemPromptConstraint,
             keycloakconfig: KeycloadConfig {
                 url: keycloakUrl,
