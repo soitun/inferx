@@ -36,6 +36,7 @@ use inferxlib::data_obj::*;
 use super::watch::DataObjList;
 
 pub const PATH_PREFIX: &str = "/registry";
+const INIT_CACHESTORE_PAGE_SIZE: usize = 1000;
 
 #[derive(Debug)]
 pub struct EtcdStoreInner {
@@ -269,6 +270,44 @@ impl BackendStore for EtcdStore {
 }
 
 impl EtcdStore {
+    async fn InitCacheStoreList(&self, prefix: &str, rev: i64) -> Result<DataObjList> {
+        let mut objs = Vec::new();
+        let mut continue_ = None;
+        let mut page = 0usize;
+
+        loop {
+            let list = self
+                .List(
+                    prefix,
+                    &ListOption {
+                        revision: rev,
+                        revisionMatch: RevisionMatch::Exact,
+                        predicate: SelectionPredicate {
+                            limit: INIT_CACHESTORE_PAGE_SIZE,
+                            continue_: continue_.clone(),
+                            ..Default::default()
+                        },
+                    },
+                )
+                .await?;
+
+            page += 1;
+            let count = list.objs.len();
+            let has_more = list.continue_.is_some();
+            info!(
+                "InitCacheStoreList page loaded prefix={} page={} objs={} rev={} has_more={}",
+                prefix, page, count, list.revision, has_more
+            );
+            objs.extend(list.objs);
+
+            if !has_more {
+                return Ok(DataObjList::New(objs, list.revision, None, -1));
+            }
+
+            continue_ = list.continue_;
+        }
+    }
+
     pub async fn Create(&self, obj: &DataObject<Value>, leaseId: i64) -> Result<DataObject<Value>> {
         let key = obj.StoreKey();
         let preparedKey = self.PrepareKey(&key)?;
@@ -498,18 +537,18 @@ impl EtcdStore {
     }
 
     async fn InitCacheStore(&self, cs: &CacheStore, rev: i64, prefix: &str) -> Result<i64> {
-        let list = self
-            .List(
-                prefix,
-                &ListOption {
-                    revision: rev,
-                    ..Default::default()
-                },
-            )
-            .await?;
+        info!("InitCacheStore start prefix={} rev={}", prefix, rev);
+        let list = self.InitCacheStoreList(prefix, rev).await?;
+        info!(
+            "InitCacheStore list complete prefix={} objs={} rev={}",
+            prefix,
+            list.objs.len(),
+            list.revision
+        );
 
         {
             let mut inner = cs.write().unwrap();
+            info!("InitCacheStore write lock prefix={}", prefix);
 
             // close all watches
             inner.watchers.clear();
@@ -517,10 +556,19 @@ impl EtcdStore {
             inner.cacheStore.clear();
             inner.cache.Reset();
 
+            let mut loaded = 0usize;
             for o in list.objs {
                 let obj = o.DeepCopy();
                 inner.Add(&obj, true)?;
+                loaded += 1;
+                if loaded % INIT_CACHESTORE_PAGE_SIZE == 0 {
+                    info!(
+                        "InitCacheStore apply progress prefix={} loaded={}",
+                        prefix, loaded
+                    );
+                }
             }
+            info!("InitCacheStore apply complete prefix={} loaded={}", prefix, loaded);
         }
 
         return Ok(list.revision);
