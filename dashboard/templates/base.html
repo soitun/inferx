@@ -984,7 +984,6 @@
 
                 return {
                     quotaExceeded: parsed.quotaExceeded === true,
-                    promoAvailable: parsed.promoAvailable !== false,
                     fetchedAt,
                 };
             } catch (_e) {
@@ -992,13 +991,12 @@
             }
         }
 
-        function writeTenantCreditBannerCache(tenantName, quotaExceeded, promoAvailable) {
+        function writeTenantCreditBannerCache(tenantName, quotaExceeded) {
             try {
                 window.sessionStorage.setItem(
                     tenantCreditBannerCacheKey(tenantName),
                     JSON.stringify({
                         quotaExceeded: quotaExceeded === true,
-                        promoAvailable: promoAvailable !== false,
                         fetchedAt: Date.now(),
                     }),
                 );
@@ -1014,69 +1012,27 @@
             banner.hidden = true;
         }
 
-        function showTenantCreditBanner(quotaExceeded, promoAvailable) {
+        function showTenantCreditBanner(quotaExceeded) {
             const { banner, text } = getTenantCreditBannerElements();
             if (!banner || !text) {
                 return;
             }
-
-            const subscribeLink = document.createElement('a');
-            subscribeLink.href = '#';
-            subscribeLink.textContent = 'Claim Now';
-            subscribeLink.addEventListener('click', async (e) => {
-                e.preventDefault();
-                try {
-                    const resp = await fetch('/stripe/create-checkout-session', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ promo: '1usd-5usd' })
-                    });
-                    const data = await resp.json();
-                    if (data.url) {
-                        window.location.href = data.url;
-                    } else {
-                        alert(data.error || 'Failed to create checkout session');
-                    }
-                } catch (err) {
-                    alert('Error: ' + err.message);
-                }
-            });
 
             const addCreditsLink = document.createElement('a');
             addCreditsLink.href = '/billing?tab=Billing';
             addCreditsLink.textContent = 'Add credits';
 
             if (quotaExceeded) {
-                if (promoAvailable) {
-                    text.replaceChildren(
-                        document.createTextNode('Your credit has run out. 🎁 Limited Time Offer: $5 Credits for $1 - '),
-                        subscribeLink,
-                        document.createTextNode(' or Pay As You Go - '),
-                        addCreditsLink,
-                        document.createTextNode('\u00A0\u00A0\u00A0 Cancel Anytime | Zero Data Retention'),
-                    );
-                } else {
-                    text.replaceChildren(
-                        document.createTextNode('Your credit has run out. Pay As You Go - '),
-                        addCreditsLink,
-                        document.createTextNode('\u00A0\u00A0\u00A0 Cancel Anytime | Zero Data Retention'),
-                    );
-                }
+                text.replaceChildren(
+                    document.createTextNode('Your credit has run out. Pay As You Go - '),
+                    addCreditsLink,
+                    document.createTextNode('\u00A0\u00A0\u00A0 Cancel Anytime | Zero Data Retention'),
+                );
             } else {
-                if (promoAvailable) {
-                    text.replaceChildren(
-                        document.createTextNode('🎁 Limited Time Offer: $5 Credits for $1 - '),
-                        subscribeLink,
-                        document.createTextNode(' or Pay As You Go - '),
-                        addCreditsLink,
-                        document.createTextNode('\u00A0\u00A0\u00A0 Cancel Anytime | Zero Data Retention'),
-                    );
-                } else {
-                    text.replaceChildren(
-                        addCreditsLink,
-                        document.createTextNode('\u00A0\u00A0\u00A0 Cancel Anytime | Zero Data Retention'),
-                    );
-                }
+                text.replaceChildren(
+                    addCreditsLink,
+                    document.createTextNode('\u00A0\u00A0\u00A0 Cancel Anytime | Zero Data Retention'),
+                );
             }
 
             banner.classList.toggle('info', !quotaExceeded);
@@ -1087,8 +1043,8 @@
             banner.hidden = false;
         }
 
-        function applyTenantCreditBannerState(quotaExceeded, promoAvailable) {
-            showTenantCreditBanner(quotaExceeded, promoAvailable);
+        function applyTenantCreditBannerState(quotaExceeded) {
+            showTenantCreditBanner(quotaExceeded);
         }
 
         async function loadTenantCreditBanner() {
@@ -1098,7 +1054,7 @@
             }
 
             if (!isLoggedIn || isGatewayAlignedAnonymousActive) {
-                applyTenantCreditBannerState(false, false);
+                applyTenantCreditBannerState(false);
                 return;
             }
 
@@ -1110,19 +1066,14 @@
 
             const cachedState = readTenantCreditBannerCache(tenantName);
             if (cachedState !== null) {
-                applyTenantCreditBannerState(cachedState.quotaExceeded, cachedState.promoAvailable);
+                applyTenantCreditBannerState(cachedState.quotaExceeded);
                 return;
             }
 
             try {
-                const [creditsResp, historyResp] = await Promise.all([
-                    fetch(`/proxy1/tenant/${encodeURIComponent(tenantName)}/credits`, {
-                        headers: { 'Accept': 'application/json' }
-                    }),
-                    fetch(`/proxy1/tenant/${encodeURIComponent(tenantName)}/credits/history`, {
-                        headers: { 'Accept': 'application/json' }
-                    })
-                ]);
+                const creditsResp = await fetch(`/proxy1/tenant/${encodeURIComponent(tenantName)}/credits`, {
+                    headers: { 'Accept': 'application/json' }
+                });
 
                 if (!creditsResp.ok) {
                     hideTenantCreditBanner();
@@ -1132,23 +1083,8 @@
                 const payload = await creditsResp.json();
                 const quotaExceeded = payload && payload.quota_exceeded === true;
 
-                let promoAvailable = true;
-                if (historyResp.ok) {
-                    try {
-                        const historyData = await historyResp.json();
-                        const history = historyData.records || historyData.history || historyData.credits || [];
-                        if (Array.isArray(history)) {
-                            promoAvailable = !history.some(
-                                row => row.payment_ref === 'stripe-promo:1usd-5usd-bonus'
-                            );
-                        }
-                    } catch (_e) {
-                        // If history can't be parsed, assume promo available
-                    }
-                }
-
-                writeTenantCreditBannerCache(tenantName, quotaExceeded, promoAvailable);
-                applyTenantCreditBannerState(quotaExceeded, promoAvailable);
+                writeTenantCreditBannerCache(tenantName, quotaExceeded);
+                applyTenantCreditBannerState(quotaExceeded);
             } catch (_e) {
                 hideTenantCreditBanner();
             }
