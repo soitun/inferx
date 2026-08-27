@@ -10847,14 +10847,6 @@ def healthz():
 
 # ─── Stripe payment integration ───────────────────────────────────────────────
 
-PROMO_CATALOG = {
-    "1usd-5usd": {
-        "pay_cents": 100,
-        "bonus_cents": 400,
-        "bonus_ref": "stripe-promo:1usd-5usd-bonus",
-    },
-}
-
 
 @prefix_bp.route("/stripe/create-checkout-session", methods=["POST"])
 @require_login
@@ -10865,24 +10857,14 @@ def stripe_create_checkout_session():
     if not tenant:
         return jsonify({"error": "No tenant in session"}), 400
 
-    promo_code = data.get("promo")
-
-    if promo_code:
-        promo = PROMO_CATALOG.get(promo_code)
-        if promo is None:
-            return jsonify({"error": "Invalid promo code"}), 400
-        amount_cents = promo["pay_cents"]
-    else:
-        try:
-            amount_cents = int(data["amount_cents"])
-        except (KeyError, ValueError, TypeError):
-            return jsonify({"error": "amount_cents must be an integer"}), 400
-        if amount_cents < 100 or amount_cents > 1_000_000:
-            return jsonify({"error": "amount_cents out of range (100–1,000,000)"}), 400
+    try:
+        amount_cents = int(data["amount_cents"])
+    except (KeyError, ValueError, TypeError):
+        return jsonify({"error": "amount_cents must be an integer"}), 400
+    if amount_cents < 100 or amount_cents > 1_000_000:
+        return jsonify({"error": "amount_cents out of range (100–1,000,000)"}), 400
 
     metadata = {"tenant": tenant, "sub": sub}
-    if promo_code:
-        metadata["promo"] = promo_code
 
     try:
         checkout_session = stripe.checkout.Session.create(
@@ -10933,20 +10915,9 @@ def _credit_tenant(session_obj):
     tenant = session_obj.get("client_reference_id", "")
     amount_cents = session_obj.get("amount_total", 0)
     session_ref = f"stripe:{session_obj['id']}"
-    promo_code = session_obj.get("metadata", {}).get("promo")
 
     if not tenant:
         return "Missing client_reference_id"
-
-    if promo_code:
-        promo = PROMO_CATALOG.get(promo_code)
-        if promo is None or amount_cents != promo["pay_cents"]:
-            app.logger.error(
-                "Promo validation failed: session=%s, promo=%s, amount=%d, expected=%d",
-                session_obj.get("id", ""), promo_code, amount_cents,
-                promo["pay_cents"] if promo else -1,
-            )
-            return None
 
     err = _call_gateway_add_credits(
         tenant, amount_cents,
@@ -10955,15 +10926,6 @@ def _credit_tenant(session_obj):
     )
     if err:
         return err
-
-    if promo_code:
-        err = _call_gateway_add_credits(
-            tenant, promo["bonus_cents"],
-            note="Promo bonus: $1 payment → $5 credit (one-time)",
-            payment_ref=promo["bonus_ref"],
-        )
-        if err:
-            return err
 
     return None
 
