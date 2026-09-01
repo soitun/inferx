@@ -1100,11 +1100,11 @@
             <div>
                 <strong>Pay As You Go</strong>
                 <div style="display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap;">
-                    <button type="button" onclick="stripeAddCredits(100)">$1</button>
-                    <button type="button" onclick="stripeAddCredits(500)">$5</button>
                     <button type="button" onclick="stripeAddCredits(1000)">$10</button>
+                    <button type="button" onclick="stripeAddCredits(2000)">$20</button>
+                    <button type="button" onclick="stripeAddCredits(3000)">$30</button>
                     <span>or Custom: $</span>
-                    <input type="number" id="custom-credit-amount" min="1" step="1" placeholder="5" style="width: 80px;">
+                    <input type="number" id="custom-credit-amount" min="1" step="1" value="20" placeholder="20" style="width: 80px;">
                     <button type="button" onclick="stripeAddCredits(Math.round(parseFloat(document.getElementById('custom-credit-amount').value) * 100))">Add Credits</button>
                 </div>
             </div>
