@@ -847,6 +847,16 @@ impl TokenCache {
         return Ok(tenant.to_owned());
     }
 
+    fn ValidateApikeyTenant(restrict_tenant: &str) -> Result<()> {
+        if restrict_tenant == "public" {
+            return Err(Error::CommonError(
+                "public tenant cannot be used for API keys".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
     fn NormalizeOptionalNamespace(restrict_namespace: &Option<String>) -> Result<Option<String>> {
         match restrict_namespace {
             Some(ns) => {
@@ -1056,6 +1066,7 @@ impl TokenCache {
                 Self::NormalizeScope(req.access_level.as_deref().unwrap_or("inference"));
             Self::ValidateScope(&access_level)?;
             let restrict_tenant = Self::NormalizeRequiredTenant(&req.restrict_tenant)?;
+            Self::ValidateApikeyTenant(&restrict_tenant)?;
             let restrict_namespace = Self::NormalizeOptionalNamespace(&req.restrict_namespace)?;
 
             if !token.IsInferxAdmin() {
@@ -1513,6 +1524,7 @@ impl KeycloakProvider {
 mod tests {
     use super::{
         is_public_funccall_path, resolve_valid_default_tenant, AccessToken,
+        Error,
         DefaultTenantValidationError,
     };
     use crate::gateway::secret::UserProfile;
@@ -1567,6 +1579,22 @@ mod tests {
     fn restricted_apikey_still_cannot_infer_other_private_namespace() {
         let token = restricted_inference_apikey("tenant-a", Some("ns-a"));
         assert!(!token.IsNamespaceInferenceUser("tenant-b", "models"));
+    }
+
+    #[test]
+    fn validate_apikey_tenant_rejects_public() {
+        let err = super::TokenCache::ValidateApikeyTenant("public").unwrap_err();
+        match err {
+            Error::CommonError(message) => {
+                assert_eq!(message, "public tenant cannot be used for API keys");
+            }
+            _ => panic!("expected CommonError"),
+        }
+    }
+
+    #[test]
+    fn validate_apikey_tenant_allows_private_tenant() {
+        assert!(super::TokenCache::ValidateApikeyTenant("tenant-a").is_ok());
     }
 
     #[test]
