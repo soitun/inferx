@@ -2017,7 +2017,7 @@ def listsnapshots(tenant: str, namespace: str):
 
 def listnodes():
     url = "{}/nodes/".format(apihostaddr)
-    resp = requests.get(url)
+    resp = requests.get(url, headers=gateway_headers())
     nodes = json.loads(resp.content)
 
     return nodes
@@ -2025,7 +2025,7 @@ def listnodes():
 
 def getnode(name: str):
     url = "{}/node/{}/".format(apihostaddr, name)
-    resp = requests.get(url)
+    resp = requests.get(url, headers=gateway_headers())
     func = json.loads(resp.content)
 
     return func

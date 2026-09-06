@@ -522,6 +522,18 @@ impl AccessToken {
         return self.HasTenantUserPermission(tenant);
     }
 
+    pub fn CanReadTenantBilling(&self, tenant: &str) -> bool {
+        if !self.CheckScope("read") || !self.AllowTenant(tenant) {
+            return false;
+        }
+
+        if self.IsInferxAdmin() {
+            return true;
+        }
+
+        return self.HasTenantUserRole(tenant) || self.HasTenantAdminRole(tenant);
+    }
+
     pub fn IsNamespaceUser(&self, tenant: &str, namespace: &str) -> bool {
         if !self.CheckScope("read") {
             return false;
@@ -1595,6 +1607,34 @@ mod tests {
     #[test]
     fn validate_apikey_tenant_allows_private_tenant() {
         assert!(super::TokenCache::ValidateApikeyTenant("tenant-a").is_ok());
+    }
+
+    #[test]
+    fn anonymous_public_access_does_not_include_billing() {
+        let token = AccessToken {
+            subject: String::new(),
+            username: "anonymous".to_owned(),
+            display_name: None,
+            email: String::new(),
+            email_verified: false,
+            roles: BTreeSet::new(),
+            apiKeys: Vec::new(),
+            scope: "read".to_owned(),
+            sourceIsApikey: false,
+            restrictTenant: None,
+            restrictNamespace: None,
+            defaultTenant: None,
+            updatetime: SystemTime::now(),
+        };
+
+        assert!(token.IsTenantUser("public"));
+        assert!(!token.CanReadTenantBilling("public"));
+    }
+
+    #[test]
+    fn explicit_public_tenant_user_can_read_billing() {
+        let token = full_user_token("public");
+        assert!(token.CanReadTenantBilling("public"));
     }
 
     #[test]

@@ -1846,6 +1846,9 @@ impl HttpGateway {
                 objs.push(obj);
             }
         } else {
+            if !token.IsNamespaceUser(tenant, namespace) {
+                return Err(Error::NoPermission);
+            }
             match self.objRepo.namespaceMgr.Get(tenant, "system", namespace) {
                 Err(e) => {
                     error!("ListNamespace fail with error {:?}", e);
@@ -1899,6 +1902,9 @@ impl HttpGateway {
                 };
             }
         } else {
+            if !token.IsNamespaceUser(tenant, namespace) {
+                return Err(Error::NoPermission);
+            }
             match self.objRepo.funcMgr.GetObjects(tenant, namespace) {
                 Err(e) => {
                     error!("ListFunc fail with error {:?}", e);
@@ -1958,6 +1964,9 @@ impl HttpGateway {
                 objs.append(&mut list.objs);
             }
         } else {
+            if !token.IsNamespaceUser(tenant, namespace) {
+                return Err(Error::NoPermission);
+            }
             let mut list = self
                 .client
                 .List(&objType, &tenant, &namespace, &ListOption::default())
