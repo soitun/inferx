@@ -1546,10 +1546,21 @@ async fn root() -> &'static str {
     "InferX Gateway!"
 }
 
+fn inferx_admin_forbidden_response() -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .body(Body::from("service failure: No permission"))
+        .unwrap()
+}
+
 async fn SetTraceLogging(
-    Extension(_token): Extension<Arc<AccessToken>>,
+    Extension(token): Extension<Arc<AccessToken>>,
     Path(state): Path<String>,
 ) -> SResult<Response, StatusCode> {
+    if !token.IsInferxAdmin() {
+        return Ok(inferx_admin_forbidden_response());
+    }
+
     let lower = state.to_ascii_lowercase();
     let enable = match lower.as_str() {
         "on" | "enable" | "enabled" | "true" | "1" => Some(true),
@@ -1600,9 +1611,13 @@ async fn GetMetrics() -> SResult<Response, StatusCode> {
 }
 
 async fn GetFuncAgentsState(
-    Extension(_token): Extension<Arc<AccessToken>>,
+    Extension(token): Extension<Arc<AccessToken>>,
     State(gw): State<HttpGateway>,
 ) -> SResult<Response, StatusCode> {
+    if !token.IsInferxAdmin() {
+        return Ok(inferx_admin_forbidden_response());
+    }
+
     let data = gw.funcAgentMgr.DebugInfo().await;
     let resp = Response::builder()
         .status(StatusCode::OK)
@@ -1613,14 +1628,33 @@ async fn GetFuncAgentsState(
 }
 
 async fn GetReqs(
+    Extension(token): Extension<Arc<AccessToken>>,
     Path((_tenant, _namespace, _name)): Path<(String, String, String)>,
 ) -> SResult<Response, StatusCode> {
-    let mut client = ReqWatchingServiceClient::connect("http://127.0.0.1:1237")
-        .await
-        .unwrap();
+    if !token.IsInferxAdmin() {
+        return Ok(inferx_admin_forbidden_response());
+    }
+
+    let mut client = match ReqWatchingServiceClient::connect("http://127.0.0.1:1237").await {
+        Ok(client) => client,
+        Err(e) => {
+            return Ok(Response::builder()
+                .status(StatusCode::SERVICE_UNAVAILABLE)
+                .body(Body::from(format!("request watcher unavailable: {:?}", e)))
+                .unwrap())
+        }
+    };
 
     let req = ReqWatchRequest::default();
-    let response = client.watch(tonic::Request::new(req)).await.unwrap();
+    let response = match client.watch(tonic::Request::new(req)).await {
+        Ok(response) => response,
+        Err(e) => {
+            return Ok(Response::builder()
+                .status(StatusCode::SERVICE_UNAVAILABLE)
+                .body(Body::from(format!("request watcher failed: {:?}", e)))
+                .unwrap())
+        }
+    };
     let mut ws = response.into_inner();
 
     let (tx, rx) = mpsc::channel::<SResult<String, Infallible>>(128);
@@ -1855,9 +1889,14 @@ async fn PostPrompt(
 }
 
 async fn ListReadyPods(
+    Extension(token): Extension<Arc<AccessToken>>,
     State(gw): State<HttpGateway>,
     Path((tenant, namespace, funcname)): Path<(String, String, String)>,
 ) -> SResult<Response, StatusCode> {
+    if !token.IsInferxAdmin() {
+        return Ok(inferx_admin_forbidden_response());
+    }
+
     error!("ListReadyPods 1 {}/{}/{}", &tenant, &namespace, &funcname);
     match gw.objRepo.ListReadyPods(&tenant, &namespace, &funcname) {
         Ok(pods) => {
@@ -4229,7 +4268,7 @@ async fn CreateObj(
         Namespace::KEY => gw.CreateNamespace(&token, dataobj).await,
         Function::KEY => gw.CreateFunc(&token, dataobj).await,
         FuncPolicy::KEY => gw.CreateFuncPolicy(&token, dataobj).await,
-        _ => gw.client.Create(&dataobj).await,
+        _ => Err(Error::NoPermission),
     };
 
     match res {
@@ -4892,7 +4931,7 @@ async fn UpdateObj(
         Namespace::KEY => gw.UpdateNamespace(&token, dataobj).await,
         Function::KEY => gw.UpdateFunc(&token, dataobj).await,
         FuncPolicy::KEY => gw.UpdateFuncPolicy(&token, dataobj).await,
-        _ => gw.client.Update(&dataobj, 0).await,
+        _ => Err(Error::NoPermission),
     };
 
     match res {
@@ -4928,11 +4967,7 @@ async fn DeleteObj(
             gw.DeleteFuncPolicy(&token, &tenant, &namespace, &name)
                 .await
         }
-        _ => {
-            gw.client
-                .Delete(&objType, &tenant, &namespace, &name, 0)
-                .await
-        }
+        _ => Err(Error::NoPermission),
     };
 
     match res {
@@ -6650,7 +6685,7 @@ async fn GetTenantCredits(
     State(gw): State<HttpGateway>,
     Path(tenant): Path<String>,
 ) -> SResult<Response, StatusCode> {
-    if !token.IsTenantUser(&tenant) {
+    if !token.CanReadTenantBilling(&tenant) {
         let body = Body::from("No permission to access this tenant");
         let resp = Response::builder()
             .status(StatusCode::UNAUTHORIZED)
@@ -6764,7 +6799,7 @@ async fn GetTenantCreditHistory(
     Path(tenant): Path<String>,
     Query(params): Query<CreditHistoryQuery>,
 ) -> SResult<Response, StatusCode> {
-    if !token.IsTenantUser(&tenant) {
+    if !token.CanReadTenantBilling(&tenant) {
         let body = Body::from("No permission to access this tenant");
         let resp = Response::builder()
             .status(StatusCode::UNAUTHORIZED)
@@ -6827,7 +6862,7 @@ async fn GetTenantBillingSummary(
     State(gw): State<HttpGateway>,
     Path(tenant): Path<String>,
 ) -> SResult<Response, StatusCode> {
-    if !token.IsTenantUser(&tenant) {
+    if !token.CanReadTenantBilling(&tenant) {
         let body = Body::from("No permission to access this tenant");
         let resp = Response::builder()
             .status(StatusCode::UNAUTHORIZED)
@@ -6897,7 +6932,7 @@ async fn GetTenantHourlyUsage(
     Path(tenant): Path<String>,
     Query(params): Query<HourlyUsageQuery>,
 ) -> SResult<Response, StatusCode> {
-    if !token.IsTenantUser(&tenant) {
+    if !token.CanReadTenantBilling(&tenant) {
         let body = Body::from("No permission to access this tenant");
         let resp = Response::builder()
             .status(StatusCode::UNAUTHORIZED)
@@ -6944,7 +6979,7 @@ async fn GetTenantUsageByModel(
     Path(tenant): Path<String>,
     Query(params): Query<UsageByGroupQuery>,
 ) -> SResult<Response, StatusCode> {
-    if !token.IsTenantUser(&tenant) {
+    if !token.CanReadTenantBilling(&tenant) {
         let body = Body::from("No permission to access this tenant");
         let resp = Response::builder()
             .status(StatusCode::UNAUTHORIZED)
@@ -7055,7 +7090,7 @@ async fn GetTenantHourlyUsageByModel(
     Path(tenant): Path<String>,
     Query(params): Query<HourlyUsageByModelQuery>,
 ) -> SResult<Response, StatusCode> {
-    if !token.IsTenantUser(&tenant) {
+    if !token.CanReadTenantBilling(&tenant) {
         let body = Body::from("No permission to access this tenant");
         let resp = Response::builder()
             .status(StatusCode::UNAUTHORIZED)
@@ -7121,7 +7156,7 @@ async fn GetTenantHourlyUsageByNamespace(
     Path(tenant): Path<String>,
     Query(params): Query<HourlyUsageByNamespaceQuery>,
 ) -> SResult<Response, StatusCode> {
-    if !token.IsTenantUser(&tenant) {
+    if !token.CanReadTenantBilling(&tenant) {
         let body = Body::from("No permission to access this tenant");
         let resp = Response::builder()
             .status(StatusCode::UNAUTHORIZED)
@@ -7178,7 +7213,7 @@ async fn GetTenantUsageByNamespace(
     Path(tenant): Path<String>,
     Query(params): Query<UsageByGroupQuery>,
 ) -> SResult<Response, StatusCode> {
-    if !token.IsTenantUser(&tenant) {
+    if !token.CanReadTenantBilling(&tenant) {
         let body = Body::from("No permission to access this tenant");
         let resp = Response::builder()
             .status(StatusCode::UNAUTHORIZED)
@@ -7287,7 +7322,7 @@ async fn GetTenantUsageSummary(
     Path(tenant): Path<String>,
     Query(params): Query<HourlyUsageQuery>,
 ) -> SResult<Response, StatusCode> {
-    if !token.IsTenantUser(&tenant) {
+    if !token.CanReadTenantBilling(&tenant) {
         let body = Body::from("No permission to access this tenant");
         let resp = Response::builder()
             .status(StatusCode::UNAUTHORIZED)
@@ -7521,7 +7556,7 @@ async fn GetTenantTokenUsage(
     Path(tenant): Path<String>,
     Query(params): Query<TokenUsageQuery>,
 ) -> SResult<Response, StatusCode> {
-    if !token.IsTenantUser(&tenant) {
+    if !token.CanReadTenantBilling(&tenant) {
         return Ok(Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .body(Body::from("No permission to access this tenant"))
@@ -7780,7 +7815,14 @@ async fn GetPublishedEndpointDetail(
     }
 }
 
-async fn GetNodes(State(gw): State<HttpGateway>) -> SResult<Response, StatusCode> {
+async fn GetNodes(
+    Extension(token): Extension<Arc<AccessToken>>,
+    State(gw): State<HttpGateway>,
+) -> SResult<Response, StatusCode> {
+    if !token.IsInferxAdmin() {
+        return Ok(inferx_admin_forbidden_response());
+    }
+
     match gw.objRepo.GetNodes() {
         Ok(list) => {
             let data = serde_json::to_string(&list).unwrap();
@@ -7803,9 +7845,14 @@ async fn GetNodes(State(gw): State<HttpGateway>) -> SResult<Response, StatusCode
 }
 
 async fn GetNode(
+    Extension(token): Extension<Arc<AccessToken>>,
     State(gw): State<HttpGateway>,
     Path(nodename): Path<String>,
 ) -> SResult<Response, StatusCode> {
+    if !token.IsInferxAdmin() {
+        return Ok(inferx_admin_forbidden_response());
+    }
+
     match gw.objRepo.GetNode(&nodename) {
         Ok(list) => {
             let data = serde_json::to_string_pretty(&list).unwrap();
