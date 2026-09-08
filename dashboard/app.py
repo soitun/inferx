@@ -6484,7 +6484,11 @@ def load_tenant_endpoint_detail(slug: str, tenant: str):
 
 def build_endpoint_list_entries(*, include_unpublished: bool, tenant: str = ""):
     metadata_rows = {row["slug"]: row for row in list_endpoint_rows()}
-    status_rows = list_gateway_objects("funcstatus", "inferx", "endpoint")
+    status_rows = (
+        list_gateway_objects("funcstatus", "inferx", "endpoint")
+        if include_unpublished
+        else []
+    )
     platform_status = {}
     for status in status_rows:
         name = str(status.get("name", "") or "").strip()
@@ -6519,7 +6523,28 @@ def build_endpoint_list_entries(*, include_unpublished: bool, tenant: str = ""):
             entries.append(entry)
             continue
 
+        platform_detail = None
         published = bool((((platform_status.get(slug) or {}).get("object") or {}).get("published")))
+        normalized_tenant = str(tenant or PUBLIC_TENANT_NAME).strip() or PUBLIC_TENANT_NAME
+        if not include_unpublished:
+            resp, platform_detail_payload = get_published_endpoint_response(normalized_tenant, slug)
+            detail = extract_upstream_error_message(resp, platform_detail_payload)
+            if (
+                is_upstream_resource_unavailable(resp, platform_detail_payload)
+                or "unpublished" in detail.lower()
+            ):
+                continue
+            if not resp.ok:
+                raise RuntimeError(
+                    f"failed to load published endpoint `{slug}`: "
+                    f"HTTP {resp.status_code}{': ' + detail if detail else ''}"
+                )
+            if not isinstance(platform_detail_payload, dict):
+                raise RuntimeError(f"invalid published endpoint response for `{slug}`")
+            if str(platform_detail_payload.get("kind", "")).strip() == "external":
+                continue
+            published = True
+            platform_detail = platform_detail_payload
         if not include_unpublished and not published:
             continue
         entry = metadata_rows.get(slug)
@@ -6528,9 +6553,7 @@ def build_endpoint_list_entries(*, include_unpublished: bool, tenant: str = ""):
         entry = enrich_endpoint_catalog_fallback(entry)
         entry["published"] = published
         entry["kind"] = "self_hosted"
-        platform_detail = None
-        normalized_tenant = str(tenant or "").strip()
-        if normalized_tenant != "":
+        if platform_detail is None and normalized_tenant != "":
             try:
                 resp, platform_detail_payload = get_published_endpoint_response(normalized_tenant, slug)
                 if resp.ok and isinstance(platform_detail_payload, dict):
