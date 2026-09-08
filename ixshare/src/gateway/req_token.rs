@@ -51,15 +51,16 @@ pub struct TokenMeterCtx {
     pub request_ts: DateTime<Utc>,
 }
 
-/// Extract token counts from a `usage` object (prompt/completion/total plus the
-/// cached-prompt subset from `prompt_tokens_details.cached_tokens`).
+/// Extract token counts from a Chat Completions or Responses API `usage` object.
 fn parse_usage(usage_obj: &serde_json::Map<String, Value>) -> UsageInfo {
     let prompt_tokens = usage_obj
         .get("prompt_tokens")
+        .or_else(|| usage_obj.get("input_tokens"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
     let completion_tokens = usage_obj
         .get("completion_tokens")
+        .or_else(|| usage_obj.get("output_tokens"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
     let total_tokens = usage_obj
@@ -68,6 +69,7 @@ fn parse_usage(usage_obj: &serde_json::Map<String, Value>) -> UsageInfo {
         .unwrap_or(0) as u32;
     let cached_tokens = usage_obj
         .get("prompt_tokens_details")
+        .or_else(|| usage_obj.get("input_tokens_details"))
         .and_then(|v| v.as_object())
         .and_then(|d| d.get("cached_tokens"))
         .and_then(|v| v.as_u64())
@@ -79,6 +81,20 @@ fn parse_usage(usage_obj: &serde_json::Map<String, Value>) -> UsageInfo {
         cachedTokens: cached_tokens,
         totalTokens: total_tokens,
     }
+}
+
+fn response_usage(obj: &serde_json::Map<String, Value>) -> Option<&serde_json::Map<String, Value>> {
+    let event_type = obj.get("type").and_then(Value::as_str);
+    if event_type.is_some_and(|event_type| event_type.starts_with("response.")) {
+        if event_type != Some("response.completed") {
+            return None;
+        }
+        return obj
+            .get("usage")
+            .and_then(Value::as_object)
+            .or_else(|| obj.get("response")?.get("usage")?.as_object());
+    }
+    obj.get("usage").and_then(Value::as_object)
 }
 
 /// Emit a billed event, or log when there is no meter context.
@@ -208,7 +224,7 @@ pub async fn process_usage_response(
                             if let Ok(Value::Object(obj)) =
                                 serde_json::from_str::<Value>(json_str)
                             {
-                                if let Some(Value::Object(usage_obj)) = obj.get("usage") {
+                                if let Some(usage_obj) = response_usage(&obj) {
                                     last_usage = Some(parse_usage(usage_obj));
                                     if should_filter_usage {
                                         continue;
@@ -247,7 +263,7 @@ pub async fn process_usage_response(
 
         if let Ok(text) = std::str::from_utf8(&responseBody) {
             if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(text) {
-                if let Some(Value::Object(usage_obj)) = obj.get("usage") {
+                if let Some(usage_obj) = response_usage(&obj) {
                     record_usage(&meter, &parse_usage(usage_obj), false);
                 }
             }
@@ -347,7 +363,7 @@ pub async fn FuncCallWithTokenTracking(
 
 #[cfg(test)]
 mod tests {
-    use super::process_usage_response;
+    use super::{parse_usage, process_usage_response, response_usage};
     use axum::body::Body;
     use axum::response::Response;
     use http_body_util::BodyExt;
@@ -418,5 +434,78 @@ mod tests {
             sse.len(),
             output.len()
         );
+    }
+
+    #[test]
+    fn parses_responses_api_usage() {
+        let value = serde_json::json!({
+            "input_tokens": 12,
+            "input_tokens_details": {"cached_tokens": 3},
+            "output_tokens": 7,
+            "total_tokens": 19
+        });
+        let usage = parse_usage(value.as_object().unwrap());
+
+        assert_eq!(usage.promptTokens, 12);
+        assert_eq!(usage.cachedTokens, 3);
+        assert_eq!(usage.completionTokens, 7);
+        assert_eq!(usage.totalTokens, 19);
+    }
+
+    #[test]
+    fn finds_usage_in_response_completed_event() {
+        let value = serde_json::json!({
+            "type": "response.completed",
+            "response": {
+                "usage": {
+                    "input_tokens": 12,
+                    "output_tokens": 7,
+                    "total_tokens": 19
+                }
+            }
+        });
+        let usage = response_usage(value.as_object().unwrap()).unwrap();
+
+        assert_eq!(usage.get("input_tokens").and_then(|v| v.as_u64()), Some(12));
+        assert_eq!(usage.get("output_tokens").and_then(|v| v.as_u64()), Some(7));
+    }
+
+    #[test]
+    fn ignores_usage_in_unsuccessful_response_event() {
+        let nested = serde_json::json!({
+            "type": "response.failed",
+            "response": {
+                "usage": {
+                    "input_tokens": 12,
+                    "output_tokens": 7,
+                    "total_tokens": 19
+                }
+            }
+        });
+        let flattened = serde_json::json!({
+            "type": "response.failed",
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 7,
+                "total_tokens": 19
+            }
+        });
+
+        assert!(response_usage(nested.as_object().unwrap()).is_none());
+        assert!(response_usage(flattened.as_object().unwrap()).is_none());
+    }
+
+    #[test]
+    fn preserves_chat_completions_top_level_usage() {
+        let value = serde_json::json!({
+            "object": "chat.completion.chunk",
+            "usage": {
+                "prompt_tokens": 12,
+                "completion_tokens": 7,
+                "total_tokens": 19
+            }
+        });
+
+        assert!(response_usage(value.as_object().unwrap()).is_some());
     }
 }

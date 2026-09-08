@@ -1143,6 +1143,7 @@ mod tests {
         // OpenRouter surface arrives without the `/endpoints` prefix.
         assert_eq!(external_sub_path("/v1/chat/completions"), "/chat/completions");
         assert_eq!(external_sub_path("/v1/completions"), "/completions");
+        assert_eq!(external_sub_path("/v1/responses"), "/responses");
     }
 
     #[test]
@@ -1152,6 +1153,7 @@ mod tests {
             "/endpoints/v1/completions",
             "/v1/completions",
             "/endpoints/v1/chat/completions",
+            "/v1/responses",
         ] {
             assert!(
                 !external_sub_path(p).starts_with("/v1"),
