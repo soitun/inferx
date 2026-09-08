@@ -513,7 +513,7 @@ fn funccall_route_error_response(namespace: &str, err: &Error) -> (StatusCode, &
     }
 
     match err {
-        Error::NotExist(_) => (StatusCode::NOT_FOUND, "service failure: not found"),
+        Error::NotExist(_) => (StatusCode::NOT_FOUND, "service failure: function not found"),
         _ => (
             StatusCode::INTERNAL_SERVER_ERROR,
             "service failure: internal error",
@@ -521,11 +521,16 @@ fn funccall_route_error_response(namespace: &str, err: &Error) -> (StatusCode, &
     }
 }
 
+fn is_unsupported_responses_background(path: &str, body: &Value) -> bool {
+    path == "/v1/responses" && body.get("background").and_then(Value::as_bool) == Some(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         funccall_route_error_response, is_blocked_public_endpoint_inference,
-        provider_api_tenant_allowed, provider_models_adapter_for_tenant,
+        is_unsupported_responses_background, provider_api_tenant_allowed,
+        provider_models_adapter_for_tenant,
         resolve_skill_calling_tenant, resolve_subscription_tenant, summarize_funccall_body_for_log,
     };
     use crate::common::Error;
@@ -562,6 +567,21 @@ mod tests {
             summarize_funccall_body_for_log(&Bytes::new(), false),
             Value::Null
         );
+    }
+
+    #[test]
+    fn rejects_background_responses_requests_only() {
+        let body = serde_json::json!({"background": true});
+
+        assert!(is_unsupported_responses_background("/v1/responses", &body));
+        assert!(!is_unsupported_responses_background(
+            "/v1/chat/completions",
+            &body
+        ));
+        assert!(!is_unsupported_responses_background(
+            "/v1/responses",
+            &serde_json::json!({"background": false})
+        ));
     }
 
     #[test]
@@ -1296,6 +1316,7 @@ impl HttpGateway {
             .route("/v1/models", get(OpenRouterModels))
             .route("/v1/chat/completions", post(OpenRouterChatCompletions))
             .route("/v1/completions", post(OpenRouterChatCompletions))
+            .route("/v1/responses", post(OpenRouterChatCompletions))
             .route("/endpoints/v1/models", get(SharedEndpointModels))
             .route(
                 "/endpoints/v1/chat/completions",
@@ -4603,6 +4624,7 @@ async fn shared_endpoint_dispatch(
     // forwarded verbatim; the direct surface comes in as `/endpoints/v1/...`, so the
     // `/endpoints` prefix is stripped to reach the same `/v1/...` upstream.
     let incoming_path = req.uri().path().to_string();
+    let is_responses_request = incoming_path == "/v1/responses";
     let remainPath = incoming_path
         .strip_prefix("/endpoints")
         .unwrap_or(&incoming_path)
@@ -4617,6 +4639,14 @@ async fn shared_endpoint_dispatch(
 
     let mut jsonReq: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|_| StatusCode::BAD_REQUEST)?;
+    if is_unsupported_responses_background(&incoming_path, &jsonReq) {
+        return Ok(Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body(Body::from(
+                "service failure: background Responses requests are not supported",
+            ))
+            .unwrap());
+    }
     let modelName = jsonReq
         .as_object_mut()
         .and_then(|obj| obj.remove("model"))
@@ -4647,7 +4677,9 @@ async fn shared_endpoint_dispatch(
             .get("stream")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let usage_requested = if is_streaming {
+        let usage_requested = if is_responses_request {
+            true
+        } else if is_streaming {
             jsonReq
                 .get("stream_options")
                 .and_then(|v| v.get("include_usage"))
@@ -4657,8 +4689,9 @@ async fn shared_endpoint_dispatch(
             true
         };
         if let Some(obj) = jsonReq.as_object_mut() {
-            // Ensure a final usage object (inject include_usage when streaming without it).
-            if is_streaming && !usage_requested {
+            // Chat Completions needs an explicit final usage chunk; Responses always
+            // includes usage in the final response.completed event.
+            if !is_responses_request && is_streaming && !usage_requested {
                 let so = obj
                     .entry("stream_options")
                     .or_insert_with(|| serde_json::json!({}));
@@ -4704,6 +4737,13 @@ async fn shared_endpoint_dispatch(
             .await);
         }
         return Ok(outcome.response);
+    }
+
+    if is_responses_request {
+        return Ok(Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::from("service failure: external endpoint not found"))
+            .unwrap());
     }
 
     // Direct callers reach the shared surface only for a published endpoint. OR is
