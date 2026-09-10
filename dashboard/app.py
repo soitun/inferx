@@ -2018,17 +2018,13 @@ def listsnapshots(tenant: str, namespace: str):
 def listnodes():
     url = "{}/nodes/".format(apihostaddr)
     resp = requests.get(url, headers=gateway_headers())
-    nodes = json.loads(resp.content)
-
-    return nodes
+    return gateway_json_or_raise(resp, context="node list")
 
 
 def getnode(name: str):
     url = "{}/node/{}/".format(apihostaddr, name)
     resp = requests.get(url, headers=gateway_headers())
-    func = json.loads(resp.content)
-
-    return func
+    return gateway_json_or_raise(resp, context="node detail")
 
 
 def json_error(message: str, status: int = 400):
@@ -2044,6 +2040,21 @@ def response_json_or_none(resp):
         return resp.json()
     except ValueError:
         return None
+
+
+def gateway_json_or_raise(resp, *, context: str):
+    if resp is None:
+        raise RuntimeError(f"{context} returned no response")
+    payload = response_json_or_none(resp)
+    if not resp.ok:
+        detail = extract_upstream_error_message(resp, payload) or f"gateway returned HTTP {resp.status_code}"
+        raise RuntimeError(detail)
+    if payload is None:
+        body = str(resp.text or "").strip()
+        if body == "":
+            raise RuntimeError(f"{context} returned an empty response")
+        raise RuntimeError(f"{context} returned invalid JSON")
+    return payload
 
 
 def dashboard_href(endpoint: str, **params) -> str:
@@ -11321,9 +11332,11 @@ def funclog():
 def nodes_max_vram():
     try:
         max_vram, max_gpu_count = get_node_capacity_limits()
-        return jsonify({"max_vram": max_vram, "max_gpu_count": max_gpu_count})
     except Exception as e:
-        return json_error(f"failed to read nodes: {e}", 502)
+        app.logger.warning("nodes_max_vram falling back without node capacity limits: %s", e)
+        max_vram = MAX_GPU_VRAM_MB_OVERRIDE if MAX_GPU_VRAM_MB_OVERRIDE > 0 else 0
+        max_gpu_count = resolve_effective_max_gpu_count(0)
+    return jsonify({"max_vram": max_vram, "max_gpu_count": max_gpu_count})
 
 
 @prefix_bp.route("/func_create", methods=["GET"])
@@ -11477,7 +11490,9 @@ def func_save():
     try:
         max_node_vram, max_node_gpu_count = get_node_capacity_limits()
     except Exception as e:
-        return json_error(f"failed to read node capacity limits: {e}", 502)
+        app.logger.warning("func_save falling back without node capacity limits: %s", e)
+        max_node_vram = MAX_GPU_VRAM_MB_OVERRIDE if MAX_GPU_VRAM_MB_OVERRIDE > 0 else 0
+        max_node_gpu_count = resolve_effective_max_gpu_count(0)
 
     existing_spec = None
     existing_catalog_source = None
