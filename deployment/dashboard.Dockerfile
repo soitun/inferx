@@ -1,14 +1,12 @@
 # syntax=docker/dockerfile:1
 
-FROM python:3.10-slim-bullseye
+FROM python:3.10-slim-bookworm
 
 WORKDIR /
 
-RUN apt-get -y update
-RUN apt-get install -y libpq-dev gcc
-RUN apt-get install -y bash
-RUN apt-get install -y nginx
-RUN apt-get install -y curl
+RUN apt-get -y update \
+    && apt-get install -y --no-install-recommends libpq-dev gcc bash nginx curl \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt requirements.txt
 RUN pip3 install -r requirements.txt
