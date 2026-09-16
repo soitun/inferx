@@ -1,5 +1,5 @@
 ARCH := ${shell uname -m}
-PLATFORM_VERSION ?= v0.6.0beta20
+PLATFORM_VERSION ?= v0.6.0beta21
 DB_VERSION ?= v0.6.0beta9
 DASHBOARD_VERSION ?= v0.6.0beta20
 RUNTIME_VERSION ?= v0.5.0

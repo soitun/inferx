@@ -521,6 +521,14 @@ fn funccall_route_error_response(namespace: &str, err: &Error) -> (StatusCode, &
     }
 }
 
+fn normalize_funccall_remaining_uri_path(remain_path: &str) -> &str {
+    if remain_path.is_empty() {
+        "/"
+    } else {
+        remain_path
+    }
+}
+
 fn is_unsupported_responses_background(path: &str, body: &Value) -> bool {
     path == "/v1/responses" && body.get("background").and_then(Value::as_bool) == Some(true)
 }
@@ -529,8 +537,8 @@ fn is_unsupported_responses_background(path: &str, body: &Value) -> bool {
 mod tests {
     use super::{
         funccall_route_error_response, is_blocked_public_endpoint_inference,
-        is_unsupported_responses_background, provider_api_tenant_allowed,
-        provider_models_adapter_for_tenant,
+        is_unsupported_responses_background, normalize_funccall_remaining_uri_path,
+        provider_api_tenant_allowed, provider_models_adapter_for_tenant,
         resolve_skill_calling_tenant, resolve_subscription_tenant, summarize_funccall_body_for_log,
     };
     use crate::common::Error;
@@ -608,6 +616,15 @@ mod tests {
             funccall_route_error_response("Qwen", &Error::NotExist("missing func".to_owned()));
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(message, "service failure: function not found");
+    }
+
+    #[test]
+    fn empty_funccall_remainder_normalizes_to_root_uri_path() {
+        assert_eq!(normalize_funccall_remaining_uri_path(""), "/");
+        assert_eq!(
+            normalize_funccall_remaining_uri_path("/v1/chat/completions"),
+            "/v1/chat/completions"
+        );
     }
 
     #[test]
@@ -2427,7 +2444,8 @@ pub(super) async fn dispatch_func_call(
     };
     let timeout = (timeoutSec * 1000.0) as u64;
 
-    *req.uri_mut() = Uri::try_from(remainPath.clone()).unwrap();
+    let target_uri_path = normalize_funccall_remaining_uri_path(&remainPath);
+    *req.uri_mut() = Uri::try_from(target_uri_path).map_err(|_| StatusCode::BAD_REQUEST)?;
 
     let mut res;
     let (mut parts, body) = req.into_parts();
